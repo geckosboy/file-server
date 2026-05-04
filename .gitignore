@@ -67,3 +67,6 @@ assets/*
 temp/*
 
 .DS_Store
+
+tsconfig.tsbuildinfo
+tsconfig.build.tsbuildinfo
