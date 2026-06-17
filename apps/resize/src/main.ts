@@ -12,6 +12,7 @@ async function bootstrap() {
 		isDevelopment,
 		isProduction,
 		originList,
+		HOST,
 		kafkaClientBrokerList,
 	} = app.get(AppConfig);
 
@@ -39,8 +40,8 @@ async function bootstrap() {
 		},
 	});
 
-	await app.listen(PORT, () => {
-		logger.log(`Nest on: http://localhost:${PORT}`);
+	await app.listen(PORT, HOST ?? '127.0.0.1', () => {
+		logger.log(`Nest on: ${HOST ?? '127.0.0.1'}:${PORT}`);
 	});
 }
 bootstrap();

@@ -7,11 +7,14 @@ import {
 import { ClientKafka } from '@nestjs/microservices';
 import { extension } from 'mime-types';
 import { performance } from 'perf_hooks';
+import { lastValueFrom } from 'rxjs';
 
 import { GetImageDto, UploadImageDto } from 'src/dto/image.dto';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
+import { SharpStrategy } from './strategies/sharp';
+import { normalizeSafeFileName } from './path.utils';
 
 @Injectable()
 export class ImageService {
@@ -35,7 +38,7 @@ export class ImageService {
 	}
 
 	/** 확장자에 따라 맞는 Strategy 가져오기 */
-	private getStrategy(ext: string) {
+	private getStrategy(ext: string): SharpStrategy {
 		switch (ext) {
 			case 'png':
 				return this.pngStrategy;
@@ -47,11 +50,10 @@ export class ImageService {
 		}
 	}
 
-	/** Image manager에 MimeType을 기준으로 Strategy 세팅 */
-	private setImageManager(mimetype: string) {
+	/** MimeType을 기준으로 요청 로컬 Strategy를 선택 */
+	private getStrategyFromMimeType(mimetype: string) {
 		const ext = this.getExt(mimetype);
-		const strategy = this.getStrategy(ext);
-		this.imageManager.setStrategy(strategy);
+		return this.getStrategy(ext);
 	}
 
 	/** 확장자가 정상적인지 */
@@ -65,20 +67,23 @@ export class ImageService {
 		apiInfo: Pick<UploadImageDto, 'id' | 'path'>;
 	}) {
 		const { apiInfo, file } = imageInfo;
-
-		this.setImageManager(file.mimetype);
+		const strategy = this.getStrategyFromMimeType(file.mimetype);
+		const mainName = normalizeSafeFileName(file.originalname, 'original name');
 
 		try {
 			const startTime = performance.now();
-			const { format, size } = await this.imageManager.saveImageFromTemp({
-				savePath: apiInfo.path,
-				mainName: file.originalname,
-				tempName: file.filename,
-			});
+			const { format, size } = await this.imageManager.saveImageFromTemp(
+				strategy,
+				{
+					savePath: apiInfo.path,
+					mainName,
+					tempName: file.filename,
+				},
+			);
 			const exeTime = performance.now() - startTime;
 
 			this.logger.log(
-				`[${apiInfo.id}]${apiInfo.path}/${file.originalname} - ${format} ${file.size}>>${size}byte +${Math.round(exeTime)}ms `,
+				`[${apiInfo.id}]${apiInfo.path}/${mainName} - ${format} ${file.size}>>${size}byte +${Math.round(exeTime)}ms `,
 			);
 
 			return { format, size, exeTime };
@@ -120,26 +125,31 @@ export class ImageService {
 			file,
 		} = imageInfo;
 
-		const { exeTime, format, size } = await this.compressAndSaveImage({
-			file,
-			apiInfo: { id, path },
-		});
-		/** 이미지 업로드 결과를 Message Queue에 전달 */
-		this.imageClient.emit('image-topic', {
-			key: 'uploadResult-json',
-			value: JSON.stringify({
-				id,
-				format,
-				size,
-				exeTime,
-			}),
-		});
+		try {
+			const { exeTime, format, size } = await this.compressAndSaveImage({
+				file,
+				apiInfo: { id, path },
+			});
+			/** 이미지 업로드 결과를 Message Queue에 전달 */
+			await lastValueFrom(
+				this.imageClient.emit('image-topic', {
+					key: 'uploadResult-json',
+					value: JSON.stringify({
+						id,
+						format,
+						size,
+						exeTime,
+					}),
+				}),
+			);
 
-		/** 처리완료된 임시 파일은 삭제 */
-		await this.deleteImage({ isTemp: true, name: file.filename });
-		/** 전에 사용하던 파일이 있는 경우 삭제 */
-		if (beforeName) {
-			await this.deleteImage({ path, name: beforeName });
+			/** 전에 사용하던 파일이 있는 경우 삭제 */
+			if (beforeName) {
+				await this.deleteImage({ path, name: beforeName });
+			}
+		} finally {
+			/** 처리완료 또는 실패한 임시 파일은 항상 삭제 */
+			await this.deleteImage({ isTemp: true, name: file.filename });
 		}
 	}
 }

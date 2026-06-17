@@ -4,27 +4,32 @@ import {
 	IsBoolean,
 	IsEnum,
 	IsNumber,
+	IsOptional,
 	IsString,
 	Max,
 	Min,
 } from 'class-validator';
-import { Environment, ValueOf } from '@file/global';
+import { Environment, ValueOf, parseOriginList } from '@file/global';
 
 export class AppConfig {
 	@IsEnum(Environment)
-	NODE_ENV: ValueOf<typeof Environment>;
+	NODE_ENV!: ValueOf<typeof Environment>;
 
 	@IsNumber()
 	@Min(0)
 	@Max(65535)
 	@Type(() => Number)
-	PORT: number;
+	PORT!: number;
 
 	@IsString()
-	ORIGIN_LIST_STR: string;
+	ORIGIN_LIST_STR!: string;
+
+	@IsOptional()
+	@IsString()
+	HOST?: string;
 
 	@IsString()
-	RESIZING_SERVER: string;
+	RESIZING_SERVER!: string;
 
 	@IsBoolean()
 	get isDevelopment() {
@@ -38,6 +43,6 @@ export class AppConfig {
 
 	@IsArray()
 	get originList() {
-		return this.ORIGIN_LIST_STR?.split(',').map((origin) => new RegExp(origin));
+		return parseOriginList(this.ORIGIN_LIST_STR);
 	}
 }

@@ -15,8 +15,10 @@ RUN yarn file:cache build
 FROM keymetrics/pm2:18-alpine
 WORKDIR /usr/index
 ENV TZ=Asia/Seoul
+ENV HOST=0.0.0.0
 COPY --from=ts-compiler /usr/index ./
 COPY --from=ts-compiler /usr/index/apps/cache/ecosystem.config.js ./
-RUN chmod -R 777 /usr/index
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /usr/index
+USER app
 
 CMD ["pm2-runtime", "start", "ecosystem.config.js", "--env", "development"]

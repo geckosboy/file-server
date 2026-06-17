@@ -1,5 +1,6 @@
 import { Controller, Get, Param, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
+import { lookup } from 'mime-types';
 import { ImageService } from './image.service';
 import { ImageParamDto, ImageQueryDto } from 'src/dto/image.dto';
 
@@ -23,7 +24,9 @@ export class ImageController {
 		} else {
 			result = await this.imageService.getImageFromMain({ ...imageParam });
 		}
-		res.set({ 'Content-Type': `image/${imageParam.name.split('.').at(-1)}` });
+		res.set({
+			'Content-Type': lookup(imageParam.name) || 'application/octet-stream',
+		});
 
 		res.send(result);
 	}

@@ -70,3 +70,4 @@ temp/*
 
 tsconfig.tsbuildinfo
 tsconfig.build.tsbuildinfo
+.omx

@@ -5,10 +5,14 @@ import {
 } from '@nestjs/common';
 import { mkdir, readFile, rm } from 'fs/promises';
 import { SharpStrategy } from './sharp';
+import {
+	normalizeSafeFileName,
+	normalizeSafeRelativePath,
+} from '../path.utils';
 
 @Injectable()
 export class ImageManager {
-	private strategy = new SharpStrategy();
+	private readonly pathStrategy = new SharpStrategy();
 
 	private async createMainDirectory(path: string) {
 		const result = await mkdir(path, { recursive: true });
@@ -16,33 +20,37 @@ export class ImageManager {
 	}
 
 	/** Main path의 형태는 무조건 `${path}/image`일것 */
-	private checkValidMainPath(path: string) {
-		if (path.split('/').at(-1) !== 'image') {
+	private normalizeMainPath(path: string) {
+		const safePath = normalizeSafeRelativePath(path, 'main image path');
+		if (safePath.split('/').at(-1) !== 'image') {
 			throw new BadRequestException('Main image path의 형식이 잘못되었습니다.');
 		}
-	}
 
-	setStrategy(strategy: SharpStrategy) {
-		this.strategy = strategy;
+		return safePath;
 	}
 
 	/** Temp 폴더에 있는 이미지를 압축하고 Main폴더에 저장 */
-	async saveImageFromTemp<T extends SharpStrategy>(info: {
-		mainName: string;
-		tempName: string;
-		savePath: string;
-	}): Promise<Awaited<ReturnType<T['compressAndSave']>>> {
+	async saveImageFromTemp<T extends SharpStrategy>(
+		strategy: T,
+		info: {
+			mainName: string;
+			tempName: string;
+			savePath: string;
+		},
+	): Promise<Awaited<ReturnType<T['compressAndSave']>>> {
 		const { mainName, savePath, tempName } = info;
-		this.checkValidMainPath(savePath);
+		const safeSavePath = this.normalizeMainPath(savePath);
+		const safeMainName = normalizeSafeFileName(mainName, 'main name');
+		const safeTempName = normalizeSafeFileName(tempName, 'temp name');
 
 		/** Save하기 전에 미리 Directory 생성 */
-		const path = this.strategy.getMainDirectory(savePath);
+		const path = strategy.getMainDirectory(safeSavePath);
 		await this.createMainDirectory(path);
 
 		/** 압축 및 저장 */
-		const result = (await this.strategy.compressAndSave({
-			from: this.strategy.getTempDirectory(tempName),
-			to: this.strategy.getMainDirectory(`${savePath}/${mainName}`),
+		const result = (await strategy.compressAndSave({
+			from: strategy.getTempDirectory(safeTempName),
+			to: strategy.getMainDirectory(`${safeSavePath}/${safeMainName}`),
 		})) as Awaited<ReturnType<T['compressAndSave']>>;
 
 		return result;
@@ -50,30 +58,35 @@ export class ImageManager {
 
 	/** Main 폴더에 있는 이미지 제거 */
 	async deleteMainImage({ path, name }: { path: string; name: string }) {
-		this.checkValidMainPath(path);
-		await rm(this.strategy.getMainDirectory(`${path}/${name}`), {
+		const safePath = this.normalizeMainPath(path);
+		const safeName = normalizeSafeFileName(name);
+
+		await rm(this.pathStrategy.getMainDirectory(`${safePath}/${safeName}`), {
 			force: true,
 		});
 	}
 
 	/** Temp 폴더에 있는 이미지 제거 */
 	async deleteTempImage(name: string) {
-		await rm(this.strategy.getTempDirectory(name), {
+		const safeName = normalizeSafeFileName(name);
+
+		await rm(this.pathStrategy.getTempDirectory(safeName), {
 			force: true,
 		});
 	}
 
 	/** Buffer 형태의 이미지 데이터 가져오기 */
 	async getBufferImage({ path, name }: { path: string; name: string }) {
-		this.checkValidMainPath(path);
+		const safePath = this.normalizeMainPath(path);
+		const safeName = normalizeSafeFileName(name);
+
 		try {
 			const image = await readFile(
-				this.strategy.getMainDirectory(`${path}/${name}`),
+				this.pathStrategy.getMainDirectory(`${safePath}/${safeName}`),
 			);
-			const type = name.split('.').at(-1);
 
-			return { image, type };
-		} catch (error) {
+			return { image, name: safeName };
+		} catch {
 			throw new NotFoundException(
 				'파일이 존재하지 않거나 불러올 수 없는 상태입니다.',
 			);

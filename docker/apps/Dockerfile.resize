@@ -22,13 +22,12 @@ RUN yarn set version 4.5.0
 RUN yarn workspaces focus @file/resize --production
 
 FROM keymetrics/pm2:18-alpine
-# 나중에 ENV 지울 것(테스트용임)
-ENV ORIGIN_LIST_STR http://localhost:3044
-ENV KAFKA_CLIENT_BROKERS host.docker.internal:9094
 WORKDIR /usr/index
 ENV TZ=Asia/Seoul
 ENV NODE_ENV=production
+ENV HOST=0.0.0.0
 COPY --from=dev-remover /usr/index ./
-RUN chmod -R 777 /usr/index
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /usr/index
+USER app
 
 CMD ["pm2-runtime", "start", "/usr/index/apps/resize/ecosystem.config.js", "--env", "production"]

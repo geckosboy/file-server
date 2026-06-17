@@ -12,13 +12,16 @@ import {
 	Query,
 	Res,
 	UploadedFile,
+	UseGuards,
 	UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { File } from '@file/global';
 import { Response } from 'express';
+import { lookup } from 'mime-types';
 import { ImageService } from './image.service';
-import diskStorage from './storages/diskStorage';
+import imageMulterOptions from './storages/diskStorage';
+import { InternalApiKeyGuard } from './internal-api-key.guard';
 import { DeleteImageDto, GetImageDto, UploadImageDto } from 'src/dto/image.dto';
 
 @Controller('image')
@@ -27,14 +30,17 @@ export class ImageController {
 
 	@Get(':path/:name')
 	async getFile(@Param() imageDto: GetImageDto, @Res() res: Response) {
-		const { image, type } = await this.imageService.getImage(imageDto);
-		res.set({ 'Content-Type': `image/${type}` });
+		const { image, name } = await this.imageService.getImage(imageDto);
+		res.set({
+			'Content-Type': lookup(name) || 'application/octet-stream',
+		});
 
 		res.send(image);
 	}
 
 	@Post()
-	@UseInterceptors(FileInterceptor('file', { storage: diskStorage }))
+	@UseGuards(InternalApiKeyGuard)
+	@UseInterceptors(FileInterceptor('file', imageMulterOptions))
 	async uploadFile(
 		@Res()
 		res: Response,
@@ -57,6 +63,7 @@ export class ImageController {
 	}
 
 	@Delete()
+	@UseGuards(InternalApiKeyGuard)
 	async deleteFile(
 		@Res()
 		res: Response,

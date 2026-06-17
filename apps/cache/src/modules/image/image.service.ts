@@ -31,21 +31,28 @@ export class ImageService {
 		return `${path}_${width ?? 'x'}/${height ?? 'x'}${name}`;
 	}
 
-	/** 리사이징 서버에 이미지 요청 */
-	private async getImageFromMain({ name, path, ...size }: ImageEntity) {
+	private getImageUrl({ name, path, ...size }: ImageEntity) {
 		const queryStr = this.objectToQueryString(size);
+		const encodedPath = encodeURIComponent(path);
+		const encodedName = encodeURIComponent(name);
+		return `${envConfig.RESIZING_SERVER}/image/${encodedPath}/${encodedName}?${queryStr}`;
+	}
 
-		const response = await fetch(
-			`${envConfig.RESIZING_SERVER}/image/${path}/${name}?${queryStr}`,
-		);
+	/** 리사이징 서버에 이미지 요청 */
+	private async getImageFromMain(image: ImageEntity) {
+		const response = await fetch(this.getImageUrl(image));
 		if (!response.ok) {
 			throw new NotFoundException('존재하지 않는 이미지 파일입니다.');
 		}
 
 		const imageArrayBuffer = await response.arrayBuffer();
 		const imageBuffer = Buffer.from(imageArrayBuffer);
+		const contentType =
+			response.headers.get('content-type') ||
+			lookup(image.name) ||
+			'application/octet-stream';
 
-		return { imageBuffer, contentType: response.headers.get('content-type') };
+		return { imageBuffer, contentType };
 	}
 
 	async getCacheImage(params: ImageEntity) {
@@ -53,20 +60,16 @@ export class ImageService {
 
 		const cachedImage = this.cacheService.getCachedImage(cacheKey);
 		/** Caching된 이미지 있으면 그대로 반환 */
-		if (cachedImage && lookup(cacheKey)) {
+		if (cachedImage) {
 			this.logger.log(`cache hit: ${JSON.stringify(params)}`);
-
-			return {
-				imageBuffer: cachedImage,
-				contentType: lookup(cacheKey) as string,
-			};
+			return cachedImage;
 		}
 
 		/** 없다면 리사이징 서버로부터 데이터 가져옴 */
 		try {
 			const { imageBuffer, contentType } = await this.getImageFromMain(params);
 			/** 리사이징 결과물 캐싱 */
-			this.cacheService.cacheImage(cacheKey, imageBuffer);
+			this.cacheService.cacheImage(cacheKey, { imageBuffer, contentType });
 
 			this.logger.log(`cache not hit: ${JSON.stringify(params)}`);
 			return {

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import * as path from 'path';
 import { Root } from 'src/enum';
+import { normalizeSafeRelativePath, resolveInside } from '../path.utils';
 
 @Injectable()
 export abstract class AbstractStrategy<T> {
@@ -12,12 +13,20 @@ export abstract class AbstractStrategy<T> {
 	abstract getFileName(file: unknown): string | false;
 
 	getMainDirectory(additionalPath?: string) {
-		const convertedPath = additionalPath ? `/${additionalPath}` : '';
-		return path.resolve(Root, `${this.mainDir}${convertedPath}`);
+		const root = path.resolve(Root, this.mainDir);
+		const safePath = additionalPath
+			? normalizeSafeRelativePath(additionalPath, 'main path')
+			: undefined;
+
+		return resolveInside(root, safePath);
 	}
 
 	getTempDirectory(additionalPath?: string) {
-		const convertedPath = additionalPath ? `/${additionalPath}` : '';
-		return path.resolve(Root, `${this.tempDir}${convertedPath}`);
+		const root = path.resolve(Root, this.tempDir);
+		const safePath = additionalPath
+			? normalizeSafeRelativePath(additionalPath, 'temp path')
+			: undefined;
+
+		return resolveInside(root, safePath);
 	}
 }

@@ -18,10 +18,10 @@ $ docker-compose -f ./docker/docker-compose.dev.yml up -d
 
 ```bash
 # Main server
-$ yarn storage {command}
+$ yarn file:storage {command}
 
 # Resizing server
-$ yarn resize {command}
+$ yarn file:resize {command}
 
 # Cache server
 $ yarn file:cache {command}
@@ -29,6 +29,12 @@ $ yarn file:cache {command}
 # Docker Dev Server
 $ docker compose -f docker/apps/docker-compose.dev.yml up -d
 ```
+
+## Local/Internal Access
+
+By default, each Nest app binds to `127.0.0.1` when `HOST` is not set.
+Use `HOST=0.0.0.0` only for Docker/internal network scenarios where your own backend service must reach the container.
+Keep upload/delete endpoints behind that backend or an internal network boundary. Set `INTERNAL_API_KEY` on storage and send `x-internal-api-key` from your backend when you want an extra local-only write guard.
 
 ## Features
 

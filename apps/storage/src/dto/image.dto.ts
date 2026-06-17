@@ -1,24 +1,35 @@
 import { PickType } from '@nestjs/mapped-types';
 import { Type } from 'class-transformer';
-import { IsNotEmpty, IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+	IsInt,
+	IsNotEmpty,
+	IsNumber,
+	IsOptional,
+	IsString,
+	MaxLength,
+} from 'class-validator';
 
 export class ImageDto {
 	@IsString()
 	@IsNotEmpty()
-	name: string;
+	@MaxLength(128)
+	name!: string;
 
 	@IsString()
 	@IsNotEmpty()
-	path: string;
+	@MaxLength(256)
+	path!: string;
 
 	@Type(() => Number)
 	@IsNumber()
+	@IsInt()
 	@IsNotEmpty()
-	id: number;
+	id!: number;
 
 	@IsString()
 	@IsNotEmpty()
-	beforeName: string;
+	@MaxLength(128)
+	beforeName!: string;
 }
 
 export class GetImageDto extends PickType(ImageDto, ['path', 'name']) {}
@@ -27,6 +38,7 @@ export class UploadImageDto extends PickType(ImageDto, ['id', 'path']) {
 	@IsOptional()
 	@IsString()
 	@IsNotEmpty()
+	@MaxLength(128)
 	beforeName?: string;
 }
 

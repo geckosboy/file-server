@@ -22,29 +22,38 @@ export class ImageService {
 		private readonly imageClient: ClientKafka,
 	) {}
 
+	private getImageUrl({ path, name }: { path: string; name: string }) {
+		const encodedPath = encodeURIComponent(path);
+		const encodedName = encodeURIComponent(name);
+		return `${envConfig.STORAGE_SERVER}/image/${encodedPath}/${encodedName}`;
+	}
+
 	/** 메인 서버로부터 이미지 데이터 가져오기. Buffer형태로 리턴 */
 	async getImageFromMain({ path, name }: { path: string; name: string }) {
+		let result: Response;
 		try {
-			const result = await fetch(
-				`${envConfig.STORAGE_SERVER}/image/${path}/${name}`,
-				{
-					method: 'get',
-				},
-			);
-			if (!result.ok) {
-				throw new NotFoundException('존재하지 않는 파일입니다.');
-			}
-
-			const image = await result.arrayBuffer();
-			/** 데이터가 없을 시 클라이언트에서 잘못 요청하거나 DB에 주소나 이름 값이 잘못된거임 */
-			if (!image) {
-				throw new NotFoundException('존재하지 않는 파일입니다.');
-			}
-
-			return Buffer.from(image);
+			result = await fetch(this.getImageUrl({ path, name }), {
+				method: 'get',
+			});
 		} catch (error) {
-			throw new InternalServerErrorException('존재하지 않는 파일입니다.');
+			this.logger.error(error);
+			throw new InternalServerErrorException('파일 서버에 연결할 수 없습니다.');
 		}
+
+		if (!result.ok) {
+			if (result.status === 404) {
+				throw new NotFoundException('존재하지 않는 파일입니다.');
+			}
+			throw new InternalServerErrorException('파일을 불러올 수 없습니다.');
+		}
+
+		const image = await result.arrayBuffer();
+		/** 데이터가 없을 시 클라이언트에서 잘못 요청하거나 DB에 주소나 이름 값이 잘못된거임 */
+		if (!image.byteLength) {
+			throw new NotFoundException('존재하지 않는 파일입니다.');
+		}
+
+		return Buffer.from(image);
 	}
 
 	/** Width, Height으로 리사이징 */
@@ -57,8 +66,7 @@ export class ImageService {
 		try {
 			const startTime = performance.now();
 
-			this.imageManager.setSize(size);
-			const result = await this.imageManager.resize(image);
+			const result = await this.imageManager.resize(image, size);
 
 			const exeTime = performance.now() - startTime;
 
