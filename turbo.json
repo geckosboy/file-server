@@ -1,0 +1,32 @@
+{
+	"$schema": "https://turborepo.dev/schema.json",
+	"ui": "stream",
+	"tasks": {
+		"build": {
+			"dependsOn": [
+				"^build"
+			],
+			"outputs": [
+				"dist/**",
+				"tsconfig.build.tsbuildinfo"
+			]
+		},
+		"lint": {
+			"outputs": []
+		},
+		"lint:fix": {
+			"cache": false,
+			"outputs": []
+		},
+		"test": {
+			"outputs": []
+		},
+		"test:e2e": {
+			"outputs": []
+		},
+		"format": {
+			"cache": false,
+			"outputs": []
+		}
+	}
+}

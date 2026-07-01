@@ -15,11 +15,11 @@
 		"file:resize": "pnpm --filter @file/resize",
 		"file:cache": "pnpm --filter @file/cache",
 		"file:global": "pnpm --filter @file/global",
-		"all:build": "pnpm -r --parallel run build",
-		"all:lint": "eslint \"{apps,libs}/**/*.ts\"",
-		"all:lint:fix": "eslint \"{apps,libs}/**/*.ts\" --fix",
-		"all:test": "pnpm --filter @file/storage test && pnpm --filter @file/resize test && pnpm --filter @file/cache test && pnpm --filter @file/global test",
-		"all:test:e2e": "pnpm --filter @file/storage test:e2e && pnpm --filter @file/resize test:e2e && pnpm --filter @file/cache test:e2e"
+		"all:build": "turbo run build",
+		"all:lint": "turbo run lint",
+		"all:lint:fix": "turbo run lint:fix",
+		"all:test": "turbo run test",
+		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
@@ -48,6 +48,7 @@
 		"ts-loader": "^9.5.1",
 		"ts-node": "^10.9.2",
 		"tsconfig-paths": "^4.2.0",
+		"turbo": "^2.10.2",
 		"typescript": "^5.7.3",
 		"typescript-eslint": "^8.61.1",
 		"webpack": "^5.104.0"
