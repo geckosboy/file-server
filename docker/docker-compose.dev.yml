@@ -1,49 +1,63 @@
-name: 'kafka'
+name: ${KAFKA_COMPOSE_PROJECT_NAME:-kafka}
 
-version: '2'
 services:
-  zookeeper:
-    image: docker.io/bitnami/zookeeper:3.9
-    volumes:
-      - 'zookeeper_data:/bitnami'
-    ports:
-      - 2181:2181
-    environment:
-      - ALLOW_ANONYMOUS_LOGIN=yes
-
   kafka:
-    image: docker.io/bitnami/kafka:3.4
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    hostname: kafka
+    restart: unless-stopped
     ports:
-      - '9092:9092'
-      - '9094:9094'
+      # Docker 네트워크 내부 클라이언트용 리스너입니다. 실서버에서 외부 노출이 필요 없으면 방화벽으로 막으세요.
+      - '${KAFKA_INTERNAL_HOST_PORT:-9092}:9092'
+      # 호스트/외부 백엔드가 붙는 리스너입니다. 실서버에서는 KAFKA_EXTERNAL_ADVERTISED_HOST를 DNS/IP로 바꾸세요.
+      - '${KAFKA_EXTERNAL_HOST_PORT:-9094}:9094'
     volumes:
-      - 'kafka_data:/bitnami'
+      - kafka_data:/tmp/kraft-combined-logs
     environment:
-      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
-      - ALLOW_PLAINTEXT_LISTENER=yes
-      - KAFKA_ENABLE_KRAFT=no
-      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
-      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
-      # 만약 Backend가 Docker가 아닌 Local 환경에서 실행되는 경우
-      # - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
-      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://host.docker.internal:9094
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
-    depends_on:
-      - zookeeper
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-QGC1ZwwXR1CPFacYpEvEZg}
+      KAFKA_NODE_ID: ${KAFKA_NODE_ID:-1}
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://${KAFKA_EXTERNAL_ADVERTISED_HOST:-localhost}:${KAFKA_EXTERNAL_ADVERTISED_PORT:-9094}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: ${KAFKA_CONTROLLER_QUORUM_VOTERS:-1@kafka:9093}
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-true}
+      KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-3}
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: ${KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS:-0}
+      # 단일 브로커 KRaft 기본값입니다. 다중 브로커로 바꾸면 이 값들도 replication factor에 맞춰 올려야 합니다.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR:-1}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR:-1}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: ${KAFKA_TRANSACTION_STATE_LOG_MIN_ISR:-1}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR:-1}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR:-1}
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xms512m -Xmx512m}
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   kafka-ui:
-    image: provectuslabs/kafka-ui:latest
+    image: provectuslabs/kafka-ui:${KAFKA_UI_VERSION:-latest}
+    restart: unless-stopped
+    profiles:
+      - ui
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     ports:
-      - 8080:8080
+      - '${KAFKA_UI_HOST_PORT:-8080}:8080'
     environment:
-      - DYNAMIC_CONFIG_ENABLED=true
-      - KAFKA_CLUSTERS_0_NAME=dragonsu_kafka
-      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      KAFKA_CLUSTERS_0_NAME: ${KAFKA_UI_CLUSTER_NAME:-file_server_kafka}
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
 
 volumes:
-  zookeeper_data:
-    driver: local
   kafka_data:
-    driver: local
