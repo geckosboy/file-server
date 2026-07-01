@@ -1,0 +1,49 @@
+{
+	"name": "@file/admin-web",
+	"version": "0.0.1",
+	"private": true,
+	"description": "파일 서버 관리자 대시보드 MVP",
+	"author": "",
+	"license": "MIT",
+	"scripts": {
+		"build": "next build",
+		"dev": "next dev",
+		"start": "next start",
+		"typecheck": "pnpm exec tsc --noEmit -p tsconfig.json",
+		"lint": "pnpm exec eslint \"src/**/*.{ts,tsx}\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.{ts,tsx}\" --fix",
+		"test": "pnpm exec jest --passWithNoTests"
+	},
+	"dependencies": {
+		"next": "^16.2.9",
+		"react": "^19.2.7",
+		"react-dom": "^19.2.7"
+	},
+	"devDependencies": {
+		"@file/tsconfig": "workspace:*",
+		"@types/react": "^19.2.17",
+		"@types/react-dom": "^19.2.3"
+	},
+	"jest": {
+		"moduleFileExtensions": [
+			"js",
+			"json",
+			"ts",
+			"tsx"
+		],
+		"rootDir": "src",
+		"testRegex": ".*\\.spec\\.tsx?$",
+		"transform": {
+			"^.+\\.(t|j)sx?$": [
+				"ts-jest",
+				{
+					"tsconfig": "tsconfig.spec.json"
+				}
+			]
+		},
+		"testEnvironment": "node",
+		"moduleNameMapper": {
+			"^@/(.*)$": "<rootDir>/$1"
+		}
+	}
+}
