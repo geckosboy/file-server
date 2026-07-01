@@ -1,8 +1,21 @@
 name: ${KAFKA_COMPOSE_PROJECT_NAME:-kafka}
 
 services:
+  kafka-volume-permissions:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    container_name: ${KAFKA_VOLUME_PERMISSIONS_CONTAINER_NAME:-kafka-volume-permissions}
+    user: '0:0'
+    entrypoint:
+      - /bin/sh
+      - -c
+      - chown -R ${KAFKA_CONTAINER_UID:-1000}:${KAFKA_CONTAINER_GID:-1000} /tmp/kraft-combined-logs
+    volumes:
+      - kafka_data:/tmp/kraft-combined-logs
+    restart: 'no'
+
   kafka:
     image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    container_name: ${KAFKA_CONTAINER_NAME:-kafka}
     hostname: kafka
     restart: unless-stopped
     ports:
@@ -12,6 +25,9 @@ services:
       - '${KAFKA_EXTERNAL_HOST_PORT:-9094}:9094'
     volumes:
       - kafka_data:/tmp/kraft-combined-logs
+    depends_on:
+      kafka-volume-permissions:
+        condition: service_completed_successfully
     environment:
       CLUSTER_ID: ${KAFKA_CLUSTER_ID:-QGC1ZwwXR1CPFacYpEvEZg}
       KAFKA_NODE_ID: ${KAFKA_NODE_ID:-1}
@@ -46,6 +62,7 @@ services:
 
   kafka-ui:
     image: provectuslabs/kafka-ui:${KAFKA_UI_VERSION:-latest}
+    container_name: ${KAFKA_UI_CONTAINER_NAME:-kafka-ui}
     restart: unless-stopped
     profiles:
       - ui

@@ -48,9 +48,38 @@ x-kafka-broker-healthcheck: &kafka-broker-healthcheck
   start_period: 60s
 
 services:
+  kafka-volume-permissions:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    container_name: ${KAFKA_VOLUME_PERMISSIONS_CONTAINER_NAME:-kafka-volume-permissions}
+    user: '0:0'
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >
+        chown -R ${KAFKA_CONTAINER_UID:-1000}:${KAFKA_CONTAINER_GID:-1000}
+        /volumes/controller-1
+        /volumes/controller-2
+        /volumes/controller-3
+        /volumes/broker-1
+        /volumes/broker-2
+        /volumes/broker-3
+    volumes:
+      - kafka_controller_1_data:/volumes/controller-1
+      - kafka_controller_2_data:/volumes/controller-2
+      - kafka_controller_3_data:/volumes/controller-3
+      - kafka_broker_1_data:/volumes/broker-1
+      - kafka_broker_2_data:/volumes/broker-2
+      - kafka_broker_3_data:/volumes/broker-3
+    networks:
+      - kafka_internal
+    restart: 'no'
+
   kafka-controller-1:
     <<: *kafka-base
     hostname: kafka-controller-1
+    depends_on:
+      kafka-volume-permissions:
+        condition: service_completed_successfully
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 1
@@ -64,6 +93,9 @@ services:
   kafka-controller-2:
     <<: *kafka-base
     hostname: kafka-controller-2
+    depends_on:
+      kafka-volume-permissions:
+        condition: service_completed_successfully
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 2
@@ -77,6 +109,9 @@ services:
   kafka-controller-3:
     <<: *kafka-base
     hostname: kafka-controller-3
+    depends_on:
+      kafka-volume-permissions:
+        condition: service_completed_successfully
     environment:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 3

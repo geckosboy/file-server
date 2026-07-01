@@ -32,6 +32,7 @@ $ docker compose --env-file docker/kafka.env -f ./docker/docker-compose.dev.yml 
 - 실서버에서는 `docker/kafka.env.example`을 복사한 뒤 `KAFKA_EXTERNAL_ADVERTISED_HOST`를 실제 DNS/IP로 바꾸고, 앱 env에는 `KAFKA_CLIENT_BROKERS=실서버_DNS_또는_IP:9094`를 넣으세요.
 - `KAFKA_CLUSTER_ID`는 Kafka volume과 묶이는 값이라, 운영 시작 후에는 바꾸지 마세요.
 - 현재 compose는 단일 브로커 기준입니다. 3브로커 이상으로 확장할 때는 replication factor와 min ISR 값을 같이 올려야 합니다.
+- 이미 `kafka`/`kafka-ui` 이름이나 `9092`/`9094` 포트를 쓰는 컨테이너가 있으면 `KAFKA_CONTAINER_NAME`, `KAFKA_UI_CONTAINER_NAME`, `KAFKA_INTERNAL_HOST_PORT`, `KAFKA_EXTERNAL_HOST_PORT`, `KAFKA_EXTERNAL_ADVERTISED_PORT`를 같이 바꿔서 띄우세요.
 
 ### Production Kafka Compose
 
