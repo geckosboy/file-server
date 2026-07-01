@@ -9,7 +9,7 @@ import { extension } from 'mime-types';
 import { performance } from 'perf_hooks';
 import { lastValueFrom } from 'rxjs';
 
-import { GetImageDto, UploadImageDto } from 'src/dto/image.dto';
+import { GetImageDto, UploadImageDto } from '@file/image-contracts';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';

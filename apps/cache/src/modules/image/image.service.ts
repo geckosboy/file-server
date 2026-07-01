@@ -2,7 +2,7 @@ import { NotFoundException, Injectable, Logger } from '@nestjs/common';
 import { lookup } from 'mime-types';
 import { URLSearchParams } from 'url';
 
-import { ImageEntity } from 'src/entity/image.entity';
+import { ImageEntity } from '@file/image-contracts';
 import { CacheService } from '../node-cache/cache.service';
 import { envConfig } from 'src/config';
 

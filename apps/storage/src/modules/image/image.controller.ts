@@ -21,7 +21,11 @@ import { lookup } from 'mime-types';
 import { ImageService } from './image.service';
 import imageMulterOptions from './storages/diskStorage';
 import { InternalApiKeyGuard } from './internal-api-key.guard';
-import { DeleteImageDto, GetImageDto, UploadImageDto } from 'src/dto/image.dto';
+import {
+	DeleteImageDto,
+	GetImageDto,
+	UploadImageDto,
+} from '@file/image-contracts';
 
 @Controller('image')
 export class ImageController {

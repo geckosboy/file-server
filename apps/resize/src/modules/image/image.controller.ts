@@ -2,7 +2,7 @@ import { Controller, Get, Param, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { lookup } from 'mime-types';
 import { ImageService } from './image.service';
-import { ImageParamDto, ImageQueryDto } from 'src/dto/image.dto';
+import { ImageParamDto, ImageQueryDto } from '@file/image-contracts';
 
 @Controller('image')
 export class ImageController {

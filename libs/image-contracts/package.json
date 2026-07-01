@@ -1,5 +1,5 @@
 {
-	"name": "@file/global",
+	"name": "@file/image-contracts",
 	"version": "0.0.1",
 	"main": "dist/index",
 	"types": "dist/index",
@@ -10,15 +10,16 @@
 	"scripts": {
 		"build": "pnpm exec tsc -p tsconfig.build.json",
 		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-		"lint": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint": "pnpm exec eslint \"src/**/*.ts\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" --fix",
 		"test": "pnpm exec jest --passWithNoTests",
-		"test:watch": "jest --watch",
-		"test:cov": "jest --coverage",
-		"test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-		"test:e2e": "pnpm exec jest --config ./test/jest-e2e.json --passWithNoTests",
-		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix"
+		"test:e2e": "pnpm exec jest --config ./test/jest-e2e.json --passWithNoTests"
 	},
-	"dependencies": {},
+	"dependencies": {
+		"@nestjs/mapped-types": "^2.1.1",
+		"class-transformer": "^0.5.1",
+		"class-validator": "^0.14.1"
+	},
 	"devDependencies": {
 		"@file/tsconfig": "workspace:*"
 	},

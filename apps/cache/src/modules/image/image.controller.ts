@@ -1,6 +1,6 @@
 import { Controller, Get, Param, Query, Res } from '@nestjs/common';
 import { Response } from 'express';
-import { ImageParamDto, ImageQueryDto } from 'src/dto/image.dto';
+import { ImageParamDto, ImageQueryDto } from '@file/image-contracts';
 import { ImageService } from './image.service';
 
 @Controller('image')

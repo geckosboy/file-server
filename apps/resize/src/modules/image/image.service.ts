@@ -8,7 +8,7 @@ import {
 import { ClientKafka } from '@nestjs/microservices';
 import { performance } from 'perf_hooks';
 
-import { ImageEntity } from 'src/entity/image.entity';
+import { ImageEntity } from '@file/image-contracts';
 import { ImageManager } from './manager';
 import { envConfig } from 'src/config';
 

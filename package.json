@@ -19,7 +19,10 @@
 		"all:lint": "turbo run lint",
 		"all:lint:fix": "turbo run lint:fix",
 		"all:test": "turbo run test",
-		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache"
+		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache",
+		"file:tsconfig": "pnpm --filter @file/tsconfig",
+		"file:nest-common": "pnpm --filter @file/nest-common",
+		"file:image-contracts": "pnpm --filter @file/image-contracts"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
