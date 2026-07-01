@@ -1,7 +1,6 @@
 {
 	"name": "@file/global",
 	"version": "0.0.1",
-	"packageManager": "yarn@4.5.0",
 	"main": "dist/index",
 	"types": "dist/index",
 	"private": true,
@@ -11,13 +10,13 @@
 	"scripts": {
 		"build": "nest build",
 		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-		"lint": "yarn exec eslint \"src/**/*.ts\" \"test/**/*.ts\"",
-		"test": "yarn exec jest --passWithNoTests",
+		"lint": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+		"test": "pnpm exec jest --passWithNoTests",
 		"test:watch": "jest --watch",
 		"test:cov": "jest --coverage",
 		"test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-		"test:e2e": "yarn exec jest --config ./test/jest-e2e.json --passWithNoTests",
-		"lint:fix": "yarn exec eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix"
+		"test:e2e": "pnpm exec jest --config ./test/jest-e2e.json --passWithNoTests",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix"
 	},
 	"dependencies": {
 		"@nestjs/common": "^11.1.27",

@@ -2,15 +2,11 @@ FROM file_server_dev-base_modules AS base
 
 FROM node:20-alpine AS ts-compiler
 WORKDIR /usr/index
-COPY ../../.yarn ./.yarn
-COPY ../../yarn.lock ../../package*.json ../../tsconfig.json ../../.yarnrc.yml ./
+COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ./
 COPY ../../apps ./apps
 COPY ../../libs ./libs
 COPY --from=base /usr/index/node_modules ./node_modules
-RUN yarn set version 4.5.0
-RUN yarn workspaces focus @file/resize
-# RUN yarn install --immutable
-RUN yarn file:resize build
+RUN corepack enable && pnpm --filter @file/resize build
 
 FROM keymetrics/pm2:18-alpine
 WORKDIR /usr/index

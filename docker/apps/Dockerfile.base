@@ -1,9 +1,6 @@
 FROM node:20-alpine
 WORKDIR /usr/index
-COPY ../../.yarn ./.yarn
-COPY ../../yarn.lock ../../package*.json ../../tsconfig.json ../../.yarnrc.yml ./
+COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ./
 COPY ../../apps ./apps
 COPY ../../libs ./libs
-RUN yarn set version 4.5.0
-# RUN yarn workspaces focus @file/storage
-RUN yarn install --immutable
+RUN corepack enable && pnpm install --frozen-lockfile

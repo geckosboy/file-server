@@ -4,22 +4,22 @@
 	"description": "",
 	"author": "",
 	"private": true,
-	"packageManager": "yarn@4.5.0",
+	"packageManager": "pnpm@10.15.0",
 	"license": "MIT",
 	"workspaces": [
 		"libs/*",
 		"apps/*"
 	],
 	"scripts": {
-		"file:storage": "yarn workspace @file/storage",
-		"file:resize": "yarn workspace @file/resize",
-		"file:cache": "yarn workspace @file/cache",
-		"file:global": "yarn workspace @file/global",
-		"all:build": "yarn workspaces foreach -A -p run build",
+		"file:storage": "pnpm --filter @file/storage",
+		"file:resize": "pnpm --filter @file/resize",
+		"file:cache": "pnpm --filter @file/cache",
+		"file:global": "pnpm --filter @file/global",
+		"all:build": "pnpm -r --parallel run build",
 		"all:lint": "eslint \"{apps,libs}/**/*.ts\"",
 		"all:lint:fix": "eslint \"{apps,libs}/**/*.ts\" --fix",
-		"all:test": "yarn file:storage test && yarn file:resize test && yarn file:cache test && yarn file:global test",
-		"all:test:e2e": "yarn file:storage test:e2e && yarn file:resize test:e2e && yarn file:cache test:e2e"
+		"all:test": "pnpm --filter @file/storage test && pnpm --filter @file/resize test && pnpm --filter @file/cache test && pnpm --filter @file/global test",
+		"all:test:e2e": "pnpm --filter @file/storage test:e2e && pnpm --filter @file/resize test:e2e && pnpm --filter @file/cache test:e2e"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
@@ -51,5 +51,10 @@
 		"typescript": "^5.7.3",
 		"typescript-eslint": "^8.61.1",
 		"webpack": "^5.104.0"
+	},
+	"pnpm": {
+		"onlyBuiltDependencies": [
+			"sharp"
+		]
 	}
 }

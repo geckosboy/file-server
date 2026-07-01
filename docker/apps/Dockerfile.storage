@@ -1,33 +1,22 @@
 FROM node:20-alpine AS ts-compiler
 WORKDIR /usr/index
-COPY ../../.yarn ./.yarn
-COPY ../../yarn.lock ../../package*.json ../../tsconfig.json ../../.yarnrc.yml ./
+COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ./
 COPY ../../apps ./apps
 COPY ../../libs ./libs
-RUN yarn set version 4.5.0
-# RUN yarn workspaces focus @file/storage
-RUN yarn install --immutable
-RUN yarn file:storage build
+RUN corepack enable && pnpm install --frozen-lockfile
+RUN pnpm --filter @file/storage build
 
-# Remove other app module
-# Reinstall production module
-FROM node:20-alpine AS dev-remover
+FROM node:20-alpine AS prod-deps
 WORKDIR /usr/index
-COPY --from=ts-compiler /usr/index/.yarn ./.yarn
-COPY --from=ts-compiler /usr/index/package*.json /usr/index/yarn.lock  /usr/index/.yarnrc.yml ./
-COPY --from=ts-compiler /usr/index/apps/storage/ecosystem.config.js /usr/index/apps/storage/
-COPY --from=ts-compiler /usr/index/apps/storage/dist ./apps/storage/dist
-COPY --from=ts-compiler /usr/index/apps/storage/package.json ./apps/storage/
-COPY --from=ts-compiler /usr/index/libs ./libs
-RUN yarn set version 4.5.0
-RUN yarn workspaces focus @file/storage --production
+COPY --from=ts-compiler /usr/index ./
+RUN corepack enable && pnpm prune --prod
 
 FROM keymetrics/pm2:18-alpine
 WORKDIR /usr/index
 ENV TZ=Asia/Seoul
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
-COPY --from=dev-remover /usr/index ./
+COPY --from=prod-deps /usr/index ./
 RUN addgroup -S app && adduser -S app -G app && chown -R app:app /usr/index
 USER app
 

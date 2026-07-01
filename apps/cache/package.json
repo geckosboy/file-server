@@ -12,13 +12,13 @@
 		"start:dev": "nest start --watch",
 		"start:debug": "nest start --debug --watch",
 		"start:prod": "node dist/apps/cache/src/main",
-		"lint": "yarn exec eslint \"src/**/*.ts\" \"test/**/*.ts\"",
-		"lint:fix": "yarn exec eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
-		"test": "yarn exec jest --passWithNoTests",
-		"test:e2e": "yarn exec jest --config ./test/jest-e2e.json --passWithNoTests"
+		"lint": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
+		"test": "pnpm exec jest --passWithNoTests",
+		"test:e2e": "pnpm exec jest --config ./test/jest-e2e.json --passWithNoTests"
 	},
 	"dependencies": {
-		"@file/global": "*",
+		"@file/global": "workspace:*",
 		"@nestjs/common": "^11.1.27",
 		"@nestjs/core": "^11.1.27",
 		"@nestjs/mapped-types": "^2.1.1",
@@ -33,7 +33,7 @@
 	},
 	"devDependencies": {
 		"@nestjs/cli": "^11.0.23",
-		"config": "*"
+		"config": "workspace:*"
 	},
 	"jest": {
 		"moduleFileExtensions": [

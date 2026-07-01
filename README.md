@@ -4,11 +4,11 @@ The structure of "Monolithic Repositors" is being used. It is a file service for
 
 ## Before Start
 
-.yarn: Use "yarn berry"(v4.5.0) to use monorepo
+pnpm: Use pnpm workspaces to manage the monorepo
 
 ```bash
 # install dependencies
-$ yarn install
+$ pnpm install
 
 # Kafka container start
 $ docker-compose -f ./docker/docker-compose.dev.yml up -d
@@ -18,13 +18,13 @@ $ docker-compose -f ./docker/docker-compose.dev.yml up -d
 
 ```bash
 # Main server
-$ yarn file:storage {command}
+$ pnpm file:storage {command}
 
 # Resizing server
-$ yarn file:resize {command}
+$ pnpm file:resize {command}
 
 # Cache server
-$ yarn file:cache {command}
+$ pnpm file:cache {command}
 
 # Docker Dev Server
 $ docker compose -f docker/apps/docker-compose.dev.yml up -d
