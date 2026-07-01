@@ -8,6 +8,8 @@
 			],
 			"outputs": [
 				"dist/**",
+				".next/**",
+				"!.next/cache/**",
 				"tsconfig.build.tsbuildinfo"
 			]
 		},

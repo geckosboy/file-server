@@ -19,10 +19,13 @@
 		"all:lint": "turbo run lint",
 		"all:lint:fix": "turbo run lint:fix",
 		"all:test": "turbo run test",
-		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache",
+		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache --filter=@file/telemetry-api",
 		"file:tsconfig": "pnpm --filter @file/tsconfig",
 		"file:nest-common": "pnpm --filter @file/nest-common",
-		"file:image-contracts": "pnpm --filter @file/image-contracts"
+		"file:image-contracts": "pnpm --filter @file/image-contracts",
+		"file:telemetry-contracts": "pnpm --filter @file/telemetry-contracts",
+		"file:telemetry-api": "pnpm --filter @file/telemetry-api",
+		"file:admin-web": "pnpm --filter @file/admin-web"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
