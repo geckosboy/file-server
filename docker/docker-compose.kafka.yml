@@ -1,0 +1,217 @@
+# 실서버 Kafka용 Compose입니다.
+# - Apache Kafka 4.x + KRaft isolated mode
+# - controller 3대 + broker 3대
+# - 단일 서버 Compose 기준입니다. 호스트 장애까지 버티려면 각 노드를 별도 서버/오케스트레이터로 분리하세요.
+
+name: ${KAFKA_COMPOSE_PROJECT_NAME:-file-server-kafka}
+
+x-kafka-base: &kafka-base
+  image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+  restart: unless-stopped
+  networks:
+    - kafka_internal
+  logging:
+    driver: json-file
+    options:
+      max-size: ${KAFKA_LOG_MAX_SIZE:-100m}
+      max-file: ${KAFKA_LOG_MAX_FILE:-5}
+
+x-kafka-common-env: &kafka-common-env
+  CLUSTER_ID: ${KAFKA_CLUSTER_ID:-EkxBIJ4cTwuhgpbYSWnBZg}
+  KAFKA_CONTROLLER_QUORUM_VOTERS: ${KAFKA_CONTROLLER_QUORUM_VOTERS:-1@kafka-controller-1:9093,2@kafka-controller-2:9093,3@kafka-controller-3:9093}
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: ${KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS:-0}
+  KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xms1g -Xmx1g}
+
+x-kafka-controller-healthcheck: &kafka-controller-healthcheck
+  test:
+    [
+      'CMD-SHELL',
+      '/opt/kafka/bin/kafka-metadata-quorum.sh --bootstrap-controller localhost:9093 describe --status >/dev/null 2>&1',
+    ]
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 40s
+
+x-kafka-broker-healthcheck: &kafka-broker-healthcheck
+  test:
+    [
+      'CMD-SHELL',
+      '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1',
+    ]
+  interval: 10s
+  timeout: 5s
+  retries: 12
+  start_period: 60s
+
+services:
+  kafka-controller-1:
+    <<: *kafka-base
+    hostname: kafka-controller-1
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: controller
+      KAFKA_LISTENERS: CONTROLLER://:9093
+      KAFKA_LOG_DIRS: /tmp/kraft-controller-logs
+    volumes:
+      - kafka_controller_1_data:/tmp/kraft-controller-logs
+    healthcheck: *kafka-controller-healthcheck
+
+  kafka-controller-2:
+    <<: *kafka-base
+    hostname: kafka-controller-2
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: controller
+      KAFKA_LISTENERS: CONTROLLER://:9093
+      KAFKA_LOG_DIRS: /tmp/kraft-controller-logs
+    volumes:
+      - kafka_controller_2_data:/tmp/kraft-controller-logs
+    healthcheck: *kafka-controller-healthcheck
+
+  kafka-controller-3:
+    <<: *kafka-base
+    hostname: kafka-controller-3
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: controller
+      KAFKA_LISTENERS: CONTROLLER://:9093
+      KAFKA_LOG_DIRS: /tmp/kraft-controller-logs
+    volumes:
+      - kafka_controller_3_data:/tmp/kraft-controller-logs
+    healthcheck: *kafka-controller-healthcheck
+
+  kafka-broker-1:
+    <<: *kafka-base
+    hostname: kafka-broker-1
+    depends_on:
+      kafka-controller-1:
+        condition: service_healthy
+      kafka-controller-2:
+        condition: service_healthy
+      kafka-controller-3:
+        condition: service_healthy
+    ports:
+      - '${KAFKA_BROKER_1_EXTERNAL_PORT:-19092}:9094'
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 101
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:9092,EXTERNAL://${KAFKA_BROKER_1_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_1_EXTERNAL_PORT:-19092}
+      KAFKA_LOG_DIRS: /tmp/kraft-broker-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
+      KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-6}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: ${KAFKA_DEFAULT_REPLICATION_FACTOR:-3}
+      KAFKA_MIN_INSYNC_REPLICAS: ${KAFKA_MIN_INSYNC_REPLICAS:-2}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR:-3}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR:-3}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: ${KAFKA_TRANSACTION_STATE_LOG_MIN_ISR:-2}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR:-3}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR:-2}
+    volumes:
+      - kafka_broker_1_data:/tmp/kraft-broker-logs
+    healthcheck: *kafka-broker-healthcheck
+
+  kafka-broker-2:
+    <<: *kafka-base
+    hostname: kafka-broker-2
+    depends_on:
+      kafka-controller-1:
+        condition: service_healthy
+      kafka-controller-2:
+        condition: service_healthy
+      kafka-controller-3:
+        condition: service_healthy
+    ports:
+      - '${KAFKA_BROKER_2_EXTERNAL_PORT:-19093}:9094'
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 102
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:9092,EXTERNAL://${KAFKA_BROKER_2_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_2_EXTERNAL_PORT:-19093}
+      KAFKA_LOG_DIRS: /tmp/kraft-broker-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
+      KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-6}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: ${KAFKA_DEFAULT_REPLICATION_FACTOR:-3}
+      KAFKA_MIN_INSYNC_REPLICAS: ${KAFKA_MIN_INSYNC_REPLICAS:-2}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR:-3}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR:-3}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: ${KAFKA_TRANSACTION_STATE_LOG_MIN_ISR:-2}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR:-3}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR:-2}
+    volumes:
+      - kafka_broker_2_data:/tmp/kraft-broker-logs
+    healthcheck: *kafka-broker-healthcheck
+
+  kafka-broker-3:
+    <<: *kafka-base
+    hostname: kafka-broker-3
+    depends_on:
+      kafka-controller-1:
+        condition: service_healthy
+      kafka-controller-2:
+        condition: service_healthy
+      kafka-controller-3:
+        condition: service_healthy
+    ports:
+      - '${KAFKA_BROKER_3_EXTERNAL_PORT:-19094}:9094'
+    environment:
+      <<: *kafka-common-env
+      KAFKA_NODE_ID: 103
+      KAFKA_PROCESS_ROLES: broker
+      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:9092,EXTERNAL://${KAFKA_BROKER_3_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_3_EXTERNAL_PORT:-19094}
+      KAFKA_LOG_DIRS: /tmp/kraft-broker-logs
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
+      KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-6}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: ${KAFKA_DEFAULT_REPLICATION_FACTOR:-3}
+      KAFKA_MIN_INSYNC_REPLICAS: ${KAFKA_MIN_INSYNC_REPLICAS:-2}
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR:-3}
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR:-3}
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: ${KAFKA_TRANSACTION_STATE_LOG_MIN_ISR:-2}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR:-3}
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR:-2}
+    volumes:
+      - kafka_broker_3_data:/tmp/kraft-broker-logs
+    healthcheck: *kafka-broker-healthcheck
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:${KAFKA_UI_VERSION:-latest}
+    restart: unless-stopped
+    profiles:
+      - ui
+    depends_on:
+      kafka-broker-1:
+        condition: service_healthy
+      kafka-broker-2:
+        condition: service_healthy
+      kafka-broker-3:
+        condition: service_healthy
+    ports:
+      - '${KAFKA_UI_HOST_PORT:-8080}:8080'
+    environment:
+      DYNAMIC_CONFIG_ENABLED: 'true'
+      KAFKA_CLUSTERS_0_NAME: ${KAFKA_UI_CLUSTER_NAME:-file_server_kafka_prod}
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+    networks:
+      - kafka_internal
+
+networks:
+  kafka_internal:
+    name: ${KAFKA_NETWORK_NAME:-file_server_kafka}
+
+volumes:
+  kafka_controller_1_data:
+  kafka_controller_2_data:
+  kafka_controller_3_data:
+  kafka_broker_1_data:
+  kafka_broker_2_data:
+  kafka_broker_3_data:

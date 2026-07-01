@@ -33,6 +33,44 @@ $ docker compose --env-file docker/kafka.env -f ./docker/docker-compose.dev.yml 
 - `KAFKA_CLUSTER_ID`는 Kafka volume과 묶이는 값이라, 운영 시작 후에는 바꾸지 마세요.
 - 현재 compose는 단일 브로커 기준입니다. 3브로커 이상으로 확장할 때는 replication factor와 min ISR 값을 같이 올려야 합니다.
 
+### Production Kafka Compose
+
+실서버 Kafka만 분리해서 띄울 때는 루트의 `docker/docker-compose.kafka.yml`을 사용합니다. 이 파일은 Kafka 4.x KRaft isolated mode 기준으로 broker 3대와 controller quorum 3대를 띄웁니다.
+
+```bash
+# Kafka만 실행
+$ docker compose -f docker/docker-compose.kafka.yml up -d
+
+# Kafka UI까지 같이 실행
+$ docker compose -f docker/docker-compose.kafka.yml --profile ui up -d
+```
+
+단일 서버에서 이 compose를 쓰면 앱 env는 보통 아래처럼 둡니다.
+
+```env
+# 앱도 같은 Docker 네트워크에 붙는 경우
+KAFKA_CLIENT_BROKERS=kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+
+# 앱이 호스트 프로세스나 외부 서버에서 붙는 경우
+KAFKA_CLIENT_BROKERS=실서버_DNS_또는_IP:19092,실서버_DNS_또는_IP:19093,실서버_DNS_또는_IP:19094
+```
+
+운영용 compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값이므로 topic을 먼저 만들어야 합니다.
+
+```bash
+$ docker compose -f docker/docker-compose.kafka.yml exec kafka-broker-1 \
+  /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-broker-1:9092 \
+  --create --if-not-exists --topic image-topic \
+  --partitions 6 --replication-factor 3 --config min.insync.replicas=2
+
+$ docker compose -f docker/docker-compose.kafka.yml exec kafka-broker-1 \
+  /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-broker-1:9092 \
+  --create --if-not-exists --topic file.image.events.v1 \
+  --partitions 6 --replication-factor 3 --config min.insync.replicas=2
+```
+
+주의: 이 compose는 한 서버 안에 6개 Kafka 프로세스를 띄우는 형태라 프로세스 장애와 롤링 재시작에는 유리하지만, 서버 자체 장애까지 버티려면 controller/broker를 여러 서버로 나눠야 합니다.
+
 ## Running
 
 ```bash
