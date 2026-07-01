@@ -18,7 +18,8 @@
 		"all:build": "yarn workspaces foreach -A -p run build",
 		"all:lint": "eslint \"{apps,libs}/**/*.ts\"",
 		"all:lint:fix": "eslint \"{apps,libs}/**/*.ts\" --fix",
-		"all:test": "yarn file:storage test && yarn file:resize test && yarn file:cache test && yarn file:global test"
+		"all:test": "yarn file:storage test && yarn file:resize test && yarn file:cache test && yarn file:global test",
+		"all:test:e2e": "yarn file:storage test:e2e && yarn file:resize test:e2e && yarn file:cache test:e2e"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",

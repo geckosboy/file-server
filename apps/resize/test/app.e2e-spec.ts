@@ -1,0 +1,109 @@
+jest.mock('src/config', () => ({
+	envConfig: {
+		STORAGE_SERVER: 'http://storage.test',
+	},
+}));
+
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
+import { Test, TestingModule } from '@nestjs/testing';
+import * as request from 'supertest';
+import * as sharp from 'sharp';
+import { AppController } from '../src/app.controller';
+import { ImageController } from '../src/modules/image/image.controller';
+import { ImageManager } from '../src/modules/image/manager';
+import { ImageService } from '../src/modules/image/image.service';
+
+const createFetchResponse = (body: Buffer, status = 200) =>
+	new Response(new Uint8Array(body), { status });
+
+describe('리사이즈 앱 e2e', () => {
+	let app: INestApplication;
+	let fetchSpy: jest.SpiedFunction<typeof fetch>;
+	let originalImage: Buffer;
+
+	beforeEach(async () => {
+		originalImage = await sharp({
+			create: {
+				width: 24,
+				height: 12,
+				channels: 3,
+				background: '#336699',
+			},
+		})
+			.png()
+			.toBuffer();
+
+		fetchSpy = jest
+			.spyOn(globalThis, 'fetch')
+			.mockResolvedValue(createFetchResponse(originalImage));
+
+		const moduleFixture: TestingModule = await Test.createTestingModule({
+			controllers: [AppController, ImageController],
+			providers: [
+				ImageService,
+				ImageManager,
+				{
+					provide: 'RESIZE_IMAGE_MICROSERVICE',
+					useValue: {} as ClientKafka,
+				},
+			],
+		}).compile();
+
+		app = moduleFixture.createNestApplication();
+		app.useGlobalPipes(
+			new ValidationPipe({
+				whitelist: true,
+				transform: true,
+			}),
+		);
+		await app.init();
+	});
+
+	afterEach(async () => {
+		await app.close();
+		jest.restoreAllMocks();
+	});
+
+	it('GET /health-check 요청에 OK를 반환한다', () => {
+		return request(app.getHttpServer())
+			.get('/health-check')
+			.expect(200)
+			.expect('OK');
+	});
+
+	it('크기 쿼리가 없으면 스토리지 앱의 원본 이미지를 반환한다', async () => {
+		const response = await request(app.getHttpServer())
+			.get('/image/public/sample.png')
+			.expect(200)
+			.expect('content-type', /image\/png/);
+
+		expect(Buffer.from(response.body).equals(originalImage)).toBe(true);
+		expect(fetchSpy).toHaveBeenCalledWith(
+			'http://storage.test/image/public/sample.png',
+			{ method: 'get' },
+		);
+	});
+
+	it('너비와 높이 쿼리가 있으면 리사이즈된 이미지를 반환한다', async () => {
+		const response = await request(app.getHttpServer())
+			.get('/image/public/sample.png')
+			.query({ width: 6, height: 3 })
+			.expect(200)
+			.expect('content-type', /image\/png/);
+		const metadata = await sharp(Buffer.from(response.body)).metadata();
+
+		expect(metadata.width).toBe(6);
+		expect(metadata.height).toBe(3);
+	});
+
+	it('스토리지 앱에서 원본 이미지를 찾지 못하면 404를 반환한다', () => {
+		fetchSpy.mockResolvedValue(
+			createFetchResponse(Buffer.from('missing'), 404),
+		);
+
+		return request(app.getHttpServer())
+			.get('/image/public/missing.png')
+			.expect(404);
+	});
+});

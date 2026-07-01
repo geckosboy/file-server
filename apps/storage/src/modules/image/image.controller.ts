@@ -2,7 +2,6 @@ import {
 	Body,
 	Controller,
 	Delete,
-	FileTypeValidator,
 	Get,
 	HttpStatus,
 	MaxFileSizeValidator,
@@ -49,9 +48,6 @@ export class ImageController {
 			new ParseFilePipe({
 				validators: [
 					new MaxFileSizeValidator({ maxSize: File.FileMaximumSize.Image }),
-					new FileTypeValidator({
-						fileType: `${File.ImageFileMimeList.join('|')}`,
-					}),
 				],
 			}),
 		)
