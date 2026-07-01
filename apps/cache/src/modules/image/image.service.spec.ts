@@ -5,7 +5,13 @@ jest.mock('src/config', () => ({
 }));
 
 import { NotFoundException } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
+import { of } from 'rxjs';
 import { CacheService, CachedImage } from '../node-cache/cache.service';
+import {
+	IMAGE_TELEMETRY_TOPIC,
+	ImageTelemetryEventType,
+} from './image.telemetry';
 import { ImageService } from './image.service';
 
 const createFetchResponse = (
@@ -19,19 +25,36 @@ const createFetchResponse = (
 			: undefined,
 	});
 
+type KafkaEmitPayload = { key: string; value: string };
+
+const parseKafkaPayload = (payload: KafkaEmitPayload) =>
+	JSON.parse(payload.value) as Record<string, unknown>;
+
 describe('캐시 이미지 서비스', () => {
 	let cacheService: jest.Mocked<
 		Pick<CacheService, 'getCachedImage' | 'cacheImage'>
 	>;
 	let service: ImageService;
+	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
+
+	const getTelemetryPayloads = () =>
+		imageClient.emit.mock.calls
+			.filter(([topic]) => topic === IMAGE_TELEMETRY_TOPIC)
+			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(() => {
 		cacheService = {
 			getCachedImage: jest.fn(),
 			cacheImage: jest.fn(),
 		};
-		service = new ImageService(cacheService as unknown as CacheService);
+		imageClient = {
+			emit: jest.fn().mockReturnValue(of({ ok: true })),
+		};
+		service = new ImageService(
+			cacheService as unknown as CacheService,
+			imageClient as unknown as ClientKafka,
+		);
 		fetchSpy = jest.spyOn(globalThis, 'fetch');
 	});
 
@@ -55,6 +78,19 @@ describe('캐시 이미지 서비스', () => {
 		expect(result).toBe(cachedImage);
 		expect(fetchSpy).not.toHaveBeenCalled();
 		expect(cacheService.cacheImage).not.toHaveBeenCalled();
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheHit,
+				sourceApp: 'cache',
+				path: 'public',
+				name: 'sample.png',
+				cacheKey: 'public_100/xsample.png',
+				width: 100,
+				format: 'png',
+				outputBytes: cachedImage.imageBuffer.byteLength,
+				status: 'success',
+			}),
+		]);
 	});
 
 	it('캐시가 없으면 리사이즈 앱에 요청하고 응답을 저장한 뒤 반환한다', async () => {
@@ -82,6 +118,19 @@ describe('캐시 이미지 서비스', () => {
 				contentType: 'image/webp',
 			},
 		);
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheMiss,
+				cacheKey: 'public_100/xsample.webp',
+				status: 'success',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheStored,
+				cacheKey: 'public_100/xsample.webp',
+				outputBytes: resized.byteLength,
+				status: 'success',
+			}),
+		]);
 	});
 
 	it('리사이즈 앱이 콘텐츠 타입을 주지 않으면 파일 확장자를 대체값으로 사용한다', async () => {
@@ -106,5 +155,16 @@ describe('캐시 이미지 서비스', () => {
 			service.getCacheImage({ path: 'public', name: 'missing.png' }),
 		).rejects.toBeInstanceOf(NotFoundException);
 		expect(cacheService.cacheImage).not.toHaveBeenCalled();
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheMiss,
+				status: 'success',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ReadFailed,
+				status: 'failed',
+				errorCode: 'NotFoundException',
+			}),
+		]);
 	});
 });

@@ -7,12 +7,22 @@ jest.mock('src/config', () => ({
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
+import { of } from 'rxjs';
 import * as request from 'supertest';
 import * as sharp from 'sharp';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageManager } from '../src/modules/image/manager';
 import { ImageService } from '../src/modules/image/image.service';
+import {
+	IMAGE_TELEMETRY_TOPIC,
+	ImageTelemetryEventType,
+} from '../src/modules/image/image.telemetry';
+
+type KafkaEmitPayload = { key: string; value: string };
+
+const parseKafkaPayload = (payload: KafkaEmitPayload) =>
+	JSON.parse(payload.value) as Record<string, unknown>;
 
 const createFetchResponse = (body: Buffer, status = 200) =>
 	new Response(new Uint8Array(body), { status });
@@ -20,7 +30,13 @@ const createFetchResponse = (body: Buffer, status = 200) =>
 describe('리사이즈 앱 e2e', () => {
 	let app: INestApplication;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
+	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let originalImage: Buffer;
+
+	const getTelemetryPayloads = () =>
+		imageClient.emit.mock.calls
+			.filter(([topic]) => topic === IMAGE_TELEMETRY_TOPIC)
+			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(async () => {
 		originalImage = await sharp({
@@ -37,6 +53,9 @@ describe('리사이즈 앱 e2e', () => {
 		fetchSpy = jest
 			.spyOn(globalThis, 'fetch')
 			.mockResolvedValue(createFetchResponse(originalImage));
+		imageClient = {
+			emit: jest.fn().mockReturnValue(of({ ok: true })),
+		};
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
@@ -45,7 +64,7 @@ describe('리사이즈 앱 e2e', () => {
 				ImageManager,
 				{
 					provide: 'RESIZE_IMAGE_MICROSERVICE',
-					useValue: {} as ClientKafka,
+					useValue: imageClient,
 				},
 			],
 		}).compile();
@@ -65,7 +84,7 @@ describe('리사이즈 앱 e2e', () => {
 		jest.restoreAllMocks();
 	});
 
-	it('GET /health-check 요청에 OK를 반환한다', () => {
+	it('상태 확인 요청에 정상 응답을 반환한다', () => {
 		return request(app.getHttpServer())
 			.get('/health-check')
 			.expect(200)
@@ -95,6 +114,20 @@ describe('리사이즈 앱 e2e', () => {
 
 		expect(metadata.width).toBe(6);
 		expect(metadata.height).toBe(3);
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeRequested,
+				path: 'public',
+				name: 'sample.png',
+				width: 6,
+				height: 3,
+				status: 'success',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeCompleted,
+				status: 'success',
+			}),
+		]);
 	});
 
 	it('스토리지 앱에서 원본 이미지를 찾지 못하면 404를 반환한다', () => {

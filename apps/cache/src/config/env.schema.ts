@@ -31,6 +31,9 @@ export class AppConfig {
 	@IsString()
 	RESIZING_SERVER!: string;
 
+	@IsString()
+	KAFKA_CLIENT_BROKERS!: string;
+
 	@IsBoolean()
 	get isDevelopment() {
 		return this.NODE_ENV === Environment.Development;
@@ -44,5 +47,9 @@ export class AppConfig {
 	@IsArray()
 	get originList() {
 		return parseOriginList(this.ORIGIN_LIST_STR);
+	}
+
+	get kafkaClientBrokerList() {
+		return this.KAFKA_CLIENT_BROKERS?.split(',') ?? [];
 	}
 }

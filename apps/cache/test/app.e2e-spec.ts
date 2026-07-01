@@ -5,12 +5,23 @@ jest.mock('src/config', () => ({
 }));
 
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
+import { of } from 'rxjs';
 import * as request from 'supertest';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageService } from '../src/modules/image/image.service';
+import {
+	IMAGE_TELEMETRY_TOPIC,
+	ImageTelemetryEventType,
+} from '../src/modules/image/image.telemetry';
 import { CacheService } from '../src/modules/node-cache/cache.service';
+
+type KafkaEmitPayload = { key: string; value: string };
+
+const parseKafkaPayload = (payload: KafkaEmitPayload) =>
+	JSON.parse(payload.value) as Record<string, unknown>;
 
 const createFetchResponse = (
 	body: Buffer,
@@ -26,9 +37,18 @@ const createFetchResponse = (
 describe('캐시 앱 e2e', () => {
 	let app: INestApplication;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
+	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
+
+	const getTelemetryPayloads = () =>
+		imageClient.emit.mock.calls
+			.filter(([topic]) => topic === IMAGE_TELEMETRY_TOPIC)
+			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(async () => {
 		fetchSpy = jest.spyOn(globalThis, 'fetch');
+		imageClient = {
+			emit: jest.fn().mockReturnValue(of({ ok: true })),
+		};
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
@@ -38,6 +58,10 @@ describe('캐시 앱 e2e', () => {
 				{
 					provide: 'CACHE_TTL',
 					useValue: 600,
+				},
+				{
+					provide: 'CACHE_IMAGE_MICROSERVICE',
+					useValue: imageClient,
 				},
 			],
 		}).compile();
@@ -57,7 +81,7 @@ describe('캐시 앱 e2e', () => {
 		jest.restoreAllMocks();
 	});
 
-	it('GET /health-check 요청에 OK를 반환한다', () => {
+	it('상태 확인 요청에 정상 응답을 반환한다', () => {
 		return request(app.getHttpServer())
 			.get('/health-check')
 			.expect(200)
@@ -91,6 +115,23 @@ describe('캐시 앱 e2e', () => {
 		);
 		expect(requestedUrl.searchParams.get('width')).toBe('32');
 		expect(requestedUrl.searchParams.get('height')).toBe('16');
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheMiss,
+				cacheKey: 'public_32/16sample.png',
+				status: 'success',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheStored,
+				cacheKey: 'public_32/16sample.png',
+				status: 'success',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheHit,
+				cacheKey: 'public_32/16sample.png',
+				status: 'success',
+			}),
+		]);
 	});
 
 	it('리사이즈 앱이 이미지 없음으로 응답하면 404를 반환한다', () => {

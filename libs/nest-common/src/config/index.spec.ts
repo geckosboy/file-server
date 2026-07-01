@@ -1,7 +1,7 @@
 import { resolve } from 'path';
 import { createAppPathTools } from './index';
 
-describe('Nest 공통 경로 도구', () => {
+describe('네스트 공통 경로 도구', () => {
 	it('앱 소스 디렉터리 기준으로 런타임 루트를 계산한다', () => {
 		const dirname = resolve('/repo/apps/cache/src/enum');
 		const { Root, getFilePath } = createAppPathTools(dirname);

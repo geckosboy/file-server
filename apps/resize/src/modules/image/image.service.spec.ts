@@ -9,24 +9,43 @@ import {
 	NotFoundException,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { of } from 'rxjs';
 import { ImageManager } from './manager';
+import {
+	IMAGE_TELEMETRY_TOPIC,
+	ImageTelemetryEventType,
+} from './image.telemetry';
 import { ImageService } from './image.service';
 
 const createFetchResponse = (body: Buffer, status = 200) =>
 	new Response(new Uint8Array(body), { status });
 
+type KafkaEmitPayload = { key: string; value: string };
+
+const parseKafkaPayload = (payload: KafkaEmitPayload) =>
+	JSON.parse(payload.value) as Record<string, unknown>;
+
 describe('리사이즈 이미지 서비스', () => {
 	let imageManager: jest.Mocked<Pick<ImageManager, 'resize'>>;
 	let service: ImageService;
+	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
+
+	const getTelemetryPayloads = () =>
+		imageClient.emit.mock.calls
+			.filter(([topic]) => topic === IMAGE_TELEMETRY_TOPIC)
+			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(() => {
 		imageManager = {
 			resize: jest.fn(),
 		};
+		imageClient = {
+			emit: jest.fn().mockReturnValue(of({ ok: true })),
+		};
 		service = new ImageService(
 			imageManager as unknown as ImageManager,
-			{} as ClientKafka,
+			imageClient as unknown as ClientKafka,
 		);
 		fetchSpy = jest.spyOn(globalThis, 'fetch');
 	});
@@ -99,5 +118,48 @@ describe('리사이즈 이미지 서비스', () => {
 			height: 50,
 		});
 		expect(result).toBe(resizedImage);
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeRequested,
+				sourceApp: 'resize',
+				path: 'public',
+				name: 'sample.png',
+				width: 100,
+				height: 50,
+				status: 'success',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeCompleted,
+				inputBytes: originalImage.byteLength,
+				outputBytes: resizedImage.byteLength,
+				status: 'success',
+			}),
+		]);
+	});
+
+	it('원본 조회 실패 시 리사이즈 실패 텔레메트리 이벤트를 발행하고 예외를 유지한다', async () => {
+		jest
+			.spyOn(service, 'getImageFromMain')
+			.mockRejectedValue(new NotFoundException('missing'));
+
+		await expect(
+			service.resizeImage({
+				path: 'public',
+				name: 'missing.png',
+				width: 100,
+			}),
+		).rejects.toBeInstanceOf(NotFoundException);
+
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeRequested,
+				status: 'success',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeFailed,
+				status: 'failed',
+				errorCode: 'NotFoundException',
+			}),
+		]);
 	});
 });

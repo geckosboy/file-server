@@ -10,6 +10,14 @@ import { performance } from 'perf_hooks';
 import { lastValueFrom } from 'rxjs';
 
 import { GetImageDto, UploadImageDto } from '@file/image-contracts';
+import {
+	createFailedTelemetryFields,
+	createImageTelemetryEvent,
+	ImageTelemetryEvent,
+	ImageTelemetryEventType,
+	normalizeImageFormat,
+	publishImageTelemetryEvent,
+} from './image.telemetry';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
@@ -26,6 +34,22 @@ export class ImageService {
 		private readonly imageManager: ImageManager,
 		@Inject('IMAGE_MICROSERVICE') private readonly imageClient: ClientKafka,
 	) {}
+
+	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
+		await publishImageTelemetryEvent({
+			client: this.imageClient,
+			event,
+			logger: this.logger,
+		});
+	}
+
+	private getTelemetryFileName(file: Express.Multer.File) {
+		try {
+			return normalizeSafeFileName(file.originalname, 'original name');
+		} catch {
+			return file.originalname;
+		}
+	}
 
 	/** MimeType으로 확장자 가져오기 */
 	private getExt(mimeType: string) {
@@ -86,7 +110,7 @@ export class ImageService {
 				`[${apiInfo.id}]${apiInfo.path}/${mainName} - ${format} ${file.size}>>${size}byte +${Math.round(exeTime)}ms `,
 			);
 
-			return { format, size, exeTime };
+			return { format, size, exeTime, name: mainName };
 		} catch (error) {
 			this.logger.error(error);
 			throw error;
@@ -107,12 +131,40 @@ export class ImageService {
 	/** Buffer형식의 이미지 데이터 가져오기 */
 	async getImage(imageInfo: GetImageDto) {
 		const { path, name } = imageInfo;
-		const result = await this.imageManager.getBufferImage({
-			path: `${path}/image`,
-			name,
-		});
 
-		return result;
+		try {
+			const result = await this.imageManager.getBufferImage({
+				path: `${path}/image`,
+				name,
+			});
+
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.ReadCompleted,
+					sourceApp: 'storage',
+					path,
+					name: result.name,
+					format: normalizeImageFormat(result.name),
+					outputBytes: result.image.byteLength,
+					status: 'success',
+				}),
+			);
+
+			return result;
+		} catch (error) {
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.ReadFailed,
+					sourceApp: 'storage',
+					path,
+					name,
+					format: normalizeImageFormat(name),
+					status: 'failed',
+					...createFailedTelemetryFields(error),
+				}),
+			);
+			throw error;
+		}
 	}
 
 	/** 로컬에 이미지 업로드 */
@@ -126,7 +178,7 @@ export class ImageService {
 		} = imageInfo;
 
 		try {
-			const { exeTime, format, size } = await this.compressAndSaveImage({
+			const { exeTime, format, name, size } = await this.compressAndSaveImage({
 				file,
 				apiInfo: { id, path },
 			});
@@ -143,10 +195,40 @@ export class ImageService {
 				}),
 			);
 
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.UploadCompleted,
+					sourceApp: 'storage',
+					imageId: id,
+					path,
+					name,
+					format: normalizeImageFormat(format),
+					inputBytes: file.size,
+					outputBytes: size,
+					durationMs: exeTime,
+					status: 'success',
+				}),
+			);
+
 			/** 전에 사용하던 파일이 있는 경우 삭제 */
 			if (beforeName) {
 				await this.deleteImage({ path, name: beforeName });
 			}
+		} catch (error) {
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.UploadFailed,
+					sourceApp: 'storage',
+					imageId: id,
+					path,
+					name: this.getTelemetryFileName(file),
+					format: normalizeImageFormat(file.originalname),
+					inputBytes: file.size,
+					status: 'failed',
+					...createFailedTelemetryFields(error),
+				}),
+			);
+			throw error;
 		} finally {
 			/** 처리완료 또는 실패한 임시 파일은 항상 삭제 */
 			await this.deleteImage({ isTemp: true, name: file.filename });

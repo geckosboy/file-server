@@ -19,6 +19,10 @@ import { Root } from '../src/enum';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageService } from '../src/modules/image/image.service';
+import {
+	IMAGE_TELEMETRY_TOPIC,
+	ImageTelemetryEventType,
+} from '../src/modules/image/image.telemetry';
 import { InternalApiKeyGuard } from '../src/modules/image/internal-api-key.guard';
 import { ImageManager } from '../src/modules/image/strategies/manager';
 import { JpegStrategy } from '../src/modules/image/strategies/sharp/jpeg.strategy';
@@ -27,6 +31,11 @@ import { PngStrategy } from '../src/modules/image/strategies/sharp/png.strategy'
 const testApiKey = 'test-internal-key';
 const assetRoot = path.resolve(Root, 'assets', 'e2e-storage');
 const tempRoot = path.resolve(Root, 'temp');
+
+type KafkaEmitPayload = { key: string; value: string };
+
+const parseKafkaPayload = (payload: KafkaEmitPayload) =>
+	JSON.parse(payload.value) as Record<string, unknown>;
 
 const createPngImage = () =>
 	sharp({
@@ -43,6 +52,11 @@ const createPngImage = () =>
 describe('스토리지 앱 e2e', () => {
 	let app: INestApplication;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
+
+	const getTelemetryPayloads = () =>
+		imageClient.emit.mock.calls
+			.filter(([topic]) => topic === IMAGE_TELEMETRY_TOPIC)
+			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(async () => {
 		await rm(assetRoot, { recursive: true, force: true });
@@ -87,7 +101,7 @@ describe('스토리지 앱 e2e', () => {
 		await rm(tempRoot, { recursive: true, force: true });
 	});
 
-	it('GET /health-check 요청에 OK를 반환한다', () => {
+	it('상태 확인 요청에 정상 응답을 반환한다', () => {
 		return request(app.getHttpServer())
 			.get('/health-check')
 			.expect(200)
@@ -126,6 +140,17 @@ describe('스토리지 앱 e2e', () => {
 			key: 'uploadResult-json',
 			value: expect.stringContaining('"id":100'),
 		});
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.UploadCompleted,
+				sourceApp: 'storage',
+				imageId: 100,
+				path: 'e2e-storage/image',
+				name: 'sample.png',
+				imageKey: 'e2e-storage/image/sample.png',
+				status: 'success',
+			}),
+		]);
 
 		const getResponse = await request(app.getHttpServer())
 			.get('/image/e2e-storage/sample.png')

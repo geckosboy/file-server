@@ -9,6 +9,14 @@ import { ClientKafka } from '@nestjs/microservices';
 import { performance } from 'perf_hooks';
 
 import { ImageEntity } from '@file/image-contracts';
+import {
+	createFailedTelemetryFields,
+	createImageTelemetryEvent,
+	ImageTelemetryEvent,
+	ImageTelemetryEventType,
+	normalizeImageFormat,
+	publishImageTelemetryEvent,
+} from './image.telemetry';
 import { ImageManager } from './manager';
 import { envConfig } from 'src/config';
 
@@ -21,6 +29,14 @@ export class ImageService {
 		@Inject('RESIZE_IMAGE_MICROSERVICE')
 		private readonly imageClient: ClientKafka,
 	) {}
+
+	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
+		await publishImageTelemetryEvent({
+			client: this.imageClient,
+			event,
+			logger: this.logger,
+		});
+	}
 
 	private getImageUrl({ path, name }: { path: string; name: string }) {
 		const encodedPath = encodeURIComponent(path);
@@ -59,25 +75,67 @@ export class ImageService {
 	/** Width, Height으로 리사이징 */
 	async resizeImage(imageInfo: ImageEntity) {
 		const { path, name, ...size } = imageInfo;
+		const format = normalizeImageFormat(name);
+		const requestedAt = performance.now();
 
-		const format = name.split('.').at(-1);
-		const image = await this.getImageFromMain({ path, name });
+		await this.publishTelemetryEvent(
+			createImageTelemetryEvent({
+				eventType: ImageTelemetryEventType.ResizeRequested,
+				sourceApp: 'resize',
+				path,
+				name,
+				format,
+				width: size.width,
+				height: size.height,
+				status: 'success',
+			}),
+		);
 
 		try {
+			const image = await this.getImageFromMain({ path, name });
 			const startTime = performance.now();
 
 			const result = await this.imageManager.resize(image, size);
 
 			const exeTime = performance.now() - startTime;
 
-			/** 추후 분석 서버로 결과 이벤트를 전달할 수도 있음.(Kafka 사용 예정) */
 			this.logger.log(
 				`${path}/${name} - ${format} ${size.width ?? '-'}/${size.height ?? '-'}px ${image.byteLength}>>${result.byteLength}byte +${Math.round(exeTime)}ms `,
+			);
+
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.ResizeCompleted,
+					sourceApp: 'resize',
+					path,
+					name,
+					format,
+					width: size.width,
+					height: size.height,
+					inputBytes: image.byteLength,
+					outputBytes: result.byteLength,
+					durationMs: exeTime,
+					status: 'success',
+				}),
 			);
 
 			return result;
 		} catch (error) {
 			this.logger.error(error);
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.ResizeFailed,
+					sourceApp: 'resize',
+					path,
+					name,
+					format,
+					width: size.width,
+					height: size.height,
+					durationMs: performance.now() - requestedAt,
+					status: 'failed',
+					...createFailedTelemetryFields(error),
+				}),
+			);
 			throw error;
 		}
 	}

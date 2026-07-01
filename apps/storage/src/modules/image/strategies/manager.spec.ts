@@ -82,7 +82,7 @@ describe('스토리지 이미지 매니저', () => {
 		).rejects.toBeInstanceOf(NotFoundException);
 	});
 
-	it('image로 끝나지 않는 메인 경로를 거부한다', async () => {
+	it('이미지로 끝나지 않는 메인 경로를 거부한다', async () => {
 		await expect(
 			manager.getBufferImage({ path: 'unit-manager', name: 'main.png' }),
 		).rejects.toBeInstanceOf(BadRequestException);

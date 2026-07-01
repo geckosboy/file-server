@@ -21,7 +21,7 @@ const createContext = (headerValue?: string): ExecutionContext =>
 	}) as ExecutionContext;
 
 describe('내부 API 키 가드', () => {
-	it('INTERNAL_API_KEY가 없으면 요청을 허용한다', () => {
+	it('내부 API 키가 없으면 요청을 허용한다', () => {
 		const guard = new InternalApiKeyGuard({} as AppConfig);
 
 		expect(guard.canActivate(createContext())).toBe(true);

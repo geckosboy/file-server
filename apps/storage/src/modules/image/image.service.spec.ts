@@ -1,10 +1,19 @@
 import { ClientKafka } from '@nestjs/microservices';
 import { Readable } from 'stream';
 import { of, throwError } from 'rxjs';
+import {
+	IMAGE_TELEMETRY_TOPIC,
+	ImageTelemetryEventType,
+} from './image.telemetry';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
 import { ImageService } from './image.service';
+
+type KafkaEmitPayload = { key: string; value: string };
+
+const parseKafkaPayload = (payload: KafkaEmitPayload) =>
+	JSON.parse(payload.value) as Record<string, unknown>;
 
 const createMulterFile = (overrides: Partial<Express.Multer.File> = {}) => {
 	const buffer = Buffer.from('file-buffer');
@@ -36,6 +45,17 @@ describe('스토리지 이미지 서비스', () => {
 	>;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let service: ImageService;
+
+	const getEmittedMessage = (topic: string) => {
+		const call = imageClient.emit.mock.calls.find(
+			([emittedTopic]) => emittedTopic === topic,
+		);
+		if (!call) {
+			throw new Error(`${topic} 발행 내역이 없습니다.`);
+		}
+
+		return call[1] as KafkaEmitPayload;
+	};
 
 	beforeEach(() => {
 		imageManager = {
@@ -103,6 +123,73 @@ describe('스토리지 이미지 서비스', () => {
 		expect(imageManager.deleteTempImage).toHaveBeenCalledWith(file.filename);
 	});
 
+	it('파일 업로드 후 file.image.events.v1 텔레메트리 이벤트를 정확한 계약으로 발행한다', async () => {
+		const file = createMulterFile();
+
+		await service.uploadFile({
+			file,
+			apiInfo: {
+				id: 10,
+				path: 'products/image',
+			},
+		});
+
+		const telemetryMessage = getEmittedMessage(IMAGE_TELEMETRY_TOPIC);
+		const telemetryPayload = parseKafkaPayload(telemetryMessage);
+
+		expect(telemetryMessage.key).toBe(
+			`products/image/sample.png:${ImageTelemetryEventType.UploadCompleted}`,
+		);
+		expect(telemetryPayload).toEqual(
+			expect.objectContaining({
+				schemaVersion: 1,
+				eventType: ImageTelemetryEventType.UploadCompleted,
+				sourceApp: 'storage',
+				environment: 'test',
+				imageId: 10,
+				path: 'products/image',
+				name: 'sample.png',
+				imageKey: 'products/image/sample.png',
+				format: 'png',
+				inputBytes: file.size,
+				outputBytes: 128,
+				status: 'success',
+			}),
+		);
+		expect(telemetryPayload.eventId).toEqual(expect.any(String));
+		expect(telemetryPayload.occurredAt).toEqual(expect.any(String));
+		expect(telemetryPayload.durationMs).toEqual(expect.any(Number));
+	});
+
+	it('업로드 실패 시 실패 텔레메트리 이벤트를 발행하고 임시 파일을 정리한다', async () => {
+		const file = createMulterFile();
+		imageManager.saveImageFromTemp.mockRejectedValue(new Error('disk down'));
+
+		await expect(
+			service.uploadFile({
+				file,
+				apiInfo: {
+					id: 10,
+					path: 'products/image',
+				},
+			}),
+		).rejects.toThrow('disk down');
+
+		const telemetryPayload = parseKafkaPayload(
+			getEmittedMessage(IMAGE_TELEMETRY_TOPIC),
+		);
+		expect(telemetryPayload).toEqual(
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.UploadFailed,
+				sourceApp: 'storage',
+				status: 'failed',
+				errorCode: 'Error',
+				errorMessage: 'disk down',
+			}),
+		);
+		expect(imageManager.deleteTempImage).toHaveBeenCalledWith(file.filename);
+	});
+
 	it('저장 후 Kafka 발행이 실패해도 임시 파일을 정리한다', async () => {
 		const file = createMulterFile();
 		imageClient.emit.mockReturnValue(throwError(() => new Error('kafka down')));
@@ -118,6 +205,7 @@ describe('스토리지 이미지 서비스', () => {
 		).rejects.toThrow('kafka down');
 
 		expect(imageManager.deleteTempImage).toHaveBeenCalledWith(file.filename);
+		expect(imageManager.deleteMainImage).not.toHaveBeenCalled();
 	});
 
 	it('메인 이미지 디렉터리 규칙에 맞춰 이미지 버퍼를 가져온다', async () => {

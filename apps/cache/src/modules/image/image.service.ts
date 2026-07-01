@@ -1,8 +1,24 @@
-import { NotFoundException, Injectable, Logger } from '@nestjs/common';
+import {
+	Inject,
+	Injectable,
+	Logger,
+	NotFoundException,
+	Optional,
+} from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
 import { lookup } from 'mime-types';
+import { performance } from 'perf_hooks';
 import { URLSearchParams } from 'url';
 
 import { ImageEntity } from '@file/image-contracts';
+import {
+	createFailedTelemetryFields,
+	createImageTelemetryEvent,
+	ImageTelemetryEvent,
+	ImageTelemetryEventType,
+	normalizeImageFormat,
+	publishImageTelemetryEvent,
+} from './image.telemetry';
 import { CacheService } from '../node-cache/cache.service';
 import { envConfig } from 'src/config';
 
@@ -10,7 +26,20 @@ import { envConfig } from 'src/config';
 export class ImageService {
 	private readonly logger = new Logger(ImageService.name);
 
-	constructor(private readonly cacheService: CacheService) {}
+	constructor(
+		private readonly cacheService: CacheService,
+		@Optional()
+		@Inject('CACHE_IMAGE_MICROSERVICE')
+		private readonly imageClient?: ClientKafka,
+	) {}
+
+	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
+		await publishImageTelemetryEvent({
+			client: this.imageClient,
+			event,
+			logger: this.logger,
+		});
+	}
 
 	/** Object 형식 QueryString으로 변환 */
 	private objectToQueryString(obj: Record<string, string | number>) {
@@ -57,19 +86,67 @@ export class ImageService {
 
 	async getCacheImage(params: ImageEntity) {
 		const cacheKey = this.convertToCacheKey(params);
+		const startedAt = performance.now();
+		const { height, name, path, width } = params;
 
 		const cachedImage = this.cacheService.getCachedImage(cacheKey);
 		/** Caching된 이미지 있으면 그대로 반환 */
 		if (cachedImage) {
 			this.logger.log(`cache hit: ${JSON.stringify(params)}`);
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.CacheHit,
+					sourceApp: 'cache',
+					path,
+					name,
+					cacheKey,
+					width,
+					height,
+					format: normalizeImageFormat(name),
+					outputBytes: cachedImage.imageBuffer.byteLength,
+					durationMs: performance.now() - startedAt,
+					status: 'success',
+				}),
+			);
 			return cachedImage;
 		}
+
+		await this.publishTelemetryEvent(
+			createImageTelemetryEvent({
+				eventType: ImageTelemetryEventType.CacheMiss,
+				sourceApp: 'cache',
+				path,
+				name,
+				cacheKey,
+				width,
+				height,
+				format: normalizeImageFormat(name),
+				durationMs: performance.now() - startedAt,
+				status: 'success',
+			}),
+		);
 
 		/** 없다면 리사이징 서버로부터 데이터 가져옴 */
 		try {
 			const { imageBuffer, contentType } = await this.getImageFromMain(params);
 			/** 리사이징 결과물 캐싱 */
 			this.cacheService.cacheImage(cacheKey, { imageBuffer, contentType });
+
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.CacheStored,
+					sourceApp: 'cache',
+					path,
+					name,
+					cacheKey,
+					width,
+					height,
+					format: normalizeImageFormat(name),
+					outputBytes: imageBuffer.byteLength,
+					durationMs: performance.now() - startedAt,
+					status: 'success',
+				}),
+			);
 
 			this.logger.log(`cache not hit: ${JSON.stringify(params)}`);
 			return {
@@ -78,6 +155,21 @@ export class ImageService {
 			};
 		} catch (err) {
 			this.logger.error(err);
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					eventType: ImageTelemetryEventType.ReadFailed,
+					sourceApp: 'cache',
+					path,
+					name,
+					cacheKey,
+					width,
+					height,
+					format: normalizeImageFormat(name),
+					durationMs: performance.now() - startedAt,
+					status: 'failed',
+					...createFailedTelemetryFields(err),
+				}),
+			);
 			throw err;
 		}
 	}
