@@ -236,6 +236,9 @@ services:
       DYNAMIC_CONFIG_ENABLED: 'true'
       KAFKA_CLUSTERS_0_NAME: ${KAFKA_UI_CLUSTER_NAME:-file_server_kafka_prod}
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      AUTH_TYPE: ${KAFKA_UI_AUTH_TYPE:-LOGIN_FORM}
+      SPRING_SECURITY_USER_NAME: ${KAFKA_UI_USERNAME:-admin}
+      SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD}
     networks:
       - kafka_internal
 
