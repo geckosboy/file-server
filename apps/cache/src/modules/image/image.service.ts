@@ -57,7 +57,12 @@ export class ImageService {
 
 	/** Name, path 등으로 CacheKey 생성 */
 	private convertToCacheKey({ name, path, height, width }: ImageEntity) {
-		return `${path}_${width ?? 'x'}/${height ?? 'x'}${name}`;
+		return [
+			encodeURIComponent(path),
+			width ?? 'x',
+			height ?? 'x',
+			encodeURIComponent(name),
+		].join('|');
 	}
 
 	private getImageUrl({ name, path, ...size }: ImageEntity) {
@@ -172,5 +177,15 @@ export class ImageService {
 			);
 			throw err;
 		}
+	}
+
+	deleteCacheImage(params: Pick<ImageEntity, 'path' | 'name'>) {
+		const deletedCount = this.cacheService.deleteCachedImagesForImage(params);
+
+		this.logger.log(
+			`cache invalidate: ${JSON.stringify(params)} deleted=${deletedCount}`,
+		);
+
+		return { deletedCount };
 	}
 }

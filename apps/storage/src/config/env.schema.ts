@@ -32,6 +32,10 @@ export class AppConfig {
 	@IsString()
 	INTERNAL_API_KEY?: string;
 
+	@IsOptional()
+	@IsString()
+	CACHE_SERVER?: string;
+
 	@IsString()
 	KAFKA_CLIENT_BROKERS!: string;
 

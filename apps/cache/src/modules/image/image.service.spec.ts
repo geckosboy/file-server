@@ -32,7 +32,10 @@ const parseKafkaPayload = (payload: KafkaEmitPayload) =>
 
 describe('캐시 이미지 서비스', () => {
 	let cacheService: jest.Mocked<
-		Pick<CacheService, 'getCachedImage' | 'cacheImage'>
+		Pick<
+			CacheService,
+			'getCachedImage' | 'cacheImage' | 'deleteCachedImagesForImage'
+		>
 	>;
 	let service: ImageService;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
@@ -47,6 +50,7 @@ describe('캐시 이미지 서비스', () => {
 		cacheService = {
 			getCachedImage: jest.fn(),
 			cacheImage: jest.fn(),
+			deleteCachedImagesForImage: jest.fn(),
 		};
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
@@ -84,7 +88,7 @@ describe('캐시 이미지 서비스', () => {
 				sourceApp: 'cache',
 				path: 'public',
 				name: 'sample.png',
-				cacheKey: 'public_100/xsample.png',
+				cacheKey: 'public|100|x|sample.png',
 				width: 100,
 				format: 'png',
 				outputBytes: cachedImage.imageBuffer.byteLength,
@@ -112,7 +116,7 @@ describe('캐시 이미지 서비스', () => {
 		expect(result.contentType).toBe('image/webp');
 		expect(result.imageBuffer.equals(resized)).toBe(true);
 		expect(cacheService.cacheImage).toHaveBeenCalledWith(
-			'public_100/xsample.webp',
+			'public|100|x|sample.webp',
 			{
 				imageBuffer: resized,
 				contentType: 'image/webp',
@@ -121,12 +125,12 @@ describe('캐시 이미지 서비스', () => {
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheMiss,
-				cacheKey: 'public_100/xsample.webp',
+				cacheKey: 'public|100|x|sample.webp',
 				status: 'success',
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheStored,
-				cacheKey: 'public_100/xsample.webp',
+				cacheKey: 'public|100|x|sample.webp',
 				outputBytes: resized.byteLength,
 				status: 'success',
 			}),
@@ -166,5 +170,20 @@ describe('캐시 이미지 서비스', () => {
 				errorCode: 'NotFoundException',
 			}),
 		]);
+	});
+
+	it('원본 이미지 삭제 요청 시 해당 이미지의 모든 리사이즈 캐시를 삭제한다', () => {
+		cacheService.deleteCachedImagesForImage.mockReturnValue(2);
+
+		const result = service.deleteCacheImage({
+			path: 'public',
+			name: 'sample.png',
+		});
+
+		expect(cacheService.deleteCachedImagesForImage).toHaveBeenCalledWith({
+			path: 'public',
+			name: 'sample.png',
+		});
+		expect(result).toEqual({ deletedCount: 2 });
 	});
 });

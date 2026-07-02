@@ -25,4 +25,34 @@ export class CacheService {
 	getCachedImage(key: string): CachedImage | undefined {
 		return this.imageCache.get<CachedImage>(key);
 	}
+
+	deleteCachedImagesForImage({
+		name,
+		path,
+	}: {
+		path: string;
+		name: string;
+	}): number {
+		const keys = this.imageCache.keys().filter((key) => {
+			const [cachePath, , , cacheName, ...rest] = key.split('|');
+			if (rest.length || !cachePath || !cacheName) {
+				return false;
+			}
+
+			try {
+				return (
+					decodeURIComponent(cachePath) === path &&
+					decodeURIComponent(cacheName) === name
+				);
+			} catch {
+				return false;
+			}
+		});
+
+		if (!keys.length) {
+			return 0;
+		}
+
+		return this.imageCache.del(keys);
+	}
 }

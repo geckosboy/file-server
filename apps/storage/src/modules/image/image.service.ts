@@ -3,6 +3,7 @@ import {
 	Inject,
 	Injectable,
 	Logger,
+	Optional,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { extension } from 'mime-types';
@@ -23,6 +24,7 @@ import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
 import { SharpStrategy } from './strategies/sharp';
 import { normalizeSafeFileName } from './path.utils';
+import { AppConfig } from 'src/config/env.schema';
 
 @Injectable()
 export class ImageService {
@@ -33,6 +35,7 @@ export class ImageService {
 		private readonly jpegStrategy: JpegStrategy,
 		private readonly imageManager: ImageManager,
 		@Inject('IMAGE_MICROSERVICE') private readonly imageClient: ClientKafka,
+		@Optional() private readonly appConfig?: AppConfig,
 	) {}
 
 	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
@@ -85,6 +88,55 @@ export class ImageService {
 		return typeof ext === 'string';
 	}
 
+	private getPublicCachePath(storagePath: string) {
+		const imagePathSuffix = '/image';
+		if (storagePath.endsWith(imagePathSuffix)) {
+			return storagePath.slice(0, -imagePathSuffix.length);
+		}
+
+		return storagePath;
+	}
+
+	private async invalidateCachedImage({
+		name,
+		path,
+	}: {
+		path: string;
+		name: string;
+	}) {
+		const cacheServer = this.appConfig?.CACHE_SERVER;
+		if (!cacheServer) {
+			return;
+		}
+
+		const cachePath = this.getPublicCachePath(path);
+		if (!cachePath) {
+			this.logger.warn('캐시 무효화 경로가 비어 있어 요청을 건너뜁니다.');
+			return;
+		}
+
+		const headers: Record<string, string> = {};
+		if (this.appConfig?.INTERNAL_API_KEY) {
+			headers['x-internal-api-key'] = this.appConfig.INTERNAL_API_KEY;
+		}
+
+		const url = `${cacheServer}/image/${encodeURIComponent(
+			cachePath,
+		)}/${encodeURIComponent(name)}/cache`;
+
+		try {
+			const response = await fetch(url, { method: 'DELETE', headers });
+			if (!response.ok) {
+				this.logger.warn(
+					`캐시 무효화 요청 실패: ${response.status} ${response.statusText}`,
+				);
+			}
+		} catch (error) {
+			const { errorMessage } = createFailedTelemetryFields(error);
+			this.logger.warn(`캐시 무효화 요청 실패: ${errorMessage}`);
+		}
+	}
+
 	/** 이미지 압축 후 저장 */
 	async compressAndSaveImage(imageInfo: {
 		file: Express.Multer.File;
@@ -122,6 +174,7 @@ export class ImageService {
 		const { name, path, isTemp } = imageInfo;
 		if (!isTemp && path) {
 			await this.imageManager.deleteMainImage({ path, name });
+			await this.invalidateCachedImage({ path, name });
 			return;
 		}
 
@@ -210,8 +263,10 @@ export class ImageService {
 				}),
 			);
 
+			await this.invalidateCachedImage({ path, name });
+
 			/** 전에 사용하던 파일이 있는 경우 삭제 */
-			if (beforeName) {
+			if (beforeName && beforeName !== name) {
 				await this.deleteImage({ path, name: beforeName });
 			}
 		} catch (error) {

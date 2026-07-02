@@ -9,6 +9,7 @@ import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
 import { ImageService } from './image.service';
+import { AppConfig } from 'src/config/env.schema';
 
 type KafkaEmitPayload = { key: string; value: string };
 
@@ -45,6 +46,7 @@ describe('스토리지 이미지 서비스', () => {
 	>;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let service: ImageService;
+	let fetchSpy: jest.SpiedFunction<typeof fetch>;
 
 	const getEmittedMessage = (topic: string) => {
 		const call = imageClient.emit.mock.calls.find(
@@ -76,6 +78,15 @@ describe('스토리지 이미지 서비스', () => {
 			imageManager as unknown as ImageManager,
 			imageClient as unknown as ClientKafka,
 		);
+		fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(null, {
+				status: 200,
+			}),
+		);
+	});
+
+	afterEach(() => {
+		jest.restoreAllMocks();
 	});
 
 	it('업로드된 PNG를 원본 파일명으로 압축해 저장한다', async () => {
@@ -225,5 +236,37 @@ describe('스토리지 이미지 서비스', () => {
 			name: 'sample.png',
 		});
 		expect(result.image).toBe(image);
+	});
+
+	it('메인 이미지 삭제 후 cache 앱의 리사이즈 캐시를 무효화한다', async () => {
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			{
+				CACHE_SERVER: 'http://cache.test',
+				INTERNAL_API_KEY: 'secret-key',
+			} as AppConfig,
+		);
+
+		await service.deleteImage({
+			path: 'products/image',
+			name: 'sample.png',
+		});
+
+		expect(imageManager.deleteMainImage).toHaveBeenCalledWith({
+			path: 'products/image',
+			name: 'sample.png',
+		});
+		expect(fetchSpy).toHaveBeenCalledWith(
+			'http://cache.test/image/products/sample.png/cache',
+			{
+				method: 'DELETE',
+				headers: {
+					'x-internal-api-key': 'secret-key',
+				},
+			},
+		);
 	});
 });

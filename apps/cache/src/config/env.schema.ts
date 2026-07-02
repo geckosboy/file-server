@@ -28,6 +28,10 @@ export class AppConfig {
 	@IsString()
 	HOST?: string;
 
+	@IsOptional()
+	@IsString()
+	INTERNAL_API_KEY?: string;
+
 	@IsString()
 	RESIZING_SERVER!: string;
 

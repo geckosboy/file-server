@@ -25,7 +25,11 @@
 		"file:image-contracts": "pnpm --filter @file/image-contracts",
 		"file:telemetry-contracts": "pnpm --filter @file/telemetry-contracts",
 		"file:telemetry-api": "pnpm --filter @file/telemetry-api",
-		"file:admin-web": "pnpm --filter @file/admin-web"
+		"file:admin-web": "pnpm --filter @file/admin-web",
+		"dev:storage": "turbo run start:dev --filter=@file/storage",
+		"dev:resize": "turbo run start:dev --filter=@file/resize",
+		"dev:cache": "turbo run start:dev --filter=@file/cache",
+		"dev:apps": "turbo run start:dev --filter=@file/storage --filter=@file/resize --filter=@file/cache"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",

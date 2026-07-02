@@ -3,9 +3,7 @@
 	"ui": "stream",
 	"tasks": {
 		"build": {
-			"dependsOn": [
-				"^build"
-			],
+			"dependsOn": ["^build"],
 			"outputs": [
 				"dist/**",
 				".next/**",
@@ -29,6 +27,11 @@
 		"format": {
 			"cache": false,
 			"outputs": []
+		},
+		"start:dev": {
+			"cache": false,
+			"dependsOn": ["^build"],
+			"persistent": true
 		}
 	}
 }

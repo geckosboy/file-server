@@ -12,7 +12,7 @@ const createContext = (headerValue?: string): ExecutionContext =>
 		}),
 	}) as ExecutionContext;
 
-describe('내부 API 키 가드', () => {
+describe('캐시 내부 API 키 가드', () => {
 	it('내부 API 키가 없으면 요청을 허용한다', () => {
 		const guard = new InternalApiKeyGuard({} as AppConfig);
 
@@ -27,7 +27,7 @@ describe('내부 API 키 가드', () => {
 		expect(guard.canActivate(createContext('secret-key'))).toBe(true);
 	});
 
-	it('내부 API 키가 없거나 일치하지 않으면 요청을 거부한다', () => {
+	it('내부 API 키가 일치하지 않으면 요청을 거부한다', () => {
 		const guard = new InternalApiKeyGuard({
 			INTERNAL_API_KEY: 'secret-key',
 		} as AppConfig);

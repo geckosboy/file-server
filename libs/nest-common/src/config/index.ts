@@ -36,6 +36,10 @@ export const createEnvConfig = <TConfig extends object>(
 			ignoreEnvFile: process.env.NODE_ENV === 'production',
 			envFilePath,
 		}),
+		normalize: (config) => ({
+			...config,
+			PORT: config.PORT === undefined ? config.PORT : Number(config.PORT),
+		}),
 		isGlobal: true,
 	});
 	const envConfig = selectConfig(ConfigModule, schema);
