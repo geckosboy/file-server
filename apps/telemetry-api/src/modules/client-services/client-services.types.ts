@@ -7,6 +7,13 @@ export type ClientServiceStatus =
 
 export type JsonObject = Record<string, unknown>;
 
+export const ClientServiceLifecycleEventType = {
+	UploadCompleted: 'image.upload.completed',
+	UploadFailed: 'image.upload.failed',
+} as const;
+export type ClientServiceLifecycleEventType =
+	(typeof ClientServiceLifecycleEventType)[keyof typeof ClientServiceLifecycleEventType];
+
 export interface ClientServiceRecord {
 	id: string;
 	slug: string;
@@ -18,7 +25,10 @@ export interface ClientServiceRecord {
 	updatedAt: string;
 	keyCount: number;
 	activeKeyCount: number;
+	subscriptionCount: number;
+	activeSubscriptionCount: number;
 	keys?: ClientServiceKeyRecord[];
+	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionRecord[];
 }
 
 export interface ClientServiceKeyRecord {
@@ -31,6 +41,17 @@ export interface ClientServiceKeyRecord {
 	revokedAt?: string;
 	lastUsedAt?: string;
 	createdAt: string;
+}
+
+export interface ClientServiceLifecycleSubscriptionRecord {
+	id: string;
+	clientServiceId: string;
+	eventType: ClientServiceLifecycleEventType;
+	consumerGroup: string;
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
 }
 
 export interface CreateClientServiceInput {
@@ -53,6 +74,20 @@ export interface CreateClientServiceKeyInput {
 	name?: string;
 	scopes?: JsonObject;
 	expiresAt?: string;
+}
+
+export interface CreateClientServiceLifecycleSubscriptionInput {
+	eventType: ClientServiceLifecycleEventType;
+	consumerGroup: string;
+	isEnabled?: boolean;
+	description?: string;
+}
+
+export interface UpdateClientServiceLifecycleSubscriptionInput {
+	eventType?: ClientServiceLifecycleEventType;
+	consumerGroup?: string;
+	isEnabled?: boolean;
+	description?: string | null;
 }
 
 export interface CreateClientServiceKeyResult {

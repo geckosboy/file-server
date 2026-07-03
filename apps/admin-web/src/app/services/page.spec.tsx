@@ -26,6 +26,17 @@ describe('서비스 레지스트리 페이지', () => {
 		expect(html).toContain('폐기');
 	});
 
+	it('lifecycle subscription 등록/수정 관리 영역을 표시한다', () => {
+		const html = renderServices();
+
+		expect(html).toContain('lifecycle subscription 등록');
+		expect(html).toContain('Lifecycle subscriptions');
+		expect(html).toContain('image.upload.completed');
+		expect(html).toContain('image.upload.failed');
+		expect(html).toContain('catalog-image-consumer');
+		expect(html).toContain('활성 subscription');
+	});
+
 	it('데이터 요청 실패 안내를 표시한다', () => {
 		const html = renderToStaticMarkup(
 			<ServicesPageContent

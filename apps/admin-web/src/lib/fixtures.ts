@@ -20,6 +20,8 @@ export const clientServicesFixture: ClientServiceItem[] = [
 		updatedAt: '2026-07-01T00:00:00.000Z',
 		keyCount: 2,
 		activeKeyCount: 1,
+		subscriptionCount: 2,
+		activeSubscriptionCount: 1,
 		keys: [
 			{
 				id: 'key-catalog-active',
@@ -38,6 +40,28 @@ export const clientServicesFixture: ClientServiceItem[] = [
 				createdAt: '2026-07-01T00:05:00.000Z',
 			},
 		],
+		lifecycleSubscriptions: [
+			{
+				id: 'sub-catalog-upload-completed',
+				clientServiceId: 'svc-catalog',
+				eventType: 'image.upload.completed',
+				consumerGroup: 'catalog-image-consumer',
+				isEnabled: true,
+				description: '상품 서비스가 업로드 완료 이벤트를 소비합니다.',
+				createdAt: '2026-07-01T00:15:00.000Z',
+				updatedAt: '2026-07-01T00:15:00.000Z',
+			},
+			{
+				id: 'sub-catalog-upload-failed',
+				clientServiceId: 'svc-catalog',
+				eventType: 'image.upload.failed',
+				consumerGroup: 'catalog-image-failure-consumer',
+				isEnabled: false,
+				description: '실패 이벤트 임시 소비 설정',
+				createdAt: '2026-07-01T00:20:00.000Z',
+				updatedAt: '2026-07-01T00:25:00.000Z',
+			},
+		],
 	},
 	{
 		id: 'svc-admin',
@@ -49,7 +73,10 @@ export const clientServicesFixture: ClientServiceItem[] = [
 		updatedAt: '2026-07-01T04:00:00.000Z',
 		keyCount: 0,
 		activeKeyCount: 0,
+		subscriptionCount: 0,
+		activeSubscriptionCount: 0,
 		keys: [],
+		lifecycleSubscriptions: [],
 	},
 ];
 

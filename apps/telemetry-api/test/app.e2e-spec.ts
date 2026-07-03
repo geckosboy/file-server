@@ -278,7 +278,7 @@ describe('텔레메트리 API e2e', () => {
 		await request(app.getHttpServer()).get('/api/admin/health').expect(401);
 	});
 
-	it('관리자 API로 클라이언트 서비스를 등록하고 API key를 발급/폐기한다', async () => {
+	it('관리자 API로 클라이언트 서비스를 등록하고 API key와 lifecycle subscription을 관리한다', async () => {
 		const created = await request(app.getHttpServer())
 			.post('/api/admin/client-services')
 			.set('x-admin-token', adminToken)
@@ -311,6 +311,46 @@ describe('텔레메트리 API e2e', () => {
 		});
 		expect(keyResult.key).not.toHaveProperty('keyHash');
 
+		const subscription = await request(app.getHttpServer())
+			.post(`/api/admin/client-services/${created.id}/lifecycle-subscriptions`)
+			.set('x-admin-token', adminToken)
+			.send({
+				eventType: 'image.upload.completed',
+				consumerGroup: 'catalog-image-consumer',
+				description: '상품 서비스가 업로드 완료 이벤트를 소비합니다.',
+			})
+			.expect(201)
+			.then(({ body }) => body);
+
+		expect(subscription).toMatchObject({
+			clientServiceId: created.id,
+			eventType: 'image.upload.completed',
+			consumerGroup: 'catalog-image-consumer',
+			isEnabled: true,
+			description: '상품 서비스가 업로드 완료 이벤트를 소비합니다.',
+		});
+
+		await request(app.getHttpServer())
+			.patch(
+				`/api/admin/client-services/${created.id}/lifecycle-subscriptions/${subscription.id}`,
+			)
+			.set('x-admin-token', adminToken)
+			.send({
+				eventType: 'image.upload.failed',
+				consumerGroup: 'catalog-image-failure-consumer',
+				isEnabled: false,
+				description: '실패 이벤트만 소비합니다.',
+			})
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body).toMatchObject({
+					eventType: 'image.upload.failed',
+					consumerGroup: 'catalog-image-failure-consumer',
+					isEnabled: false,
+					description: '실패 이벤트만 소비합니다.',
+				});
+			});
+
 		await request(app.getHttpServer())
 			.post(
 				`/api/admin/client-services/${created.id}/keys/${keyResult.key.id}/revoke`,
@@ -328,6 +368,14 @@ describe('텔레메트리 API e2e', () => {
 			.expect(({ body }) => {
 				expect(body.keyCount).toBe(1);
 				expect(body.activeKeyCount).toBe(0);
+				expect(body.subscriptionCount).toBe(1);
+				expect(body.activeSubscriptionCount).toBe(0);
+				expect(body.lifecycleSubscriptions).toEqual([
+					expect.objectContaining({
+						eventType: 'image.upload.failed',
+						consumerGroup: 'catalog-image-failure-consumer',
+					}),
+				]);
 			});
 	});
 });

@@ -44,4 +44,22 @@ export class ClientServicesController {
 	revokeKey(@Param('id') id: string, @Param('keyId') keyId: string) {
 		return this.clientServicesService.revokeKey(id, keyId);
 	}
+
+	@Post(':id/lifecycle-subscriptions')
+	createLifecycleSubscription(@Param('id') id: string, @Body() body: unknown) {
+		return this.clientServicesService.createLifecycleSubscription(id, body);
+	}
+
+	@Patch(':id/lifecycle-subscriptions/:subscriptionId')
+	updateLifecycleSubscription(
+		@Param('id') id: string,
+		@Param('subscriptionId') subscriptionId: string,
+		@Body() body: unknown,
+	) {
+		return this.clientServicesService.updateLifecycleSubscription(
+			id,
+			subscriptionId,
+			body,
+		);
+	}
 }

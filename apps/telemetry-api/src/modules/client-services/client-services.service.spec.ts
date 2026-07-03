@@ -77,4 +77,72 @@ describe('클라이언트 서비스 관리 서비스', () => {
 			NotFoundException,
 		);
 	});
+
+	it('lifecycle subscription을 등록하고 서비스 상세에서 반환한다', async () => {
+		const created = await service.createService(createPayload);
+		const subscription = await service.createLifecycleSubscription(created.id, {
+			eventType: 'image.upload.completed',
+			consumerGroup: 'catalog-image-consumer',
+			description: '상품 서비스가 업로드 완료 이벤트를 소비합니다.',
+		});
+		const detail = await service.getService(created.id);
+
+		expect(subscription).toMatchObject({
+			clientServiceId: created.id,
+			eventType: 'image.upload.completed',
+			consumerGroup: 'catalog-image-consumer',
+			isEnabled: true,
+			description: '상품 서비스가 업로드 완료 이벤트를 소비합니다.',
+		});
+		expect(detail.subscriptionCount).toBe(1);
+		expect(detail.activeSubscriptionCount).toBe(1);
+		expect(detail.lifecycleSubscriptions).toEqual([
+			expect.objectContaining({
+				eventType: 'image.upload.completed',
+				consumerGroup: 'catalog-image-consumer',
+			}),
+		]);
+	});
+
+	it('lifecycle subscription을 수정하고 비활성화한다', async () => {
+		const created = await service.createService(createPayload);
+		const subscription = await service.createLifecycleSubscription(created.id, {
+			eventType: 'image.upload.completed',
+			consumerGroup: 'catalog-image-consumer',
+		});
+
+		const updated = await service.updateLifecycleSubscription(
+			created.id,
+			subscription.id,
+			{
+				eventType: 'image.upload.failed',
+				consumerGroup: 'catalog-image-failure-consumer',
+				isEnabled: false,
+				description: '실패 이벤트만 임시 소비합니다.',
+			},
+		);
+		const detail = await service.getService(created.id);
+
+		expect(updated).toMatchObject({
+			eventType: 'image.upload.failed',
+			consumerGroup: 'catalog-image-failure-consumer',
+			isEnabled: false,
+			description: '실패 이벤트만 임시 소비합니다.',
+		});
+		expect(detail.activeSubscriptionCount).toBe(0);
+	});
+
+	it('같은 서비스의 eventType/consumerGroup 중복 subscription은 409로 매핑한다', async () => {
+		const created = await service.createService(createPayload);
+		const payload = {
+			eventType: 'image.upload.completed',
+			consumerGroup: 'catalog-image-consumer',
+		};
+
+		await service.createLifecycleSubscription(created.id, payload);
+
+		await expect(
+			service.createLifecycleSubscription(created.id, payload),
+		).rejects.toBeInstanceOf(ConflictException);
+	});
 });

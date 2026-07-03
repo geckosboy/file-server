@@ -1,16 +1,21 @@
 import { Injectable } from '@nestjs/common';
 import {
+	ClientServiceLifecycleSubscriptionRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
 	ClientServiceStatus,
+	CreateClientServiceLifecycleSubscriptionInput,
 	CreateClientServiceInput,
 	JsonObject,
+	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
 } from './client-services.types';
 
 export class ClientServiceNotFoundError extends Error {}
 export class ClientServiceKeyNotFoundError extends Error {}
+export class ClientServiceLifecycleSubscriptionNotFoundError extends Error {}
 export class DuplicateClientServiceSlugError extends Error {}
+export class DuplicateClientServiceLifecycleSubscriptionError extends Error {}
 
 export interface ClientServicesRepository {
 	listServices(): Promise<ClientServiceRecord[]>;
@@ -36,6 +41,18 @@ export interface ClientServicesRepository {
 		keyId: string;
 		revokedAt: string;
 	}): Promise<ClientServiceKeyRecord>;
+	createLifecycleSubscription(
+		input: CreateClientServiceLifecycleSubscriptionInput & {
+			clientServiceId: string;
+			isEnabled: boolean;
+		},
+	): Promise<ClientServiceLifecycleSubscriptionRecord>;
+	updateLifecycleSubscription(
+		input: UpdateClientServiceLifecycleSubscriptionInput & {
+			clientServiceId: string;
+			subscriptionId: string;
+		},
+	): Promise<ClientServiceLifecycleSubscriptionRecord>;
 	clear(): Promise<void>;
 	getStorageKind(): 'memory' | 'postgresql';
 }
@@ -64,10 +81,25 @@ interface MutableClientServiceKey {
 	createdAt: string;
 }
 
+interface MutableClientServiceLifecycleSubscription {
+	id: string;
+	clientServiceId: string;
+	eventType: ClientServiceLifecycleSubscriptionRecord['eventType'];
+	consumerGroup: string;
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
 @Injectable()
 export class InMemoryClientServicesRepository implements ClientServicesRepository {
 	private readonly services = new Map<string, MutableClientService>();
 	private readonly keys = new Map<string, MutableClientServiceKey>();
+	private readonly lifecycleSubscriptions = new Map<
+		string,
+		MutableClientServiceLifecycleSubscription
+	>();
 	private sequence = 0;
 
 	async listServices(): Promise<ClientServiceRecord[]> {
@@ -188,9 +220,70 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 		return toKeyRecord(next);
 	}
 
+	async createLifecycleSubscription(
+		input: CreateClientServiceLifecycleSubscriptionInput & {
+			clientServiceId: string;
+			isEnabled: boolean;
+		},
+	): Promise<ClientServiceLifecycleSubscriptionRecord> {
+		if (!this.services.has(input.clientServiceId)) {
+			throw new ClientServiceNotFoundError(input.clientServiceId);
+		}
+		this.assertUniqueLifecycleSubscription(input);
+
+		const now = new Date().toISOString();
+		const subscription: MutableClientServiceLifecycleSubscription = {
+			id: `sub_${++this.sequence}`,
+			clientServiceId: input.clientServiceId,
+			eventType: input.eventType,
+			consumerGroup: input.consumerGroup,
+			isEnabled: input.isEnabled,
+			description: input.description,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.lifecycleSubscriptions.set(subscription.id, subscription);
+		return toLifecycleSubscriptionRecord(subscription);
+	}
+
+	async updateLifecycleSubscription(
+		input: UpdateClientServiceLifecycleSubscriptionInput & {
+			clientServiceId: string;
+			subscriptionId: string;
+		},
+	): Promise<ClientServiceLifecycleSubscriptionRecord> {
+		const subscription = this.lifecycleSubscriptions.get(input.subscriptionId);
+		if (
+			!subscription ||
+			subscription.clientServiceId !== input.clientServiceId
+		) {
+			throw new ClientServiceLifecycleSubscriptionNotFoundError(
+				input.subscriptionId,
+			);
+		}
+
+		const next: MutableClientServiceLifecycleSubscription = {
+			...subscription,
+			...stripUndefined({
+				eventType: input.eventType,
+				consumerGroup: input.consumerGroup,
+				isEnabled: input.isEnabled,
+			}),
+			description:
+				input.description === null
+					? undefined
+					: (input.description ?? subscription.description),
+			updatedAt: new Date().toISOString(),
+		};
+		this.assertUniqueLifecycleSubscription(next, subscription.id);
+		this.lifecycleSubscriptions.set(subscription.id, next);
+		return toLifecycleSubscriptionRecord(next);
+	}
+
 	async clear(): Promise<void> {
 		this.services.clear();
 		this.keys.clear();
+		this.lifecycleSubscriptions.clear();
 	}
 
 	getStorageKind(): 'memory' {
@@ -204,6 +297,13 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 		const keys = [...this.keys.values()].filter(
 			(key) => key.clientServiceId === service.id,
 		);
+		const lifecycleSubscriptions = [...this.lifecycleSubscriptions.values()]
+			.filter((subscription) => subscription.clientServiceId === service.id)
+			.sort((left, right) =>
+				left.eventType === right.eventType
+					? left.consumerGroup.localeCompare(right.consumerGroup)
+					: left.eventType.localeCompare(right.eventType),
+			);
 		return {
 			id: service.id,
 			slug: service.slug,
@@ -215,8 +315,41 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 			updatedAt: service.updatedAt,
 			keyCount: keys.length,
 			activeKeyCount: keys.filter((key) => !key.revokedAt).length,
+			subscriptionCount: lifecycleSubscriptions.length,
+			activeSubscriptionCount: lifecycleSubscriptions.filter(
+				(subscription) => subscription.isEnabled,
+			).length,
 			...(includeKeys ? { keys: keys.map(toKeyRecord) } : {}),
+			...(includeKeys
+				? {
+						lifecycleSubscriptions: lifecycleSubscriptions.map(
+							toLifecycleSubscriptionRecord,
+						),
+					}
+				: {}),
 		};
+	}
+
+	private assertUniqueLifecycleSubscription(
+		input: {
+			clientServiceId: string;
+			eventType: string;
+			consumerGroup: string;
+		},
+		ignoreId?: string,
+	): void {
+		const duplicated = [...this.lifecycleSubscriptions.values()].some(
+			(subscription) =>
+				subscription.id !== ignoreId &&
+				subscription.clientServiceId === input.clientServiceId &&
+				subscription.eventType === input.eventType &&
+				subscription.consumerGroup === input.consumerGroup,
+		);
+		if (duplicated) {
+			throw new DuplicateClientServiceLifecycleSubscriptionError(
+				`${input.clientServiceId}:${input.eventType}:${input.consumerGroup}`,
+			);
+		}
 	}
 }
 
@@ -231,6 +364,21 @@ function toKeyRecord(key: MutableClientServiceKey): ClientServiceKeyRecord {
 		revokedAt: key.revokedAt,
 		lastUsedAt: key.lastUsedAt,
 		createdAt: key.createdAt,
+	};
+}
+
+function toLifecycleSubscriptionRecord(
+	subscription: MutableClientServiceLifecycleSubscription,
+): ClientServiceLifecycleSubscriptionRecord {
+	return {
+		id: subscription.id,
+		clientServiceId: subscription.clientServiceId,
+		eventType: subscription.eventType,
+		consumerGroup: subscription.consumerGroup,
+		isEnabled: subscription.isEnabled,
+		description: subscription.description,
+		createdAt: subscription.createdAt,
+		updatedAt: subscription.updatedAt,
 	};
 }
 

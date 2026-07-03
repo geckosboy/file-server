@@ -16,6 +16,7 @@ model ClientService {
 
   keys     ClientServiceKey[]
   policies ClientServicePolicy[]
+  lifecycleSubscriptions ClientServiceLifecycleSubscription[]
   events          TelemetryEvent[]
   lifecycleEvents ImageLifecycleEvent[]
 
@@ -66,6 +67,27 @@ model ClientServicePolicy {
   @@index([clientServiceId], map: "client_service_policies_client_service_id_idx")
   @@index([pathPattern], map: "client_service_policies_path_pattern_idx")
   @@map("client_service_policies")
+}
+
+model ClientServiceLifecycleSubscription {
+  id              String        @id(map: "client_service_lifecycle_subscriptions_pkey") @default(cuid())
+  clientServiceId String        @map("client_service_id")
+  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade, map: "client_service_lifecycle_subscriptions_client_service_id_fkey")
+
+  eventType     String  @map("event_type")
+  consumerGroup String  @map("consumer_group")
+  isEnabled     Boolean @default(true) @map("is_enabled")
+  description   String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([clientServiceId, eventType, consumerGroup], map: "client_service_lifecycle_subscriptions_service_event_group_key")
+  @@index([clientServiceId], map: "client_service_lifecycle_subscriptions_client_service_id_idx")
+  @@index([eventType], map: "client_service_lifecycle_subscriptions_event_type_idx")
+  @@index([consumerGroup], map: "client_service_lifecycle_subscriptions_consumer_group_idx")
+  @@index([isEnabled], map: "client_service_lifecycle_subscriptions_is_enabled_idx")
+  @@map("client_service_lifecycle_subscriptions")
 }
 
 model TelemetryEvent {

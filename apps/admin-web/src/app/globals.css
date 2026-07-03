@@ -372,6 +372,16 @@ th {
 	gap: 0.35rem;
 }
 
+.inline-form {
+	display: grid;
+	gap: 0.5rem;
+	grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.inline-form .button {
+	align-self: stretch;
+}
+
 .key-form {
 	background: #eff6ff;
 }

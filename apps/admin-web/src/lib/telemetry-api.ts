@@ -137,6 +137,17 @@ export interface ClientServiceKeyItem {
 	createdAt: string;
 }
 
+export interface ClientServiceLifecycleSubscriptionItem {
+	id: string;
+	clientServiceId: string;
+	eventType: LifecycleEventType;
+	consumerGroup: string;
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
 export interface ClientServiceItem {
 	id: string;
 	slug: string;
@@ -148,7 +159,10 @@ export interface ClientServiceItem {
 	updatedAt: string;
 	keyCount: number;
 	activeKeyCount: number;
+	subscriptionCount: number;
+	activeSubscriptionCount: number;
 	keys?: ClientServiceKeyItem[];
+	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionItem[];
 }
 
 export interface CreateClientServiceInput {
@@ -171,6 +185,20 @@ export interface CreateClientServiceKeyInput {
 	name?: string;
 	scopes?: Record<string, unknown>;
 	expiresAt?: string;
+}
+
+export interface CreateClientServiceLifecycleSubscriptionInput {
+	eventType: LifecycleEventType;
+	consumerGroup: string;
+	isEnabled?: boolean;
+	description?: string;
+}
+
+export interface UpdateClientServiceLifecycleSubscriptionInput {
+	eventType?: LifecycleEventType;
+	consumerGroup?: string;
+	isEnabled?: boolean;
+	description?: string | null;
 }
 
 export interface CreateClientServiceKeyResponse {
@@ -343,6 +371,25 @@ export const buildClientServiceKeyRevokeUrl = (
 		`/client-services/${serviceId}/keys/${keyId}/revoke`,
 	).toString();
 
+export const buildClientServiceLifecycleSubscriptionsUrl = (
+	serviceId: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	createAdminUrl(
+		baseUrl,
+		`/client-services/${serviceId}/lifecycle-subscriptions`,
+	).toString();
+
+export const buildClientServiceLifecycleSubscriptionUrl = (
+	serviceId: string,
+	subscriptionId: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	createAdminUrl(
+		baseUrl,
+		`/client-services/${serviceId}/lifecycle-subscriptions/${subscriptionId}`,
+	).toString();
+
 export const fetchTelemetryJson = async <T>(
 	url: string,
 	init: RequestInit = {},
@@ -447,6 +494,27 @@ export const revokeClientServiceKey = (serviceId: string, keyId: string) =>
 	writeTelemetryJson<ClientServiceKeyItem>(
 		buildClientServiceKeyRevokeUrl(serviceId, keyId),
 		'POST',
+	);
+
+export const createClientServiceLifecycleSubscription = (
+	serviceId: string,
+	input: CreateClientServiceLifecycleSubscriptionInput,
+) =>
+	writeTelemetryJson<ClientServiceLifecycleSubscriptionItem>(
+		buildClientServiceLifecycleSubscriptionsUrl(serviceId),
+		'POST',
+		input,
+	);
+
+export const updateClientServiceLifecycleSubscription = (
+	serviceId: string,
+	subscriptionId: string,
+	input: UpdateClientServiceLifecycleSubscriptionInput,
+) =>
+	writeTelemetryJson<ClientServiceLifecycleSubscriptionItem>(
+		buildClientServiceLifecycleSubscriptionUrl(serviceId, subscriptionId),
+		'PATCH',
+		input,
 	);
 
 export const toMetricDisplay = (

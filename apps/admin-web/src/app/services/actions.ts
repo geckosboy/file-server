@@ -4,11 +4,14 @@ import { revalidatePath } from 'next/cache';
 import {
 	createClientService,
 	createClientServiceKey,
+	createClientServiceLifecycleSubscription,
 	fetchClientServiceDetailsList,
 	revokeClientServiceKey,
 	updateClientService,
+	updateClientServiceLifecycleSubscription,
 	type ClientServiceItem,
 	type ClientServiceStatus,
+	type LifecycleEventType,
 } from '@/lib/telemetry-api';
 
 export interface GeneratedKeyNotice {
@@ -90,6 +93,33 @@ async function runIntent(
 		};
 	}
 
+	if (intent === 'create-lifecycle-subscription') {
+		await createClientServiceLifecycleSubscription(
+			readRequiredFormString(formData, 'serviceId'),
+			{
+				eventType: readLifecycleEventType(formData),
+				consumerGroup: readRequiredFormString(formData, 'consumerGroup'),
+				isEnabled: readEnabled(formData),
+				description: readOptionalFormString(formData, 'description'),
+			},
+		);
+		return undefined;
+	}
+
+	if (intent === 'update-lifecycle-subscription') {
+		await updateClientServiceLifecycleSubscription(
+			readRequiredFormString(formData, 'serviceId'),
+			readRequiredFormString(formData, 'subscriptionId'),
+			{
+				eventType: readLifecycleEventType(formData),
+				consumerGroup: readRequiredFormString(formData, 'consumerGroup'),
+				isEnabled: readEnabled(formData),
+				description: readNullableFormString(formData, 'description'),
+			},
+		);
+		return undefined;
+	}
+
 	if (intent === 'revoke-key') {
 		await revokeClientServiceKey(
 			readRequiredFormString(formData, 'serviceId'),
@@ -110,6 +140,12 @@ function successMessage(intent: string) {
 	}
 	if (intent === 'create-key') {
 		return 'API key를 발급했습니다. 원문은 지금 한 번만 표시됩니다.';
+	}
+	if (intent === 'create-lifecycle-subscription') {
+		return 'lifecycle subscription을 등록했습니다.';
+	}
+	if (intent === 'update-lifecycle-subscription') {
+		return 'lifecycle subscription을 저장했습니다.';
 	}
 	if (intent === 'revoke-key') {
 		return 'API key를 폐기했습니다.';
@@ -145,6 +181,27 @@ function readStatus(formData: FormData): ClientServiceStatus | undefined {
 		throw new Error('status는 ACTIVE 또는 DISABLED만 가능합니다.');
 	}
 	return status;
+}
+
+function readLifecycleEventType(formData: FormData): LifecycleEventType {
+	const eventType = readRequiredFormString(formData, 'eventType');
+	if (
+		eventType !== 'image.upload.completed' &&
+		eventType !== 'image.upload.failed'
+	) {
+		throw new Error(
+			'eventType은 image.upload.completed 또는 image.upload.failed만 가능합니다.',
+		);
+	}
+	return eventType;
+}
+
+function readEnabled(formData: FormData) {
+	const value = readRequiredFormString(formData, 'isEnabled');
+	if (value !== 'true' && value !== 'false') {
+		throw new Error('활성화 여부는 true 또는 false만 가능합니다.');
+	}
+	return value === 'true';
 }
 
 function readScopes(formData: FormData) {

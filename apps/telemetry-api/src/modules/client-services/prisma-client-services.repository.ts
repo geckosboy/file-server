@@ -2,17 +2,22 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
 import {
+	ClientServiceLifecycleSubscriptionRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
 	ClientServiceStatus,
+	CreateClientServiceLifecycleSubscriptionInput,
 	CreateClientServiceInput,
 	JsonObject,
+	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
 } from './client-services.types';
 import {
 	ClientServiceKeyNotFoundError,
+	ClientServiceLifecycleSubscriptionNotFoundError,
 	ClientServiceNotFoundError,
 	ClientServicesRepository,
+	DuplicateClientServiceLifecycleSubscriptionError,
 	DuplicateClientServiceSlugError,
 } from './client-services.repository';
 
@@ -22,7 +27,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 
 	async listServices(): Promise<ClientServiceRecord[]> {
 		const services = await this.prisma.clientService.findMany({
-			include: { keys: true },
+			include: { keys: true, lifecycleSubscriptions: true },
 			orderBy: { slug: 'asc' },
 		});
 		return services.map((service) => toServiceRecord(service));
@@ -31,7 +36,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 	async findServiceById(id: string): Promise<ClientServiceRecord | null> {
 		const service = await this.prisma.clientService.findUnique({
 			where: { id },
-			include: { keys: true },
+			include: { keys: true, lifecycleSubscriptions: true },
 		});
 		return service ? toServiceRecord(service, true) : null;
 	}
@@ -39,7 +44,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 	async findServiceBySlug(slug: string): Promise<ClientServiceRecord | null> {
 		const service = await this.prisma.clientService.findUnique({
 			where: { slug },
-			include: { keys: true },
+			include: { keys: true, lifecycleSubscriptions: true },
 		});
 		return service ? toServiceRecord(service, true) : null;
 	}
@@ -50,7 +55,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 		try {
 			const service = await this.prisma.clientService.create({
 				data: input,
-				include: { keys: true },
+				include: { keys: true, lifecycleSubscriptions: true },
 			});
 			return toServiceRecord(service, true);
 		} catch (error) {
@@ -69,7 +74,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 			const service = await this.prisma.clientService.update({
 				where: { id },
 				data: input,
-				include: { keys: true },
+				include: { keys: true, lifecycleSubscriptions: true },
 			});
 			return toServiceRecord(service, true);
 		} catch (error) {
@@ -134,9 +139,82 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 		);
 	}
 
+	async createLifecycleSubscription(
+		input: CreateClientServiceLifecycleSubscriptionInput & {
+			clientServiceId: string;
+			isEnabled: boolean;
+		},
+	): Promise<ClientServiceLifecycleSubscriptionRecord> {
+		try {
+			const subscription =
+				await this.prisma.clientServiceLifecycleSubscription.create({
+					data: {
+						clientService: { connect: { id: input.clientServiceId } },
+						eventType: input.eventType,
+						consumerGroup: input.consumerGroup,
+						isEnabled: input.isEnabled,
+						description: input.description,
+					},
+				});
+			return toLifecycleSubscriptionRecord(subscription);
+		} catch (error) {
+			if (isUniqueConstraintError(error)) {
+				throw new DuplicateClientServiceLifecycleSubscriptionError(
+					`${input.clientServiceId}:${input.eventType}:${input.consumerGroup}`,
+				);
+			}
+			if (isNotFoundError(error)) {
+				throw new ClientServiceNotFoundError(input.clientServiceId);
+			}
+			throw error;
+		}
+	}
+
+	async updateLifecycleSubscription(
+		input: UpdateClientServiceLifecycleSubscriptionInput & {
+			clientServiceId: string;
+			subscriptionId: string;
+		},
+	): Promise<ClientServiceLifecycleSubscriptionRecord> {
+		const subscription =
+			await this.prisma.clientServiceLifecycleSubscription.findFirst({
+				where: {
+					id: input.subscriptionId,
+					clientServiceId: input.clientServiceId,
+				},
+			});
+		if (!subscription) {
+			throw new ClientServiceLifecycleSubscriptionNotFoundError(
+				input.subscriptionId,
+			);
+		}
+
+		try {
+			return toLifecycleSubscriptionRecord(
+				await this.prisma.clientServiceLifecycleSubscription.update({
+					where: { id: subscription.id },
+					data: {
+						eventType: input.eventType,
+						consumerGroup: input.consumerGroup,
+						isEnabled: input.isEnabled,
+						description: input.description === null ? null : input.description,
+					},
+				}),
+			);
+		} catch (error) {
+			if (isUniqueConstraintError(error)) {
+				throw new DuplicateClientServiceLifecycleSubscriptionError(
+					`${input.clientServiceId}:${input.eventType ?? subscription.eventType}:${input.consumerGroup ?? subscription.consumerGroup}`,
+				);
+			}
+			throw error;
+		}
+	}
+
 	async clear(): Promise<void> {
 		await this.prisma.$transaction([
 			this.prisma.clientServiceKey.deleteMany(),
+			this.prisma.clientServiceLifecycleSubscription.deleteMany(),
 			this.prisma.clientServicePolicy.deleteMany(),
 			this.prisma.clientService.deleteMany(),
 		]);
@@ -148,9 +226,11 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 }
 
 type ServiceWithKeys = Prisma.ClientServiceGetPayload<{
-	include: { keys: true };
+	include: { keys: true; lifecycleSubscriptions: true };
 }>;
 type KeyRow = Prisma.ClientServiceKeyGetPayload<Record<string, never>>;
+type LifecycleSubscriptionRow =
+	Prisma.ClientServiceLifecycleSubscriptionGetPayload<Record<string, never>>;
 
 function toServiceRecord(
 	service: ServiceWithKeys,
@@ -167,7 +247,22 @@ function toServiceRecord(
 		updatedAt: service.updatedAt.toISOString(),
 		keyCount: service.keys.length,
 		activeKeyCount: service.keys.filter((key) => !key.revokedAt).length,
+		subscriptionCount: service.lifecycleSubscriptions.length,
+		activeSubscriptionCount: service.lifecycleSubscriptions.filter(
+			(subscription) => subscription.isEnabled,
+		).length,
 		...(includeKeys ? { keys: service.keys.map(toKeyRecord) } : {}),
+		...(includeKeys
+			? {
+					lifecycleSubscriptions: [...service.lifecycleSubscriptions]
+						.sort((left, right) =>
+							left.eventType === right.eventType
+								? left.consumerGroup.localeCompare(right.consumerGroup)
+								: left.eventType.localeCompare(right.eventType),
+						)
+						.map(toLifecycleSubscriptionRecord),
+				}
+			: {}),
 	};
 }
 
@@ -182,6 +277,22 @@ function toKeyRecord(key: KeyRow): ClientServiceKeyRecord {
 		revokedAt: key.revokedAt?.toISOString(),
 		lastUsedAt: key.lastUsedAt?.toISOString(),
 		createdAt: key.createdAt.toISOString(),
+	};
+}
+
+function toLifecycleSubscriptionRecord(
+	subscription: LifecycleSubscriptionRow,
+): ClientServiceLifecycleSubscriptionRecord {
+	return {
+		id: subscription.id,
+		clientServiceId: subscription.clientServiceId,
+		eventType:
+			subscription.eventType as ClientServiceLifecycleSubscriptionRecord['eventType'],
+		consumerGroup: subscription.consumerGroup,
+		isEnabled: subscription.isEnabled,
+		description: subscription.description ?? undefined,
+		createdAt: subscription.createdAt.toISOString(),
+		updatedAt: subscription.updatedAt.toISOString(),
 	};
 }
 

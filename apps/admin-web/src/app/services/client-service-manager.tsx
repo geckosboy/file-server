@@ -127,6 +127,14 @@ function ServiceCard({
 					<span>활성 key</span>
 				</div>
 				<div>
+					<strong>{service.subscriptionCount}</strong>
+					<span>전체 subscription</span>
+				</div>
+				<div>
+					<strong>{service.activeSubscriptionCount}</strong>
+					<span>활성 subscription</span>
+				</div>
+				<div>
 					<strong>{formatDateTime(service.updatedAt)}</strong>
 					<span>최근 수정</span>
 				</div>
@@ -240,6 +248,138 @@ function ServiceCard({
 					</table>
 				) : (
 					<p className="empty-state">발급된 API key가 없습니다.</p>
+				)}
+			</div>
+
+			<form action={formAction} className="sub-form">
+				<input
+					name="intent"
+					type="hidden"
+					value="create-lifecycle-subscription"
+				/>
+				<input name="serviceId" type="hidden" value={service.id} />
+				<label>
+					구독 이벤트 타입
+					<select name="eventType" defaultValue="image.upload.completed">
+						<option value="image.upload.completed">
+							image.upload.completed
+						</option>
+						<option value="image.upload.failed">image.upload.failed</option>
+					</select>
+				</label>
+				<label>
+					consumer group
+					<input
+						name="consumerGroup"
+						placeholder="catalog-image-consumer"
+						required
+					/>
+				</label>
+				<label>
+					활성화 여부
+					<select name="isEnabled" defaultValue="true">
+						<option value="true">활성</option>
+						<option value="false">비활성</option>
+					</select>
+				</label>
+				<label>
+					설명
+					<input
+						name="description"
+						placeholder="이 서비스가 어떤 이벤트를 왜 소비하는지"
+					/>
+				</label>
+				<button className="button" disabled={isPending} type="submit">
+					lifecycle subscription 등록
+				</button>
+			</form>
+
+			<div className="key-list">
+				<h3>Lifecycle subscriptions</h3>
+				{service.lifecycleSubscriptions?.length ? (
+					<table>
+						<thead>
+							<tr>
+								<th>event type</th>
+								<th>consumer group</th>
+								<th>상태</th>
+								<th>설명</th>
+								<th>관리</th>
+							</tr>
+						</thead>
+						<tbody>
+							{service.lifecycleSubscriptions.map((subscription) => (
+								<tr key={subscription.id}>
+									<td>{subscription.eventType}</td>
+									<td>{subscription.consumerGroup}</td>
+									<td>{subscription.isEnabled ? '활성' : '비활성'}</td>
+									<td>{subscription.description ?? '-'}</td>
+									<td>
+										<form action={formAction} className="inline-form">
+											<input
+												name="intent"
+												type="hidden"
+												value="update-lifecycle-subscription"
+											/>
+											<input
+												name="serviceId"
+												type="hidden"
+												value={service.id}
+											/>
+											<input
+												name="subscriptionId"
+												type="hidden"
+												value={subscription.id}
+											/>
+											<select
+												aria-label="구독 이벤트 타입"
+												name="eventType"
+												defaultValue={subscription.eventType}
+											>
+												<option value="image.upload.completed">
+													image.upload.completed
+												</option>
+												<option value="image.upload.failed">
+													image.upload.failed
+												</option>
+											</select>
+											<input
+												aria-label="consumer group"
+												name="consumerGroup"
+												defaultValue={subscription.consumerGroup}
+												required
+											/>
+											<select
+												aria-label="활성화 여부"
+												name="isEnabled"
+												defaultValue={String(subscription.isEnabled)}
+											>
+												<option value="true">활성</option>
+												<option value="false">비활성</option>
+											</select>
+											<input
+												aria-label="설명"
+												name="description"
+												defaultValue={subscription.description ?? ''}
+												placeholder="설명"
+											/>
+											<button
+												className="button button-secondary"
+												disabled={isPending}
+												type="submit"
+											>
+												저장
+											</button>
+										</form>
+									</td>
+								</tr>
+							))}
+						</tbody>
+					</table>
+				) : (
+					<p className="empty-state">
+						등록된 lifecycle subscription이 없습니다.
+					</p>
 				)}
 			</div>
 		</article>

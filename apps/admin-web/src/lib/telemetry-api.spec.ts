@@ -1,5 +1,7 @@
 import {
 	TelemetryApiError,
+	buildClientServiceLifecycleSubscriptionUrl,
+	buildClientServiceLifecycleSubscriptionsUrl,
 	buildClientServiceKeyRevokeUrl,
 	buildClientServiceKeysUrl,
 	buildClientServiceUrl,
@@ -137,6 +139,23 @@ describe('텔레메트리 API 클라이언트', () => {
 			),
 		).toBe(
 			'https://telemetry.test/api/admin/client-services/svc-1/keys/key-1/revoke',
+		);
+		expect(
+			buildClientServiceLifecycleSubscriptionsUrl(
+				'svc-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe(
+			'https://telemetry.test/api/admin/client-services/svc-1/lifecycle-subscriptions',
+		);
+		expect(
+			buildClientServiceLifecycleSubscriptionUrl(
+				'svc-1',
+				'sub-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe(
+			'https://telemetry.test/api/admin/client-services/svc-1/lifecycle-subscriptions/sub-1',
 		);
 	});
 

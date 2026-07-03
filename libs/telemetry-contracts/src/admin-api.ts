@@ -395,6 +395,8 @@ export type ImageVariantsResponse = {
 };
 
 export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
+export type ClientServiceLifecycleEventType =
+	'image.upload.completed' | 'image.upload.failed';
 
 export type ClientServiceKeyItem = {
 	id: string;
@@ -408,6 +410,17 @@ export type ClientServiceKeyItem = {
 	createdAt: string;
 };
 
+export type ClientServiceLifecycleSubscriptionItem = {
+	id: string;
+	clientServiceId: string;
+	eventType: ClientServiceLifecycleEventType;
+	consumerGroup: string;
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
+};
+
 export type ClientServiceItem = {
 	id: string;
 	slug: string;
@@ -419,7 +432,10 @@ export type ClientServiceItem = {
 	updatedAt: string;
 	keyCount: number;
 	activeKeyCount: number;
+	subscriptionCount: number;
+	activeSubscriptionCount: number;
 	keys?: ClientServiceKeyItem[];
+	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionItem[];
 };
 
 export type CreateClientServiceKeyResponse = {
