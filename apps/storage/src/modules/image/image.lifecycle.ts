@@ -1,0 +1,115 @@
+import { Logger } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
+import {
+	assertImageLifecycleEvent,
+	createLifecycleImageKey,
+	createLifecycleKafkaKey,
+	IMAGE_LIFECYCLE_SCHEMA_VERSION,
+	IMAGE_LIFECYCLE_TOPIC,
+	ImageLifecycleEnvironment,
+	ImageLifecycleEvent,
+	ImageLifecycleEventType,
+	ImageLifecycleFormat,
+	ImageLifecycleSourceApp,
+	ImageLifecycleStatus,
+} from '@file/telemetry-contracts/lifecycle';
+import { randomUUID } from 'crypto';
+import { lastValueFrom } from 'rxjs';
+
+export {
+	IMAGE_LIFECYCLE_TOPIC,
+	ImageLifecycleEventType,
+	ImageLifecycleStatus,
+} from '@file/telemetry-contracts/lifecycle';
+export type { ImageLifecycleEvent } from '@file/telemetry-contracts/lifecycle';
+
+type CreateImageLifecycleEventInput = {
+	eventId?: string;
+	eventType: ImageLifecycleEventType;
+	occurredAt?: string;
+	environment?: ImageLifecycleEnvironment;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+	requestId?: string;
+	traceId?: string;
+	imageId?: number;
+	path: string;
+	name: string;
+	imageKey?: string;
+	format?: ImageLifecycleFormat;
+	inputBytes?: number;
+	outputBytes?: number;
+	durationMs?: number;
+	status: ImageLifecycleStatus;
+	errorCode?: string;
+	errorMessage?: string;
+};
+
+const getLifecycleEnvironment = (): ImageLifecycleEnvironment => {
+	switch (process.env.NODE_ENV) {
+		case 'production':
+			return ImageLifecycleEnvironment.Production;
+		case 'test':
+			return ImageLifecycleEnvironment.Test;
+		default:
+			return ImageLifecycleEnvironment.Development;
+	}
+};
+
+export const createImageLifecycleEvent = (
+	input: CreateImageLifecycleEventInput,
+): ImageLifecycleEvent => {
+	const event = {
+		schemaVersion: IMAGE_LIFECYCLE_SCHEMA_VERSION,
+		eventId: input.eventId ?? randomUUID(),
+		eventType: input.eventType,
+		occurredAt: input.occurredAt ?? new Date().toISOString(),
+		sourceApp: ImageLifecycleSourceApp.Storage,
+		environment: input.environment ?? getLifecycleEnvironment(),
+		clientServiceId: input.clientServiceId,
+		clientServiceSlug: input.clientServiceSlug,
+		requestId: input.requestId,
+		traceId: input.traceId,
+		imageId: input.imageId,
+		path: input.path,
+		name: input.name,
+		imageKey: input.imageKey ?? createLifecycleImageKey(input.path, input.name),
+		format: input.format,
+		inputBytes: input.inputBytes,
+		outputBytes: input.outputBytes,
+		durationMs: input.durationMs,
+		status: input.status,
+		errorCode: input.errorCode,
+		errorMessage: input.errorMessage,
+	};
+
+	return assertImageLifecycleEvent(event);
+};
+
+export const publishImageLifecycleEvent = async ({
+	client,
+	event,
+	logger,
+}: {
+	client?: Pick<ClientKafka, 'emit'>;
+	event: ImageLifecycleEvent;
+	logger: Logger;
+}) => {
+	if (!client || typeof client.emit !== 'function') {
+		return;
+	}
+
+	try {
+		await lastValueFrom(
+			client.emit(IMAGE_LIFECYCLE_TOPIC, {
+				key: createLifecycleKafkaKey(event),
+				value: JSON.stringify(event),
+			}),
+		);
+	} catch (error) {
+		logger.warn(`이미지 lifecycle 이벤트 발행 실패: ${errorToMessage(error)}`);
+	}
+};
+
+const errorToMessage = (error: unknown): string =>
+	error instanceof Error ? error.message : String(error);

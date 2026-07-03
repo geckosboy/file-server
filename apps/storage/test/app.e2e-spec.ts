@@ -18,6 +18,10 @@ import {
 	IMAGE_TELEMETRY_TOPIC,
 	ImageTelemetryEventType,
 } from '../src/modules/image/image.telemetry';
+import {
+	IMAGE_LIFECYCLE_TOPIC,
+	ImageLifecycleEventType,
+} from '../src/modules/image/image.lifecycle';
 import { ImageManager } from '../src/modules/image/strategies/manager';
 import { JpegStrategy } from '../src/modules/image/strategies/sharp/jpeg.strategy';
 import { PngStrategy } from '../src/modules/image/strategies/sharp/png.strategy';
@@ -78,6 +82,11 @@ describe('스토리지 앱 e2e', () => {
 	const getTelemetryPayloads = () =>
 		imageClient.emit.mock.calls
 			.filter(([topic]) => topic === IMAGE_TELEMETRY_TOPIC)
+			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
+
+	const getLifecyclePayloads = () =>
+		imageClient.emit.mock.calls
+			.filter(([topic]) => topic === IMAGE_LIFECYCLE_TOPIC)
 			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(async () => {
@@ -164,6 +173,20 @@ describe('스토리지 앱 e2e', () => {
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.UploadCompleted,
+				sourceApp: 'storage',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: testRequestId,
+				imageId: 100,
+				path: 'e2e-storage/image',
+				name: 'sample.png',
+				imageKey: 'e2e-storage/image/sample.png',
+				status: 'success',
+			}),
+		]);
+		expect(getLifecyclePayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageLifecycleEventType.UploadCompleted,
 				sourceApp: 'storage',
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',

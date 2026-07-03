@@ -10,7 +10,9 @@
 			"@file/global": ["../../libs/global/src"],
 			"@file/nest-common": ["../../libs/nest-common/src"],
 			"@file/image-contracts": ["../../libs/image-contracts/src"],
-			"@file/database": ["../../libs/database/src"]
+			"@file/database": ["../../libs/database/src"],
+			"@file/telemetry-contracts": ["../../libs/telemetry-contracts/src"],
+			"@file/telemetry-contracts/*": ["../../libs/telemetry-contracts/src/*"]
 		}
 	}
 }

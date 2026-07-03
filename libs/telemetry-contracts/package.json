@@ -38,5 +38,27 @@
 		],
 		"coverageDirectory": "../coverage",
 		"testEnvironment": "node"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"require": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./events": {
+			"types": "./dist/events.d.ts",
+			"require": "./dist/events.js",
+			"default": "./dist/events.js"
+		},
+		"./lifecycle": {
+			"types": "./dist/lifecycle.d.ts",
+			"require": "./dist/lifecycle.js",
+			"default": "./dist/lifecycle.js"
+		},
+		"./admin-api": {
+			"types": "./dist/admin-api.d.ts",
+			"require": "./dist/admin-api.js",
+			"default": "./dist/admin-api.js"
+		}
 	}
 }

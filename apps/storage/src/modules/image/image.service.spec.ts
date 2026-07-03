@@ -6,6 +6,10 @@ import {
 	IMAGE_TELEMETRY_TOPIC,
 	ImageTelemetryEventType,
 } from './image.telemetry';
+import {
+	IMAGE_LIFECYCLE_TOPIC,
+	ImageLifecycleEventType,
+} from './image.lifecycle';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
@@ -189,6 +193,49 @@ describe('스토리지 이미지 서비스', () => {
 		expect(telemetryPayload.durationMs).toEqual(expect.any(Number));
 	});
 
+	it('파일 업로드 후 file.image.lifecycle.v1 lifecycle 이벤트를 발행한다', async () => {
+		const file = createMulterFile();
+
+		await service.uploadFile({
+			file,
+			apiInfo: {
+				id: 10,
+				path: 'products/image',
+			},
+			clientServiceContext,
+		});
+
+		const lifecycleMessage = getEmittedMessage(IMAGE_LIFECYCLE_TOPIC);
+		const lifecyclePayload = parseKafkaPayload(lifecycleMessage);
+
+		expect(lifecycleMessage.key).toBe(
+			`local-demo:products/image/sample.png:${ImageLifecycleEventType.UploadCompleted}`,
+		);
+		expect(lifecyclePayload).toEqual(
+			expect.objectContaining({
+				schemaVersion: 1,
+				eventType: ImageLifecycleEventType.UploadCompleted,
+				sourceApp: 'storage',
+				environment: 'test',
+				imageId: 10,
+				path: 'products/image',
+				name: 'sample.png',
+				imageKey: 'products/image/sample.png',
+				format: 'png',
+				inputBytes: file.size,
+				outputBytes: 128,
+				status: 'success',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: 'req-storage-1',
+				traceId: 'trace-storage-1',
+			}),
+		);
+		expect(lifecyclePayload.eventId).toEqual(expect.any(String));
+		expect(lifecyclePayload.occurredAt).toEqual(expect.any(String));
+		expect(lifecyclePayload.durationMs).toEqual(expect.any(Number));
+	});
+
 	it('업로드 실패 시 실패 텔레메트리 이벤트를 발행하고 임시 파일을 정리한다', async () => {
 		const file = createMulterFile();
 		imageManager.saveImageFromTemp.mockRejectedValue(new Error('disk down'));
@@ -205,6 +252,18 @@ describe('스토리지 이미지 서비스', () => {
 
 		const telemetryPayload = parseKafkaPayload(
 			getEmittedMessage(IMAGE_TELEMETRY_TOPIC),
+		);
+		const lifecyclePayload = parseKafkaPayload(
+			getEmittedMessage(IMAGE_LIFECYCLE_TOPIC),
+		);
+		expect(lifecyclePayload).toEqual(
+			expect.objectContaining({
+				eventType: ImageLifecycleEventType.UploadFailed,
+				sourceApp: 'storage',
+				status: 'failed',
+				errorCode: 'Error',
+				errorMessage: 'disk down',
+			}),
 		);
 		expect(telemetryPayload).toEqual(
 			expect.objectContaining({

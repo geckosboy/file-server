@@ -24,6 +24,13 @@ import {
 	normalizeImageFormat,
 	publishImageTelemetryEvent,
 } from './image.telemetry';
+import {
+	createImageLifecycleEvent,
+	ImageLifecycleEvent,
+	ImageLifecycleEventType,
+	ImageLifecycleStatus,
+	publishImageLifecycleEvent,
+} from './image.lifecycle';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
@@ -45,6 +52,14 @@ export class ImageService {
 
 	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
 		await publishImageTelemetryEvent({
+			client: this.imageClient,
+			event,
+			logger: this.logger,
+		});
+	}
+
+	private async publishLifecycleEvent(event: ImageLifecycleEvent) {
+		await publishImageLifecycleEvent({
 			client: this.imageClient,
 			event,
 			logger: this.logger,
@@ -278,6 +293,21 @@ export class ImageService {
 				}),
 			);
 
+			await this.publishLifecycleEvent(
+				createImageLifecycleEvent({
+					eventType: ImageLifecycleEventType.UploadCompleted,
+					imageId: id,
+					path,
+					name,
+					format: normalizeImageFormat(format),
+					inputBytes: file.size,
+					outputBytes: size,
+					durationMs: exeTime,
+					status: ImageLifecycleStatus.Success,
+					...telemetryContext,
+				}),
+			);
+
 			await this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.UploadCompleted,
@@ -309,6 +339,21 @@ export class ImageService {
 				});
 			}
 		} catch (error) {
+			const failedFields = createFailedTelemetryFields(error);
+			await this.publishLifecycleEvent(
+				createImageLifecycleEvent({
+					eventType: ImageLifecycleEventType.UploadFailed,
+					imageId: id,
+					path,
+					name: this.getTelemetryFileName(file),
+					format: normalizeImageFormat(file.originalname),
+					inputBytes: file.size,
+					status: ImageLifecycleStatus.Failed,
+					...telemetryContext,
+					...failedFields,
+				}),
+			);
+
 			await this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.UploadFailed,
@@ -320,7 +365,7 @@ export class ImageService {
 					inputBytes: file.size,
 					status: 'failed',
 					...telemetryContext,
-					...createFailedTelemetryFields(error),
+					...failedFields,
 				}),
 			);
 			throw error;
