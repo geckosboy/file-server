@@ -16,11 +16,15 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { File } from '@file/global';
+import {
+	ClientServiceApiKeyGuard,
+	ClientServiceAuthContext,
+	ClientServiceContext,
+} from '@file/database';
 import { Response } from 'express';
 import { lookup } from 'mime-types';
 import { ImageService } from './image.service';
 import imageMulterOptions from './storages/diskStorage';
-import { InternalApiKeyGuard } from './internal-api-key.guard';
 import {
 	DeleteImageDto,
 	GetImageDto,
@@ -28,12 +32,20 @@ import {
 } from '@file/image-contracts';
 
 @Controller('image')
+@UseGuards(ClientServiceApiKeyGuard)
 export class ImageController {
 	constructor(private readonly imageService: ImageService) {}
 
 	@Get(':path/:name')
-	async getFile(@Param() imageDto: GetImageDto, @Res() res: Response) {
-		const { image, name } = await this.imageService.getImage(imageDto);
+	async getFile(
+		@Param() imageDto: GetImageDto,
+		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
+		@Res() res: Response,
+	) {
+		const { image, name } = await this.imageService.getImage(
+			imageDto,
+			clientServiceContext,
+		);
 		res.set({
 			'Content-Type': lookup(name) || 'application/octet-stream',
 		});
@@ -42,11 +54,11 @@ export class ImageController {
 	}
 
 	@Post()
-	@UseGuards(InternalApiKeyGuard)
 	@UseInterceptors(FileInterceptor('file', imageMulterOptions))
 	async uploadFile(
 		@Res()
 		res: Response,
+		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Body() imageDto: UploadImageDto,
 		@UploadedFile(
 			new ParseFilePipe({
@@ -57,21 +69,26 @@ export class ImageController {
 		)
 		file: Express.Multer.File,
 	) {
-		await this.imageService.uploadFile({ file, apiInfo: { ...imageDto } });
+		await this.imageService.uploadFile({
+			file,
+			apiInfo: { ...imageDto },
+			clientServiceContext,
+		});
 
 		res.sendStatus(HttpStatus.CREATED);
 	}
 
 	@Delete()
-	@UseGuards(InternalApiKeyGuard)
 	async deleteFile(
 		@Res()
 		res: Response,
+		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Query() imageDto: DeleteImageDto,
 	) {
 		await this.imageService.deleteImage({
 			name: imageDto.beforeName,
 			path: imageDto.path,
+			clientServiceContext,
 		});
 
 		res.sendStatus(HttpStatus.OK);

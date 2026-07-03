@@ -1,26 +1,16 @@
 {
 	"extends": "@file/tsconfig/tsconfig.base.json",
-	"include": [
-		"./src/**/*.ts"
-	],
-	"exclude": [
-		"node_modules",
-		"dist"
-	],
+	"include": ["./src/**/*.ts"],
+	"exclude": ["node_modules", "dist"],
 	"compilerOptions": {
 		"declaration": false,
 		"outDir": "./dist",
 		"baseUrl": "./",
 		"paths": {
-			"@file/global": [
-				"../../libs/global/src"
-			],
-			"@file/nest-common": [
-				"../../libs/nest-common/src"
-			],
-			"@file/image-contracts": [
-				"../../libs/image-contracts/src"
-			]
+			"@file/global": ["../../libs/global/src"],
+			"@file/nest-common": ["../../libs/nest-common/src"],
+			"@file/image-contracts": ["../../libs/image-contracts/src"],
+			"@file/database": ["../../libs/database/src"]
 		}
 	}
 }

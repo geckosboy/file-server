@@ -5,6 +5,7 @@ import { ImageController } from './image.controller';
 import { ImageService } from './image.service';
 
 import { ImageManager } from './manager';
+import { ClientServiceAuthModule } from '@file/database';
 import { envConfig } from 'src/config';
 
 const KafkaModule = ClientsModule.register([
@@ -26,7 +27,7 @@ const KafkaModule = ClientsModule.register([
 ]);
 
 @Module({
-	imports: [KafkaModule],
+	imports: [KafkaModule, ClientServiceAuthModule],
 	controllers: [ImageController],
 	providers: [ImageService, ImageManager],
 })

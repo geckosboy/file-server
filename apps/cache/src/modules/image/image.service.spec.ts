@@ -6,6 +6,7 @@ jest.mock('src/config', () => ({
 
 import { NotFoundException } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { ClientServiceAuthContext } from '@file/database';
 import { of } from 'rxjs';
 import { CacheService, CachedImage } from '../node-cache/cache.service';
 import {
@@ -24,6 +25,16 @@ const createFetchResponse = (
 			? { 'content-type': options.contentType }
 			: undefined,
 	});
+
+const clientServiceContext: ClientServiceAuthContext = {
+	clientServiceId: 'service-1',
+	clientServiceSlug: 'local-demo',
+	clientServiceName: 'Local Demo',
+	clientServiceKeyId: 'key-1',
+	keyPrefix: 'prefix-1',
+	requestId: 'req-cache-1',
+	apiKey: 'fs_prefix_secret',
+};
 
 type KafkaEmitPayload = { key: string; value: string };
 
@@ -73,11 +84,14 @@ describe('캐시 이미지 서비스', () => {
 		};
 		cacheService.getCachedImage.mockReturnValue(cachedImage);
 
-		const result = await service.getCacheImage({
-			path: 'public',
-			name: 'sample.png',
-			width: 100,
-		});
+		const result = await service.getCacheImage(
+			{
+				path: 'public',
+				name: 'sample.png',
+				width: 100,
+			},
+			clientServiceContext,
+		);
 
 		expect(result).toBe(cachedImage);
 		expect(fetchSpy).not.toHaveBeenCalled();
@@ -93,6 +107,9 @@ describe('캐시 이미지 서비스', () => {
 				format: 'png',
 				outputBytes: cachedImage.imageBuffer.byteLength,
 				status: 'success',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: 'req-cache-1',
 			}),
 		]);
 	});
@@ -104,14 +121,23 @@ describe('캐시 이미지 서비스', () => {
 			createFetchResponse(resized, { contentType: 'image/webp' }),
 		);
 
-		const result = await service.getCacheImage({
-			path: 'public',
-			name: 'sample.webp',
-			width: 100,
-		});
+		const result = await service.getCacheImage(
+			{
+				path: 'public',
+				name: 'sample.webp',
+				width: 100,
+			},
+			clientServiceContext,
+		);
 
 		expect(fetchSpy).toHaveBeenCalledWith(
 			'http://resize.test/image/public/sample.webp?width=100',
+			{
+				headers: {
+					'x-client-api-key': 'fs_prefix_secret',
+					'x-request-id': 'req-cache-1',
+				},
+			},
 		);
 		expect(result.contentType).toBe('image/webp');
 		expect(result.imageBuffer.equals(resized)).toBe(true);
@@ -127,12 +153,18 @@ describe('캐시 이미지 서비스', () => {
 				eventType: ImageTelemetryEventType.CacheMiss,
 				cacheKey: 'public|100|x|sample.webp',
 				status: 'success',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: 'req-cache-1',
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheStored,
 				cacheKey: 'public|100|x|sample.webp',
 				outputBytes: resized.byteLength,
 				status: 'success',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: 'req-cache-1',
 			}),
 		]);
 	});

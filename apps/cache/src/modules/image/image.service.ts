@@ -6,6 +6,11 @@ import {
 	Optional,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import {
+	ClientServiceAuthContext,
+	createClientServiceForwardHeaders,
+	createClientServiceTelemetryFields,
+} from '@file/database';
 import { lookup } from 'mime-types';
 import { performance } from 'perf_hooks';
 import { URLSearchParams } from 'url';
@@ -73,8 +78,16 @@ export class ImageService {
 	}
 
 	/** 리사이징 서버에 이미지 요청 */
-	private async getImageFromMain(image: ImageEntity) {
-		const response = await fetch(this.getImageUrl(image));
+	private async getImageFromMain(
+		image: ImageEntity,
+		clientServiceContext?: ClientServiceAuthContext,
+	) {
+		const headers = createClientServiceForwardHeaders(clientServiceContext);
+		const imageUrl = this.getImageUrl(image);
+		const response =
+			Object.keys(headers).length > 0
+				? await fetch(imageUrl, { headers })
+				: await fetch(imageUrl);
 		if (!response.ok) {
 			throw new NotFoundException('존재하지 않는 이미지 파일입니다.');
 		}
@@ -89,8 +102,13 @@ export class ImageService {
 		return { imageBuffer, contentType };
 	}
 
-	async getCacheImage(params: ImageEntity) {
+	async getCacheImage(
+		params: ImageEntity,
+		clientServiceContext?: ClientServiceAuthContext,
+	) {
 		const cacheKey = this.convertToCacheKey(params);
+		const telemetryContext =
+			createClientServiceTelemetryFields(clientServiceContext);
 		const startedAt = performance.now();
 		const { height, name, path, width } = params;
 
@@ -111,6 +129,7 @@ export class ImageService {
 					outputBytes: cachedImage.imageBuffer.byteLength,
 					durationMs: performance.now() - startedAt,
 					status: 'success',
+					...telemetryContext,
 				}),
 			);
 			return cachedImage;
@@ -128,12 +147,16 @@ export class ImageService {
 				format: normalizeImageFormat(name),
 				durationMs: performance.now() - startedAt,
 				status: 'success',
+				...telemetryContext,
 			}),
 		);
 
 		/** 없다면 리사이징 서버로부터 데이터 가져옴 */
 		try {
-			const { imageBuffer, contentType } = await this.getImageFromMain(params);
+			const { imageBuffer, contentType } = await this.getImageFromMain(
+				params,
+				clientServiceContext,
+			);
 			/** 리사이징 결과물 캐싱 */
 			this.cacheService.cacheImage(cacheKey, { imageBuffer, contentType });
 
@@ -150,6 +173,7 @@ export class ImageService {
 					outputBytes: imageBuffer.byteLength,
 					durationMs: performance.now() - startedAt,
 					status: 'success',
+					...telemetryContext,
 				}),
 			);
 
@@ -172,6 +196,7 @@ export class ImageService {
 					format: normalizeImageFormat(name),
 					durationMs: performance.now() - startedAt,
 					status: 'failed',
+					...telemetryContext,
 					...createFailedTelemetryFields(err),
 				}),
 			);

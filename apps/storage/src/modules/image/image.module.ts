@@ -6,7 +6,7 @@ import { ImageService } from './image.service';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
-import { InternalApiKeyGuard } from './internal-api-key.guard';
+import { ClientServiceAuthModule } from '@file/database';
 import { envConfig } from 'src/config';
 
 const strategyList = [JpegStrategy, PngStrategy, ImageManager];
@@ -29,8 +29,8 @@ const KafkaModule = ClientsModule.register([
 ]);
 
 @Module({
-	imports: [KafkaModule],
+	imports: [KafkaModule, ClientServiceAuthModule],
 	controllers: [ImageController],
-	providers: [ImageService, InternalApiKeyGuard, ...strategyList],
+	providers: [ImageService, ...strategyList],
 })
 export class ImageModule {}

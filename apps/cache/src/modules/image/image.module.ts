@@ -3,7 +3,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
 import { Partitioners } from 'kafkajs';
 import { ImageController } from './image.controller';
 import { ImageService } from './image.service';
-import { InternalApiKeyGuard } from './internal-api-key.guard';
+import { ClientServiceAuthModule } from '@file/database';
 import { CacheModule } from '../node-cache/cache.module';
 import { envConfig } from 'src/config';
 
@@ -26,8 +26,8 @@ const KafkaModule = ClientsModule.register([
 ]);
 
 @Module({
-	imports: [CacheModule.register(600), KafkaModule],
+	imports: [CacheModule.register(600), KafkaModule, ClientServiceAuthModule],
 	controllers: [ImageController],
-	providers: [ImageService, InternalApiKeyGuard],
+	providers: [ImageService],
 })
 export class ImageModule {}

@@ -34,7 +34,8 @@
 		"mime-types": "^2.1.35",
 		"reflect-metadata": "^0.2.2",
 		"rxjs": "^7.8.2",
-		"sharp": "^0.33.2"
+		"sharp": "^0.33.2",
+		"@file/database": "workspace:*"
 	},
 	"devDependencies": {
 		"@file/tsconfig": "workspace:*",
@@ -63,7 +64,8 @@
 			"^@file/nest-common$": "<rootDir>/../../../libs/nest-common/src",
 			"^@file/nest-common/(.*)$": "<rootDir>/../../../libs/nest-common/src/$1",
 			"^@file/image-contracts$": "<rootDir>/../../../libs/image-contracts/src",
-			"^@file/image-contracts/(.*)$": "<rootDir>/../../../libs/image-contracts/src/$1"
+			"^@file/image-contracts/(.*)$": "<rootDir>/../../../libs/image-contracts/src/$1",
+			"^@file/database$": "<rootDir>/../../../libs/database/src"
 		}
 	}
 }

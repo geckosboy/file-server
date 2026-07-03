@@ -6,6 +6,11 @@ import {
 	NotFoundException,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import {
+	ClientServiceAuthContext,
+	createClientServiceForwardHeaders,
+	createClientServiceTelemetryFields,
+} from '@file/database';
 import { performance } from 'perf_hooks';
 
 import { ImageEntity } from '@file/image-contracts';
@@ -45,11 +50,16 @@ export class ImageService {
 	}
 
 	/** 메인 서버로부터 이미지 데이터 가져오기. Buffer형태로 리턴 */
-	async getImageFromMain({ path, name }: { path: string; name: string }) {
+	async getImageFromMain(
+		{ path, name }: { path: string; name: string },
+		clientServiceContext?: ClientServiceAuthContext,
+	) {
 		let result: Response;
+		const headers = createClientServiceForwardHeaders(clientServiceContext);
 		try {
 			result = await fetch(this.getImageUrl({ path, name }), {
 				method: 'get',
+				...(Object.keys(headers).length > 0 ? { headers } : {}),
 			});
 		} catch (error) {
 			this.logger.error(error);
@@ -73,10 +83,15 @@ export class ImageService {
 	}
 
 	/** Width, Height으로 리사이징 */
-	async resizeImage(imageInfo: ImageEntity) {
+	async resizeImage(
+		imageInfo: ImageEntity,
+		clientServiceContext?: ClientServiceAuthContext,
+	) {
 		const { path, name, ...size } = imageInfo;
 		const format = normalizeImageFormat(name);
 		const requestedAt = performance.now();
+		const telemetryContext =
+			createClientServiceTelemetryFields(clientServiceContext);
 
 		await this.publishTelemetryEvent(
 			createImageTelemetryEvent({
@@ -88,11 +103,15 @@ export class ImageService {
 				width: size.width,
 				height: size.height,
 				status: 'success',
+				...telemetryContext,
 			}),
 		);
 
 		try {
-			const image = await this.getImageFromMain({ path, name });
+			const image = await this.getImageFromMain(
+				{ path, name },
+				clientServiceContext,
+			);
 			const startTime = performance.now();
 
 			const result = await this.imageManager.resize(image, size);
@@ -116,6 +135,7 @@ export class ImageService {
 					outputBytes: result.byteLength,
 					durationMs: exeTime,
 					status: 'success',
+					...telemetryContext,
 				}),
 			);
 
@@ -133,6 +153,7 @@ export class ImageService {
 					height: size.height,
 					durationMs: performance.now() - requestedAt,
 					status: 'failed',
+					...telemetryContext,
 					...createFailedTelemetryFields(error),
 				}),
 			);

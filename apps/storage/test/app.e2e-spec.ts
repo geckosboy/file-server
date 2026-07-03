@@ -1,20 +1,15 @@
-jest.mock('src/config', () => {
-	class AppConfig {
-		INTERNAL_API_KEY?: string;
-	}
-
-	return { AppConfig };
-});
-
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
+import {
+	ClientServiceApiKeyGuard,
+	ClientServiceAuthService,
+} from '@file/database';
 import { rm } from 'fs/promises';
 import * as path from 'path';
 import { of } from 'rxjs';
 import * as request from 'supertest';
 import * as sharp from 'sharp';
-import { AppConfig } from 'src/config';
 import { Root } from '../src/enum';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
@@ -23,12 +18,12 @@ import {
 	IMAGE_TELEMETRY_TOPIC,
 	ImageTelemetryEventType,
 } from '../src/modules/image/image.telemetry';
-import { InternalApiKeyGuard } from '../src/modules/image/internal-api-key.guard';
 import { ImageManager } from '../src/modules/image/strategies/manager';
 import { JpegStrategy } from '../src/modules/image/strategies/sharp/jpeg.strategy';
 import { PngStrategy } from '../src/modules/image/strategies/sharp/png.strategy';
 
-const testApiKey = 'test-internal-key';
+const testClientApiKey = 'fs_prefix_secret';
+const testRequestId = 'req-storage-e2e';
 const assetRoot = path.resolve(Root, 'assets', 'e2e-storage');
 const tempRoot = path.resolve(Root, 'temp');
 
@@ -49,9 +44,36 @@ const createPngImage = () =>
 		.png()
 		.toBuffer();
 
+const createAuthService = () => ({
+	authenticate: jest.fn((apiKey: string) =>
+		Promise.resolve(
+			apiKey === testClientApiKey
+				? {
+						clientService: {
+							id: 'service-1',
+							slug: 'local-demo',
+							name: 'Local Demo',
+							status: 'ACTIVE',
+						},
+						key: {
+							id: 'key-1',
+							keyPrefix: 'prefix-1',
+						},
+					}
+				: null,
+		),
+	),
+});
+
+const authorized = (agent: request.Test) =>
+	agent
+		.set('x-client-api-key', testClientApiKey)
+		.set('x-request-id', testRequestId);
+
 describe('스토리지 앱 e2e', () => {
 	let app: INestApplication;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
+	let authService: ReturnType<typeof createAuthService>;
 
 	const getTelemetryPayloads = () =>
 		imageClient.emit.mock.calls
@@ -65,19 +87,20 @@ describe('스토리지 앱 e2e', () => {
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
 		};
+		authService = createAuthService();
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
 			providers: [
 				ImageService,
-				InternalApiKeyGuard,
+				ClientServiceApiKeyGuard,
+				{
+					provide: ClientServiceAuthService,
+					useValue: authService,
+				},
 				PngStrategy,
 				JpegStrategy,
 				ImageManager,
-				{
-					provide: AppConfig,
-					useValue: { INTERNAL_API_KEY: testApiKey },
-				},
 				{
 					provide: 'IMAGE_MICROSERVICE',
 					useValue: imageClient,
@@ -108,7 +131,7 @@ describe('스토리지 앱 e2e', () => {
 			.expect('OK');
 	});
 
-	it('내부 API 키가 없으면 이미지 업로드를 거부한다', async () => {
+	it('클라이언트 서비스 API 키가 없으면 이미지 업로드를 거부한다', async () => {
 		const image = await createPngImage();
 
 		await request(app.getHttpServer())
@@ -125,9 +148,7 @@ describe('스토리지 앱 e2e', () => {
 	it('업로드 이미지를 path/image/name 규칙으로 저장하고 조회와 삭제를 수행한다', async () => {
 		const image = await createPngImage();
 
-		await request(app.getHttpServer())
-			.post('/image')
-			.set('x-internal-api-key', testApiKey)
+		await authorized(request(app.getHttpServer()).post('/image'))
 			.field('id', '100')
 			.field('path', 'e2e-storage/image')
 			.attach('file', image, {
@@ -144,6 +165,9 @@ describe('스토리지 앱 e2e', () => {
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.UploadCompleted,
 				sourceApp: 'storage',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: testRequestId,
 				imageId: 100,
 				path: 'e2e-storage/image',
 				name: 'sample.png',
@@ -152,8 +176,9 @@ describe('스토리지 앱 e2e', () => {
 			}),
 		]);
 
-		const getResponse = await request(app.getHttpServer())
-			.get('/image/e2e-storage/sample.png')
+		const getResponse = await authorized(
+			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
+		)
 			.expect(200)
 			.expect('content-type', /image\/png/);
 		const metadata = await sharp(Buffer.from(getResponse.body)).metadata();
@@ -161,9 +186,7 @@ describe('스토리지 앱 e2e', () => {
 		expect(metadata.width).toBe(8);
 		expect(metadata.height).toBe(6);
 
-		await request(app.getHttpServer())
-			.delete('/image')
-			.set('x-internal-api-key', testApiKey)
+		await authorized(request(app.getHttpServer()).delete('/image'))
 			.query({
 				id: 100,
 				path: 'e2e-storage/image',
@@ -171,18 +194,16 @@ describe('스토리지 앱 e2e', () => {
 			})
 			.expect(200);
 
-		await request(app.getHttpServer())
-			.get('/image/e2e-storage/sample.png')
-			.expect(404);
+		await authorized(
+			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
+		).expect(404);
 	});
 
 	it('업로드 시 beforeName이 있으면 이전 이미지를 삭제한다', async () => {
 		const previousImage = await createPngImage();
 		const nextImage = await createPngImage();
 
-		await request(app.getHttpServer())
-			.post('/image')
-			.set('x-internal-api-key', testApiKey)
+		await authorized(request(app.getHttpServer()).post('/image'))
 			.field('id', '200')
 			.field('path', 'e2e-storage/image')
 			.attach('file', previousImage, {
@@ -191,9 +212,7 @@ describe('스토리지 앱 e2e', () => {
 			})
 			.expect(201);
 
-		await request(app.getHttpServer())
-			.post('/image')
-			.set('x-internal-api-key', testApiKey)
+		await authorized(request(app.getHttpServer()).post('/image'))
 			.field('id', '201')
 			.field('path', 'e2e-storage/image')
 			.field('beforeName', 'previous.png')
@@ -203,11 +222,11 @@ describe('스토리지 앱 e2e', () => {
 			})
 			.expect(201);
 
-		await request(app.getHttpServer())
-			.get('/image/e2e-storage/previous.png')
-			.expect(404);
-		await request(app.getHttpServer())
-			.get('/image/e2e-storage/next.png')
-			.expect(200);
+		await authorized(
+			request(app.getHttpServer()).get('/image/e2e-storage/previous.png'),
+		).expect(404);
+		await authorized(
+			request(app.getHttpServer()).get('/image/e2e-storage/next.png'),
+		).expect(200);
 	});
 });

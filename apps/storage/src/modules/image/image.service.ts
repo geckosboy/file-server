@@ -6,6 +6,11 @@ import {
 	Optional,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import {
+	ClientServiceAuthContext,
+	createClientServiceForwardHeaders,
+	createClientServiceTelemetryFields,
+} from '@file/database';
 import { extension } from 'mime-types';
 import { performance } from 'perf_hooks';
 import { lastValueFrom } from 'rxjs';
@@ -98,11 +103,13 @@ export class ImageService {
 	}
 
 	private async invalidateCachedImage({
+		clientServiceContext,
 		name,
 		path,
 	}: {
 		path: string;
 		name: string;
+		clientServiceContext?: ClientServiceAuthContext;
 	}) {
 		const cacheServer = this.appConfig?.CACHE_SERVER;
 		if (!cacheServer) {
@@ -115,9 +122,12 @@ export class ImageService {
 			return;
 		}
 
-		const headers: Record<string, string> = {};
-		if (this.appConfig?.INTERNAL_API_KEY) {
-			headers['x-internal-api-key'] = this.appConfig.INTERNAL_API_KEY;
+		const headers = createClientServiceForwardHeaders(clientServiceContext);
+		if (Object.keys(headers).length === 0) {
+			this.logger.warn(
+				'클라이언트 서비스 인증 컨텍스트가 없어 캐시 무효화를 건너뜁니다.',
+			);
+			return;
 		}
 
 		const url = `${cacheServer}/image/${encodeURIComponent(
@@ -170,11 +180,20 @@ export class ImageService {
 	}
 
 	/** Path, Name 기준으로 이미지 삭제. 만약 Path가 없고 isTemp가 true라면 temp폴더에서 이름에 해당하는 파일 삭제 */
-	async deleteImage(imageInfo: { path?: string; name: string; isTemp?: true }) {
-		const { name, path, isTemp } = imageInfo;
+	async deleteImage(imageInfo: {
+		path?: string;
+		name: string;
+		isTemp?: true;
+		clientServiceContext?: ClientServiceAuthContext;
+	}) {
+		const { clientServiceContext, name, path, isTemp } = imageInfo;
 		if (!isTemp && path) {
 			await this.imageManager.deleteMainImage({ path, name });
-			await this.invalidateCachedImage({ path, name });
+			await this.invalidateCachedImage({
+				path,
+				name,
+				clientServiceContext,
+			});
 			return;
 		}
 
@@ -182,8 +201,13 @@ export class ImageService {
 	}
 
 	/** Buffer형식의 이미지 데이터 가져오기 */
-	async getImage(imageInfo: GetImageDto) {
+	async getImage(
+		imageInfo: GetImageDto,
+		clientServiceContext?: ClientServiceAuthContext,
+	) {
 		const { path, name } = imageInfo;
+		const telemetryContext =
+			createClientServiceTelemetryFields(clientServiceContext);
 
 		try {
 			const result = await this.imageManager.getBufferImage({
@@ -200,6 +224,7 @@ export class ImageService {
 					format: normalizeImageFormat(result.name),
 					outputBytes: result.image.byteLength,
 					status: 'success',
+					...telemetryContext,
 				}),
 			);
 
@@ -213,6 +238,7 @@ export class ImageService {
 					name,
 					format: normalizeImageFormat(name),
 					status: 'failed',
+					...telemetryContext,
 					...createFailedTelemetryFields(error),
 				}),
 			);
@@ -224,11 +250,15 @@ export class ImageService {
 	async uploadFile(imageInfo: {
 		file: Express.Multer.File;
 		apiInfo: UploadImageDto;
+		clientServiceContext?: ClientServiceAuthContext;
 	}) {
 		const {
 			apiInfo: { id, path, beforeName },
+			clientServiceContext,
 			file,
 		} = imageInfo;
+		const telemetryContext =
+			createClientServiceTelemetryFields(clientServiceContext);
 
 		try {
 			const { exeTime, format, name, size } = await this.compressAndSaveImage({
@@ -260,14 +290,23 @@ export class ImageService {
 					outputBytes: size,
 					durationMs: exeTime,
 					status: 'success',
+					...telemetryContext,
 				}),
 			);
 
-			await this.invalidateCachedImage({ path, name });
+			await this.invalidateCachedImage({
+				path,
+				name,
+				clientServiceContext,
+			});
 
 			/** 전에 사용하던 파일이 있는 경우 삭제 */
 			if (beforeName && beforeName !== name) {
-				await this.deleteImage({ path, name: beforeName });
+				await this.deleteImage({
+					path,
+					name: beforeName,
+					clientServiceContext,
+				});
 			}
 		} catch (error) {
 			await this.publishTelemetryEvent(
@@ -280,6 +319,7 @@ export class ImageService {
 					format: normalizeImageFormat(file.originalname),
 					inputBytes: file.size,
 					status: 'failed',
+					...telemetryContext,
 					...createFailedTelemetryFields(error),
 				}),
 			);

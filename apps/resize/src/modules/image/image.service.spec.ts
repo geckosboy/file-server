@@ -9,6 +9,7 @@ import {
 	NotFoundException,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { ClientServiceAuthContext } from '@file/database';
 import { of } from 'rxjs';
 import { ImageManager } from './manager';
 import {
@@ -19,6 +20,16 @@ import { ImageService } from './image.service';
 
 const createFetchResponse = (body: Buffer, status = 200) =>
 	new Response(new Uint8Array(body), { status });
+
+const clientServiceContext: ClientServiceAuthContext = {
+	clientServiceId: 'service-1',
+	clientServiceSlug: 'local-demo',
+	clientServiceName: 'Local Demo',
+	clientServiceKeyId: 'key-1',
+	keyPrefix: 'prefix-1',
+	requestId: 'req-resize-1',
+	apiKey: 'fs_prefix_secret',
+};
 
 type KafkaEmitPayload = { key: string; value: string };
 
@@ -58,14 +69,23 @@ describe('리사이즈 이미지 서비스', () => {
 		const originalImage = Buffer.from('original-image');
 		fetchSpy.mockResolvedValue(createFetchResponse(originalImage));
 
-		const result = await service.getImageFromMain({
-			path: 'public',
-			name: 'sample.png',
-		});
+		const result = await service.getImageFromMain(
+			{
+				path: 'public',
+				name: 'sample.png',
+			},
+			clientServiceContext,
+		);
 
 		expect(fetchSpy).toHaveBeenCalledWith(
 			'http://storage.test/image/public/sample.png',
-			{ method: 'get' },
+			{
+				method: 'get',
+				headers: {
+					'x-client-api-key': 'fs_prefix_secret',
+					'x-request-id': 'req-resize-1',
+				},
+			},
 		);
 		expect(result.equals(originalImage)).toBe(true);
 	});
@@ -102,17 +122,23 @@ describe('리사이즈 이미지 서비스', () => {
 		jest.spyOn(service, 'getImageFromMain').mockResolvedValue(originalImage);
 		imageManager.resize.mockResolvedValue(resizedImage);
 
-		const result = await service.resizeImage({
-			path: 'public',
-			name: 'sample.png',
-			width: 100,
-			height: 50,
-		});
+		const result = await service.resizeImage(
+			{
+				path: 'public',
+				name: 'sample.png',
+				width: 100,
+				height: 50,
+			},
+			clientServiceContext,
+		);
 
-		expect(service.getImageFromMain).toHaveBeenCalledWith({
-			path: 'public',
-			name: 'sample.png',
-		});
+		expect(service.getImageFromMain).toHaveBeenCalledWith(
+			{
+				path: 'public',
+				name: 'sample.png',
+			},
+			clientServiceContext,
+		);
 		expect(imageManager.resize).toHaveBeenCalledWith(originalImage, {
 			width: 100,
 			height: 50,
@@ -127,12 +153,18 @@ describe('리사이즈 이미지 서비스', () => {
 				width: 100,
 				height: 50,
 				status: 'success',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: 'req-resize-1',
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.ResizeCompleted,
 				inputBytes: originalImage.byteLength,
 				outputBytes: resizedImage.byteLength,
 				status: 'success',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: 'req-resize-1',
 			}),
 		]);
 	});

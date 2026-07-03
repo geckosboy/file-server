@@ -1,4 +1,5 @@
 import { ClientKafka } from '@nestjs/microservices';
+import { ClientServiceAuthContext } from '@file/database';
 import { Readable } from 'stream';
 import { of, throwError } from 'rxjs';
 import {
@@ -15,6 +16,17 @@ type KafkaEmitPayload = { key: string; value: string };
 
 const parseKafkaPayload = (payload: KafkaEmitPayload) =>
 	JSON.parse(payload.value) as Record<string, unknown>;
+
+const clientServiceContext: ClientServiceAuthContext = {
+	clientServiceId: 'service-1',
+	clientServiceSlug: 'local-demo',
+	clientServiceName: 'Local Demo',
+	clientServiceKeyId: 'key-1',
+	keyPrefix: 'prefix-1',
+	requestId: 'req-storage-1',
+	traceId: 'trace-storage-1',
+	apiKey: 'fs_prefix_secret',
+};
 
 const createMulterFile = (overrides: Partial<Express.Multer.File> = {}) => {
 	const buffer = Buffer.from('file-buffer');
@@ -143,6 +155,7 @@ describe('스토리지 이미지 서비스', () => {
 				id: 10,
 				path: 'products/image',
 			},
+			clientServiceContext,
 		});
 
 		const telemetryMessage = getEmittedMessage(IMAGE_TELEMETRY_TOPIC);
@@ -165,6 +178,10 @@ describe('스토리지 이미지 서비스', () => {
 				inputBytes: file.size,
 				outputBytes: 128,
 				status: 'success',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: 'req-storage-1',
+				traceId: 'trace-storage-1',
 			}),
 		);
 		expect(telemetryPayload.eventId).toEqual(expect.any(String));
@@ -246,13 +263,13 @@ describe('스토리지 이미지 서비스', () => {
 			imageClient as unknown as ClientKafka,
 			{
 				CACHE_SERVER: 'http://cache.test',
-				INTERNAL_API_KEY: 'secret-key',
 			} as AppConfig,
 		);
 
 		await service.deleteImage({
 			path: 'products/image',
 			name: 'sample.png',
+			clientServiceContext,
 		});
 
 		expect(imageManager.deleteMainImage).toHaveBeenCalledWith({
@@ -264,7 +281,9 @@ describe('스토리지 이미지 서비스', () => {
 			{
 				method: 'DELETE',
 				headers: {
-					'x-internal-api-key': 'secret-key',
+					'x-client-api-key': 'fs_prefix_secret',
+					'x-request-id': 'req-storage-1',
+					'x-trace-id': 'trace-storage-1',
 				},
 			},
 		);

@@ -7,6 +7,10 @@ jest.mock('src/config', () => ({
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
+import {
+	ClientServiceApiKeyGuard,
+	ClientServiceAuthService,
+} from '@file/database';
 import { of } from 'rxjs';
 import * as request from 'supertest';
 import { AppController } from '../src/app.controller';
@@ -17,6 +21,9 @@ import {
 	ImageTelemetryEventType,
 } from '../src/modules/image/image.telemetry';
 import { CacheService } from '../src/modules/node-cache/cache.service';
+
+const testClientApiKey = 'fs_prefix_secret';
+const testRequestId = 'req-cache-e2e';
 
 type KafkaEmitPayload = { key: string; value: string };
 
@@ -34,10 +41,37 @@ const createFetchResponse = (
 			: undefined,
 	});
 
+const createAuthService = () => ({
+	authenticate: jest.fn((apiKey: string) =>
+		Promise.resolve(
+			apiKey === testClientApiKey
+				? {
+						clientService: {
+							id: 'service-1',
+							slug: 'local-demo',
+							name: 'Local Demo',
+							status: 'ACTIVE',
+						},
+						key: {
+							id: 'key-1',
+							keyPrefix: 'prefix-1',
+						},
+					}
+				: null,
+		),
+	),
+});
+
+const authorized = (agent: request.Test) =>
+	agent
+		.set('x-client-api-key', testClientApiKey)
+		.set('x-request-id', testRequestId);
+
 describe('캐시 앱 e2e', () => {
 	let app: INestApplication;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
+	let authService: ReturnType<typeof createAuthService>;
 
 	const getTelemetryPayloads = () =>
 		imageClient.emit.mock.calls
@@ -49,11 +83,17 @@ describe('캐시 앱 e2e', () => {
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
 		};
+		authService = createAuthService();
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
 			providers: [
 				ImageService,
+				ClientServiceApiKeyGuard,
+				{
+					provide: ClientServiceAuthService,
+					useValue: authService,
+				},
 				CacheService,
 				{
 					provide: 'CACHE_TTL',
@@ -88,20 +128,28 @@ describe('캐시 앱 e2e', () => {
 			.expect('OK');
 	});
 
+	it('클라이언트 서비스 API 키가 없으면 이미지 조회를 거부한다', () => {
+		return request(app.getHttpServer())
+			.get('/image/public/sample.png')
+			.expect(401);
+	});
+
 	it('캐시 미스 시 리사이즈 앱 이미지를 반환하고 다음 요청부터 캐시 이미지를 반환한다', async () => {
 		const resizedImage = Buffer.from('resized-image');
 		fetchSpy.mockResolvedValue(
 			createFetchResponse(resizedImage, { contentType: 'image/png' }),
 		);
 
-		const firstResponse = await request(app.getHttpServer())
-			.get('/image/public/sample.png')
+		const firstResponse = await authorized(
+			request(app.getHttpServer()).get('/image/public/sample.png'),
+		)
 			.query({ width: 32, height: 16 })
 			.expect(200)
 			.expect('content-type', /image\/png/);
 
-		const secondResponse = await request(app.getHttpServer())
-			.get('/image/public/sample.png')
+		const secondResponse = await authorized(
+			request(app.getHttpServer()).get('/image/public/sample.png'),
+		)
 			.query({ width: 32, height: 16 })
 			.expect(200)
 			.expect('content-type', /image\/png/);
@@ -115,20 +163,35 @@ describe('캐시 앱 e2e', () => {
 		);
 		expect(requestedUrl.searchParams.get('width')).toBe('32');
 		expect(requestedUrl.searchParams.get('height')).toBe('16');
+		expect(fetchSpy.mock.calls[0][1]).toEqual({
+			headers: {
+				'x-client-api-key': testClientApiKey,
+				'x-request-id': testRequestId,
+			},
+		});
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheMiss,
-				cacheKey: 'public_32/16sample.png',
+				cacheKey: 'public|32|16|sample.png',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: testRequestId,
 				status: 'success',
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheStored,
-				cacheKey: 'public_32/16sample.png',
+				cacheKey: 'public|32|16|sample.png',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: testRequestId,
 				status: 'success',
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheHit,
-				cacheKey: 'public_32/16sample.png',
+				cacheKey: 'public|32|16|sample.png',
+				clientServiceId: 'service-1',
+				clientServiceSlug: 'local-demo',
+				requestId: testRequestId,
 				status: 'success',
 			}),
 		]);
@@ -139,8 +202,8 @@ describe('캐시 앱 e2e', () => {
 			createFetchResponse(Buffer.from('missing'), { status: 404 }),
 		);
 
-		return request(app.getHttpServer())
-			.get('/image/public/missing.png')
-			.expect(404);
+		return authorized(
+			request(app.getHttpServer()).get('/image/public/missing.png'),
+		).expect(404);
 	});
 });
