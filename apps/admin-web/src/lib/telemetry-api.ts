@@ -3,6 +3,8 @@ export type EventStatus = 'success' | 'failed';
 export type LifecycleEventType =
 	'image.upload.completed' | 'image.upload.failed';
 export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
+export type ImageResizeMode = 'ON_DEMAND' | 'PRE_GENERATE';
+export type ImageResizeFormat = 'png' | 'jpeg' | 'webp';
 
 export interface TimeRange {
 	from: string;
@@ -148,6 +150,27 @@ export interface ClientServiceLifecycleSubscriptionItem {
 	updatedAt: string;
 }
 
+export interface ClientServiceImageResizeVariantItem {
+	id: string;
+	policyId: string;
+	width?: number;
+	height?: number;
+	format: ImageResizeFormat;
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ClientServiceImageResizePolicyItem {
+	id: string;
+	clientServiceId: string;
+	mode: ImageResizeMode;
+	variants: ClientServiceImageResizeVariantItem[];
+	createdAt: string;
+	updatedAt: string;
+}
+
 export interface ClientServiceItem {
 	id: string;
 	slug: string;
@@ -163,6 +186,7 @@ export interface ClientServiceItem {
 	activeSubscriptionCount: number;
 	keys?: ClientServiceKeyItem[];
 	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionItem[];
+	imageResizePolicy?: ClientServiceImageResizePolicyItem;
 }
 
 export interface CreateClientServiceInput {
@@ -197,6 +221,26 @@ export interface CreateClientServiceLifecycleSubscriptionInput {
 export interface UpdateClientServiceLifecycleSubscriptionInput {
 	eventType?: LifecycleEventType;
 	consumerGroup?: string;
+	isEnabled?: boolean;
+	description?: string | null;
+}
+
+export interface UpdateClientServiceImageResizePolicyInput {
+	mode: ImageResizeMode;
+}
+
+export interface CreateClientServiceImageResizeVariantInput {
+	width?: number;
+	height?: number;
+	format: ImageResizeFormat;
+	isEnabled?: boolean;
+	description?: string;
+}
+
+export interface UpdateClientServiceImageResizeVariantInput {
+	width?: number;
+	height?: number;
+	format?: ImageResizeFormat;
 	isEnabled?: boolean;
 	description?: string | null;
 }
@@ -390,6 +434,34 @@ export const buildClientServiceLifecycleSubscriptionUrl = (
 		`/client-services/${serviceId}/lifecycle-subscriptions/${subscriptionId}`,
 	).toString();
 
+export const buildClientServiceImageResizePolicyUrl = (
+	serviceId: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	createAdminUrl(
+		baseUrl,
+		`/client-services/${serviceId}/image-resize-policy`,
+	).toString();
+
+export const buildClientServiceImageResizeVariantsUrl = (
+	serviceId: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	createAdminUrl(
+		baseUrl,
+		`/client-services/${serviceId}/image-resize-policy/variants`,
+	).toString();
+
+export const buildClientServiceImageResizeVariantUrl = (
+	serviceId: string,
+	variantId: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	createAdminUrl(
+		baseUrl,
+		`/client-services/${serviceId}/image-resize-policy/variants/${variantId}`,
+	).toString();
+
 export const fetchTelemetryJson = async <T>(
 	url: string,
 	init: RequestInit = {},
@@ -423,7 +495,7 @@ export const fetchTelemetryJson = async <T>(
 
 const writeTelemetryJson = <T>(
 	url: string,
-	method: 'POST' | 'PATCH',
+	method: 'POST' | 'PATCH' | 'DELETE',
 	payload?: unknown,
 ) =>
 	fetchTelemetryJson<T>(url, {
@@ -459,7 +531,14 @@ export const fetchClientService = (id: string) =>
 export const fetchClientServiceDetailsList = async () => {
 	const services = await fetchClientServices();
 	return await Promise.all(
-		services.map((service) => fetchClientService(service.id)),
+		services.map(async (service) => {
+			const [detail, imageResizePolicy] = await Promise.all([
+				fetchClientService(service.id),
+				fetchClientServiceImageResizePolicy(service.id),
+			]);
+
+			return { ...detail, imageResizePolicy };
+		}),
 	);
 };
 
@@ -515,6 +594,51 @@ export const updateClientServiceLifecycleSubscription = (
 		buildClientServiceLifecycleSubscriptionUrl(serviceId, subscriptionId),
 		'PATCH',
 		input,
+	);
+
+export const fetchClientServiceImageResizePolicy = (serviceId: string) =>
+	fetchTelemetryJson<ClientServiceImageResizePolicyItem>(
+		buildClientServiceImageResizePolicyUrl(serviceId),
+	);
+
+export const updateClientServiceImageResizePolicy = (
+	serviceId: string,
+	input: UpdateClientServiceImageResizePolicyInput,
+) =>
+	writeTelemetryJson<ClientServiceImageResizePolicyItem>(
+		buildClientServiceImageResizePolicyUrl(serviceId),
+		'PATCH',
+		input,
+	);
+
+export const createClientServiceImageResizeVariant = (
+	serviceId: string,
+	input: CreateClientServiceImageResizeVariantInput,
+) =>
+	writeTelemetryJson<ClientServiceImageResizeVariantItem>(
+		buildClientServiceImageResizeVariantsUrl(serviceId),
+		'POST',
+		input,
+	);
+
+export const updateClientServiceImageResizeVariant = (
+	serviceId: string,
+	variantId: string,
+	input: UpdateClientServiceImageResizeVariantInput,
+) =>
+	writeTelemetryJson<ClientServiceImageResizeVariantItem>(
+		buildClientServiceImageResizeVariantUrl(serviceId, variantId),
+		'PATCH',
+		input,
+	);
+
+export const deleteClientServiceImageResizeVariant = (
+	serviceId: string,
+	variantId: string,
+) =>
+	writeTelemetryJson<ClientServiceImageResizeVariantItem>(
+		buildClientServiceImageResizeVariantUrl(serviceId, variantId),
+		'DELETE',
 	);
 
 export const toMetricDisplay = (

@@ -1,5 +1,8 @@
 import {
 	TelemetryApiError,
+	buildClientServiceImageResizePolicyUrl,
+	buildClientServiceImageResizeVariantUrl,
+	buildClientServiceImageResizeVariantsUrl,
 	buildClientServiceLifecycleSubscriptionUrl,
 	buildClientServiceLifecycleSubscriptionsUrl,
 	buildClientServiceKeyRevokeUrl,
@@ -156,6 +159,31 @@ describe('텔레메트리 API 클라이언트', () => {
 			),
 		).toBe(
 			'https://telemetry.test/api/admin/client-services/svc-1/lifecycle-subscriptions/sub-1',
+		);
+		expect(
+			buildClientServiceImageResizePolicyUrl(
+				'svc-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe(
+			'https://telemetry.test/api/admin/client-services/svc-1/image-resize-policy',
+		);
+		expect(
+			buildClientServiceImageResizeVariantsUrl(
+				'svc-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe(
+			'https://telemetry.test/api/admin/client-services/svc-1/image-resize-policy/variants',
+		);
+		expect(
+			buildClientServiceImageResizeVariantUrl(
+				'svc-1',
+				'variant-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe(
+			'https://telemetry.test/api/admin/client-services/svc-1/image-resize-policy/variants/variant-1',
 		);
 	});
 

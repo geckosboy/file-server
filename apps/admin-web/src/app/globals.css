@@ -427,6 +427,16 @@ th {
 	color: var(--muted);
 }
 
+.badge-on_demand {
+	background: var(--surface-muted);
+	color: var(--muted);
+}
+
+.badge-pre_generate {
+	background: var(--primary-soft);
+	color: var(--primary);
+}
+
 .event-detail {
 	margin-top: 0.5rem;
 }

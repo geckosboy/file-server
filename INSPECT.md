@@ -27,7 +27,7 @@ storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.im
 
 7단계부터 lifecycle 발행은 storage의 outbox를 거칩니다. 업로드 성공/실패 이벤트는 먼저 PostgreSQL `image_lifecycle_outbox`에 저장되고, Kafka 발행 성공 시 `PUBLISHED`로 표시됩니다. Kafka가 잠깐 죽어 발행에 실패하면 row가 `FAILED`로 남고 `LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS` 주기로 재시도합니다. 전달 보장은 at-least-once이며, 같은 이벤트가 중복 발행될 수 있으므로 Client Service consumer는 `eventId`를 idempotency key로 저장/무시해야 합니다.
 
-8단계부터 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. 이 단계에서는 admin API/DB 관리까지만 구현되어 있으며, 업로드 시 실제 사전 리사이징 실행은 다음 단계에서 붙입니다.
+8단계부터 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. 9단계부터 admin-web `/services`에서 이 정책을 조회/수정하고 pre-generate variant를 추가/수정/삭제할 수 있습니다. 업로드 시 실제 사전 리사이징 실행은 10단계에서 붙입니다.
 
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
@@ -40,7 +40,7 @@ DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니
 | `storage` | 불필요 | `ClientServiceAuthService.authenticate()`가 요청마다 `client_service_keys.key_prefix`를 DB에서 다시 조회하고 서비스 상태/키 만료/폐기 여부를 검사합니다. 앱 메모리에 service allowlist를 들고 있지 않습니다. | `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, Kafka broker, 파일 저장 경로, 코드가 바뀐 경우 |
 | `resize` | 불필요 | `resize`의 `/image` guard도 같은 `ClientServiceAuthModule`을 사용하고, storage 호출 때 인증된 API key/request id를 그대로 forward합니다. | `STORAGE_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우 |
 | `cache` | 불필요 | `cache`의 `/image` guard도 같은 DB 조회 기반 인증을 쓰고, miss 시 resize 호출에 인증 header를 forward합니다. | `RESIZING_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우 |
-| `telemetry-api` | 불필요 | client service/API key/subscription 생성·수정은 admin API가 DB에 쓰고, 목록/상세 조회도 매 요청 DB에서 읽습니다. | `.env.local`의 DB/Admin token/Kafka consumer 설정, Prisma schema migration, 코드가 바뀐 경우 |
+| `telemetry-api` | 불필요 | client service/API key/subscription/리사이징 정책 생성·수정은 admin API가 DB에 쓰고, 목록/상세 조회도 매 요청 DB에서 읽습니다. | `.env.local`의 DB/Admin token/Kafka consumer 설정, Prisma schema migration, 코드가 바뀐 경우 |
 | `admin-web` | 불필요 | telemetry-api를 `cache: 'no-store'`로 호출하고, server action 후 `/services`를 revalidate합니다. | `TELEMETRY_API_BASE_URL`, `TELEMETRY_ADMIN_TOKEN`, 코드가 바뀐 경우 |
 | Kafka | 불필요 | 서비스별 topic을 만들지 않습니다. 모든 서비스가 공통 `file.image.lifecycle.v1` topic을 각자 consumer group으로 소비합니다. | topic 자체를 처음 만들 때, broker 주소/보안 설정/ACL 정책을 바꿀 때 |
 
@@ -645,7 +645,8 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - API key 발급 시 key 원문이 화면에 1회 표시되어야 합니다.
   - 발급된 key 목록에는 prefix만 보이고 hash나 원문은 노출되지 않아야 합니다.
   - key 폐기 버튼으로 key 상태를 폐기 처리할 수 있어야 합니다.
-  - 리사이징 정책 API 기준으로 `ON_DEMAND` / `PRE_GENERATE` 모드와 variant 목록을 조회할 수 있어야 합니다. admin-web UI 연결은 9단계 범위입니다.
+  - 리사이징 정책 영역에서 `ON_DEMAND` / `PRE_GENERATE` 모드를 저장할 수 있어야 합니다.
+  - pre-generate variant의 width/height/format/활성화 여부/설명을 추가·수정·삭제할 수 있어야 합니다.
 
 ### 10-8. 자동 테스트 명령
 

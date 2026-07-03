@@ -2,8 +2,13 @@
 
 import { useActionState } from 'react';
 import { formatDateTime } from '@/lib/format';
-import type { ClientServiceItem } from '@/lib/telemetry-api';
+import type {
+	ClientServiceImageResizeVariantItem,
+	ClientServiceItem,
+} from '@/lib/telemetry-api';
 import { submitClientServiceAction, type ServicesActionState } from './actions';
+
+const resizeFormats = ['webp', 'jpeg', 'png'] as const;
 
 export interface ClientServiceManagerProps {
 	initialServices: ClientServiceItem[];
@@ -103,6 +108,12 @@ function ServiceCard({
 	formAction: (payload: FormData) => void;
 	isPending: boolean;
 }) {
+	const resizeMode = service.imageResizePolicy?.mode ?? 'ON_DEMAND';
+	const resizeVariants = service.imageResizePolicy?.variants ?? [];
+	const activeResizeVariantCount = resizeVariants.filter(
+		(variant) => variant.isEnabled,
+	).length;
+
 	return (
 		<article className="panel service-card">
 			<div className="panel-heading">
@@ -133,6 +144,16 @@ function ServiceCard({
 				<div>
 					<strong>{service.activeSubscriptionCount}</strong>
 					<span>활성 subscription</span>
+				</div>
+				<div>
+					<strong>{resizeMode}</strong>
+					<span>리사이징 모드</span>
+				</div>
+				<div>
+					<strong>
+						{activeResizeVariantCount}/{resizeVariants.length}
+					</strong>
+					<span>활성 사전 사이즈</span>
 				</div>
 				<div>
 					<strong>{formatDateTime(service.updatedAt)}</strong>
@@ -382,6 +403,226 @@ function ServiceCard({
 					</p>
 				)}
 			</div>
+
+			<ResizePolicySection
+				formAction={formAction}
+				isPending={isPending}
+				service={service}
+			/>
 		</article>
 	);
+}
+
+function ResizePolicySection({
+	service,
+	formAction,
+	isPending,
+}: {
+	service: ClientServiceItem;
+	formAction: (payload: FormData) => void;
+	isPending: boolean;
+}) {
+	const policy = service.imageResizePolicy;
+	const mode = policy?.mode ?? 'ON_DEMAND';
+	const variants = policy?.variants ?? [];
+
+	return (
+		<section
+			className="key-list"
+			aria-label={`${service.name} 이미지 리사이징 정책`}
+		>
+			<div className="panel-heading">
+				<div>
+					<h3>이미지 리사이징 정책</h3>
+					<p>
+						on-demand 또는 pre-generate 모드를 고르고, 미리 생성할 사이즈를
+						서비스별로 관리합니다.
+					</p>
+				</div>
+				<span className={`badge badge-${mode.toLowerCase()}`}>{mode}</span>
+			</div>
+
+			<form action={formAction} className="sub-form">
+				<input name="intent" type="hidden" value="update-image-resize-policy" />
+				<input name="serviceId" type="hidden" value={service.id} />
+				<label>
+					리사이징 모드
+					<select name="mode" defaultValue={mode}>
+						<option value="ON_DEMAND">ON_DEMAND</option>
+						<option value="PRE_GENERATE">PRE_GENERATE</option>
+					</select>
+				</label>
+				<button
+					className="button button-secondary"
+					disabled={isPending}
+					type="submit"
+				>
+					정책 저장
+				</button>
+			</form>
+
+			<form action={formAction} className="sub-form">
+				<input
+					name="intent"
+					type="hidden"
+					value="create-image-resize-variant"
+				/>
+				<input name="serviceId" type="hidden" value={service.id} />
+				<label>
+					width
+					<input
+						max={10_000}
+						min={1}
+						name="width"
+						placeholder="400"
+						type="number"
+					/>
+				</label>
+				<label>
+					height
+					<input
+						max={10_000}
+						min={1}
+						name="height"
+						placeholder="400"
+						type="number"
+					/>
+				</label>
+				<label>
+					format
+					<select name="format" defaultValue="webp">
+						{resizeFormats.map((format) => (
+							<option key={format} value={format}>
+								{format}
+							</option>
+						))}
+					</select>
+				</label>
+				<label>
+					활성화 여부
+					<select name="isEnabled" defaultValue="true">
+						<option value="true">활성</option>
+						<option value="false">비활성</option>
+					</select>
+				</label>
+				<label>
+					설명
+					<input name="description" placeholder="목록 썸네일" />
+				</label>
+				<button className="button" disabled={isPending} type="submit">
+					사전 생성 사이즈 추가
+				</button>
+			</form>
+
+			{variants.length ? (
+				<table>
+					<thead>
+						<tr>
+							<th>size</th>
+							<th>format</th>
+							<th>상태</th>
+							<th>설명</th>
+							<th>관리</th>
+						</tr>
+					</thead>
+					<tbody>
+						{variants.map((variant) => (
+							<tr key={variant.id}>
+								<td>{formatResizeVariantSize(variant)}</td>
+								<td>{variant.format}</td>
+								<td>{variant.isEnabled ? '활성' : '비활성'}</td>
+								<td>{variant.description ?? '-'}</td>
+								<td>
+									<form action={formAction} className="inline-form">
+										<input
+											name="intent"
+											type="hidden"
+											value="update-image-resize-variant"
+										/>
+										<input name="serviceId" type="hidden" value={service.id} />
+										<input name="variantId" type="hidden" value={variant.id} />
+										<input
+											aria-label="사전 생성 width"
+											defaultValue={variant.width ?? ''}
+											max={10_000}
+											min={1}
+											name="width"
+											placeholder="width"
+											type="number"
+										/>
+										<input
+											aria-label="사전 생성 height"
+											defaultValue={variant.height ?? ''}
+											max={10_000}
+											min={1}
+											name="height"
+											placeholder="height"
+											type="number"
+										/>
+										<select
+											aria-label="사전 생성 format"
+											defaultValue={variant.format}
+											name="format"
+										>
+											{resizeFormats.map((format) => (
+												<option key={format} value={format}>
+													{format}
+												</option>
+											))}
+										</select>
+										<select
+											aria-label="사전 생성 활성화 여부"
+											defaultValue={String(variant.isEnabled)}
+											name="isEnabled"
+										>
+											<option value="true">활성</option>
+											<option value="false">비활성</option>
+										</select>
+										<input
+											aria-label="사전 생성 설명"
+											defaultValue={variant.description ?? ''}
+											name="description"
+											placeholder="설명"
+										/>
+										<button
+											className="button button-secondary"
+											disabled={isPending}
+											type="submit"
+										>
+											저장
+										</button>
+									</form>
+									<form action={formAction}>
+										<input
+											name="intent"
+											type="hidden"
+											value="delete-image-resize-variant"
+										/>
+										<input name="serviceId" type="hidden" value={service.id} />
+										<input name="variantId" type="hidden" value={variant.id} />
+										<button
+											className="button button-danger"
+											disabled={isPending}
+											type="submit"
+										>
+											삭제
+										</button>
+									</form>
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			) : (
+				<p className="empty-state">
+					등록된 pre-generate 사이즈가 없습니다. on-demand 모드는 기존처럼 요청
+					시점에 resize합니다.
+				</p>
+			)}
+		</section>
+	);
+}
+
+function formatResizeVariantSize(variant: ClientServiceImageResizeVariantItem) {
+	return `${variant.width ?? 'auto'}x${variant.height ?? 'auto'}`;
 }

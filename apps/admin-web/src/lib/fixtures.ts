@@ -62,6 +62,37 @@ export const clientServicesFixture: ClientServiceItem[] = [
 				updatedAt: '2026-07-01T00:25:00.000Z',
 			},
 		],
+		imageResizePolicy: {
+			id: 'resize-policy-catalog',
+			clientServiceId: 'svc-catalog',
+			mode: 'PRE_GENERATE',
+			createdAt: '2026-07-01T00:30:00.000Z',
+			updatedAt: '2026-07-01T00:35:00.000Z',
+			variants: [
+				{
+					id: 'resize-variant-catalog-thumb',
+					policyId: 'resize-policy-catalog',
+					width: 400,
+					height: 400,
+					format: 'webp',
+					isEnabled: true,
+					description: '상품 목록 썸네일',
+					createdAt: '2026-07-01T00:31:00.000Z',
+					updatedAt: '2026-07-01T00:31:00.000Z',
+				},
+				{
+					id: 'resize-variant-catalog-card',
+					policyId: 'resize-policy-catalog',
+					width: 800,
+					height: 600,
+					format: 'jpeg',
+					isEnabled: false,
+					description: '카드 이미지 후보',
+					createdAt: '2026-07-01T00:32:00.000Z',
+					updatedAt: '2026-07-01T00:36:00.000Z',
+				},
+			],
+		},
 	},
 	{
 		id: 'svc-admin',
@@ -77,6 +108,14 @@ export const clientServicesFixture: ClientServiceItem[] = [
 		activeSubscriptionCount: 0,
 		keys: [],
 		lifecycleSubscriptions: [],
+		imageResizePolicy: {
+			id: 'resize-policy-admin',
+			clientServiceId: 'svc-admin',
+			mode: 'ON_DEMAND',
+			variants: [],
+			createdAt: '2026-07-01T04:00:00.000Z',
+			updatedAt: '2026-07-01T04:00:00.000Z',
+		},
 	},
 ];
 

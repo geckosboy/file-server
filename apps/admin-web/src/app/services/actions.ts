@@ -4,13 +4,19 @@ import { revalidatePath } from 'next/cache';
 import {
 	createClientService,
 	createClientServiceKey,
+	createClientServiceImageResizeVariant,
 	createClientServiceLifecycleSubscription,
+	deleteClientServiceImageResizeVariant,
 	fetchClientServiceDetailsList,
 	revokeClientServiceKey,
 	updateClientService,
+	updateClientServiceImageResizePolicy,
+	updateClientServiceImageResizeVariant,
 	updateClientServiceLifecycleSubscription,
 	type ClientServiceItem,
 	type ClientServiceStatus,
+	type ImageResizeFormat,
+	type ImageResizeMode,
 	type LifecycleEventType,
 } from '@/lib/telemetry-api';
 
@@ -120,6 +126,57 @@ async function runIntent(
 		return undefined;
 	}
 
+	if (intent === 'update-image-resize-policy') {
+		await updateClientServiceImageResizePolicy(
+			readRequiredFormString(formData, 'serviceId'),
+			{
+				mode: readImageResizeMode(formData),
+			},
+		);
+		return undefined;
+	}
+
+	if (intent === 'create-image-resize-variant') {
+		const input = {
+			width: readOptionalPositiveInteger(formData, 'width'),
+			height: readOptionalPositiveInteger(formData, 'height'),
+			format: readImageResizeFormat(formData),
+			isEnabled: readEnabled(formData),
+			description: readOptionalFormString(formData, 'description'),
+		};
+		assertHasResizeDimension(input);
+		await createClientServiceImageResizeVariant(
+			readRequiredFormString(formData, 'serviceId'),
+			input,
+		);
+		return undefined;
+	}
+
+	if (intent === 'update-image-resize-variant') {
+		const input = {
+			width: readOptionalPositiveInteger(formData, 'width'),
+			height: readOptionalPositiveInteger(formData, 'height'),
+			format: readImageResizeFormat(formData),
+			isEnabled: readEnabled(formData),
+			description: readNullableFormString(formData, 'description'),
+		};
+		assertHasResizeDimension(input);
+		await updateClientServiceImageResizeVariant(
+			readRequiredFormString(formData, 'serviceId'),
+			readRequiredFormString(formData, 'variantId'),
+			input,
+		);
+		return undefined;
+	}
+
+	if (intent === 'delete-image-resize-variant') {
+		await deleteClientServiceImageResizeVariant(
+			readRequiredFormString(formData, 'serviceId'),
+			readRequiredFormString(formData, 'variantId'),
+		);
+		return undefined;
+	}
+
 	if (intent === 'revoke-key') {
 		await revokeClientServiceKey(
 			readRequiredFormString(formData, 'serviceId'),
@@ -146,6 +203,18 @@ function successMessage(intent: string) {
 	}
 	if (intent === 'update-lifecycle-subscription') {
 		return 'lifecycle subscription을 저장했습니다.';
+	}
+	if (intent === 'update-image-resize-policy') {
+		return '이미지 리사이징 정책을 저장했습니다.';
+	}
+	if (intent === 'create-image-resize-variant') {
+		return '사전 생성 사이즈를 추가했습니다.';
+	}
+	if (intent === 'update-image-resize-variant') {
+		return '사전 생성 사이즈를 저장했습니다.';
+	}
+	if (intent === 'delete-image-resize-variant') {
+		return '사전 생성 사이즈를 삭제했습니다.';
 	}
 	if (intent === 'revoke-key') {
 		return 'API key를 폐기했습니다.';
@@ -202,6 +271,41 @@ function readEnabled(formData: FormData) {
 		throw new Error('활성화 여부는 true 또는 false만 가능합니다.');
 	}
 	return value === 'true';
+}
+
+function readImageResizeMode(formData: FormData): ImageResizeMode {
+	const mode = readRequiredFormString(formData, 'mode');
+	if (mode !== 'ON_DEMAND' && mode !== 'PRE_GENERATE') {
+		throw new Error('mode는 ON_DEMAND 또는 PRE_GENERATE만 가능합니다.');
+	}
+	return mode;
+}
+
+function readImageResizeFormat(formData: FormData): ImageResizeFormat {
+	const format = readRequiredFormString(formData, 'format');
+	if (format !== 'png' && format !== 'jpeg' && format !== 'webp') {
+		throw new Error('format은 png, jpeg, webp만 가능합니다.');
+	}
+	return format;
+}
+
+function readOptionalPositiveInteger(formData: FormData, key: string) {
+	const value = readOptionalFormString(formData, key);
+	if (value === undefined) {
+		return undefined;
+	}
+
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 10_000) {
+		throw new Error(`${key}는 1~10000 사이의 정수여야 합니다.`);
+	}
+	return parsed;
+}
+
+function assertHasResizeDimension(input: { width?: number; height?: number }) {
+	if (input.width === undefined && input.height === undefined) {
+		throw new Error('width 또는 height 중 하나 이상이 필요합니다.');
+	}
 }
 
 function readScopes(formData: FormData) {

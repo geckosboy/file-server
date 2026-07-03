@@ -37,6 +37,17 @@ describe('서비스 레지스트리 페이지', () => {
 		expect(html).toContain('활성 subscription');
 	});
 
+	it('이미지 리사이징 정책 관리 영역을 표시한다', () => {
+		const html = renderServices();
+
+		expect(html).toContain('이미지 리사이징 정책');
+		expect(html).toContain('ON_DEMAND');
+		expect(html).toContain('PRE_GENERATE');
+		expect(html).toContain('400x400');
+		expect(html).toContain('webp');
+		expect(html).toContain('사전 생성 사이즈 추가');
+	});
+
 	it('데이터 요청 실패 안내를 표시한다', () => {
 		const html = renderToStaticMarkup(
 			<ServicesPageContent

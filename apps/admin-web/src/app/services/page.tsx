@@ -1,12 +1,15 @@
 import { ClientServiceManager } from './client-service-manager';
 import { clientServicesFixture } from '@/lib/fixtures';
-import { fetchClientServiceDetailsList } from '@/lib/telemetry-api';
+import {
+	fetchClientServiceDetailsList,
+	type ClientServiceItem,
+} from '@/lib/telemetry-api';
 
 export function ServicesPageContent({
 	services,
 	errorMessage,
 }: {
-	services: Awaited<ReturnType<typeof fetchClientServiceDetailsList>>;
+	services: ClientServiceItem[];
 	errorMessage?: string;
 }) {
 	return (
@@ -14,7 +17,10 @@ export function ServicesPageContent({
 			<section className="hero">
 				<div>
 					<h1>서비스 레지스트리</h1>
-					<p>파일 서버를 사용하는 서비스와 API key를 등록/수정/폐기합니다.</p>
+					<p>
+						파일 서버를 사용하는 서비스, API key, lifecycle 구독, 이미지
+						리사이징 정책을 관리합니다.
+					</p>
 				</div>
 			</section>
 			{errorMessage ? (
