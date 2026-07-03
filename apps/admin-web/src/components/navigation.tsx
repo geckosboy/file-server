@@ -4,6 +4,7 @@ const links = [
 	{ href: '/events', label: 'Events' },
 	{ href: '/lifecycle-events', label: 'Lifecycle' },
 	{ href: '/services', label: 'Services' },
+	{ href: '/resize-recommendations', label: 'Resize 추천' },
 ];
 
 export function Navigation() {

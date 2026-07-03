@@ -4,6 +4,7 @@ import {
 	DashboardSummary,
 	EventListResponse,
 	ImageListResponse,
+	ImageResizeRecommendationsResponse,
 	LifecycleEventListResponse,
 	TimeseriesPoint,
 } from './telemetry-api';
@@ -342,6 +343,55 @@ export const imageListFixture: ImageListResponse = {
 	],
 	nextCursor: undefined,
 };
+
+export const imageResizeRecommendationsFixture: ImageResizeRecommendationsResponse =
+	{
+		threshold: {
+			minRequests: 3,
+		},
+		items: [
+			{
+				recommendationKey: 'svc-catalog:400x400:webp',
+				clientServiceId: 'svc-catalog',
+				clientServiceSlug: 'catalog-api',
+				width: 400,
+				height: 400,
+				format: 'webp',
+				requestCount: 12,
+				imageCount: 4,
+				avgDurationMs: 30,
+				p95DurationMs: 52,
+				estimatedSavedResizeMs: 360,
+				totalInputBytes: 960_000,
+				totalOutputBytes: 240_000,
+				lastRequestedAt: '2026-07-01T12:35:00.000Z',
+				sampleImageKeys: [
+					'products/main/hero.png',
+					'products/thumb/card.jpg',
+					'products/list/item.png',
+				],
+				recommended: true,
+			},
+			{
+				recommendationKey: 'svc-admin:320x240:jpeg',
+				clientServiceId: 'svc-admin',
+				clientServiceSlug: 'admin-api',
+				width: 320,
+				height: 240,
+				format: 'jpeg',
+				requestCount: 1,
+				imageCount: 1,
+				avgDurationMs: 18.4,
+				p95DurationMs: 18.4,
+				estimatedSavedResizeMs: 18,
+				totalInputBytes: 42_000,
+				totalOutputBytes: 12_000,
+				lastRequestedAt: '2026-07-01T10:08:00.000Z',
+				sampleImageKeys: ['products/thumb/card.jpg'],
+				recommended: false,
+			},
+		],
+	};
 
 export const dashboardDataFixture: DashboardData = {
 	summary: dashboardSummaryFixture,

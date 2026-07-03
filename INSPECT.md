@@ -331,6 +331,7 @@ http://127.0.0.1:3000/dashboard
 http://127.0.0.1:3000/events
 http://127.0.0.1:3000/images
 http://127.0.0.1:3000/services
+http://127.0.0.1:3000/resize-recommendations
 ```
 
 ### 10-3. telemetry-api 헬스체크
@@ -656,6 +657,12 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - 리사이징 정책 영역에서 `ON_DEMAND` / `PRE_GENERATE` 모드를 저장할 수 있어야 합니다.
   - pre-generate variant의 width/height/format/활성화 여부/설명을 추가·수정·삭제할 수 있어야 합니다.
   - `PRE_GENERATE` 서비스로 업로드한 뒤 `/events`에서 같은 원본 `imageKey`의 `image.resize.completed` 또는 `image.resize.failed` 이벤트가 보여야 합니다.
+- `/resize-recommendations`
+  - `client service`, 기간, 추천 임계값 필터가 보여야 합니다.
+  - 자주 요청된 width/height/format별 요청 수, 이미지 수, 평균/p95 처리 시간, 예상 절감 시간이 보여야 합니다.
+  - 이미 활성 pre-generate variant로 등록된 추천은 `이미 반영됨`으로 보여야 합니다.
+  - 아직 반영되지 않은 추천의 `정책에 반영` 버튼을 누르면 해당 서비스 정책이 `PRE_GENERATE`가 되고 추천 width/height/format이 활성 variant로 저장되어야 합니다.
+  - 이 화면은 telemetry 추천 API의 조회 결과만 사용하며 자동 적용은 하지 않습니다.
 
 ### 10-8. 자동 테스트 명령
 

@@ -127,6 +127,32 @@ export interface ImageListResponse {
 	nextCursor?: string;
 }
 
+export interface ImageResizeRecommendationItem {
+	recommendationKey: string;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+	width?: number;
+	height?: number;
+	format?: string;
+	requestCount: number;
+	imageCount: number;
+	avgDurationMs: number | null;
+	p95DurationMs: number | null;
+	estimatedSavedResizeMs: number;
+	totalInputBytes: number;
+	totalOutputBytes: number;
+	lastRequestedAt: string;
+	sampleImageKeys: string[];
+	recommended: boolean;
+}
+
+export interface ImageResizeRecommendationsResponse {
+	threshold: {
+		minRequests: number;
+	};
+	items: ImageResizeRecommendationItem[];
+}
+
 export interface ClientServiceKeyItem {
 	id: string;
 	clientServiceId: string;
@@ -288,6 +314,11 @@ export interface ImagesQuery extends ServiceScopedQuery {
 	limit?: number;
 }
 
+export interface ImageResizeRecommendationsQuery extends ServiceScopedQuery {
+	minRequests?: number;
+	limit?: number;
+}
+
 export class TelemetryApiError extends Error {
 	constructor(
 		message: string,
@@ -391,6 +422,19 @@ export const buildImagesUrl = (
 		cursor: query.cursor,
 		limit: query.limit,
 	}).toString();
+
+export const buildImageResizeRecommendationsUrl = (
+	query: ImageResizeRecommendationsQuery = {},
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	appendDefinedParams(
+		createAdminUrl(baseUrl, '/image-resize-recommendations'),
+		{
+			...serviceScopedParams(query),
+			minRequests: query.minRequests,
+			limit: query.limit,
+		},
+	).toString();
 
 export const buildClientServicesUrl = (baseUrl = getTelemetryApiBaseUrl()) =>
 	createAdminUrl(baseUrl, '/client-services').toString();
@@ -521,6 +565,13 @@ export const fetchLifecycleEvents = (query: LifecycleEventsQuery = {}) =>
 
 export const fetchImages = (query: ImagesQuery = {}) =>
 	fetchTelemetryJson<ImageListResponse>(buildImagesUrl(query));
+
+export const fetchImageResizeRecommendations = (
+	query: ImageResizeRecommendationsQuery = {},
+) =>
+	fetchTelemetryJson<ImageResizeRecommendationsResponse>(
+		buildImageResizeRecommendationsUrl(query),
+	);
 
 export const fetchClientServices = () =>
 	fetchTelemetryJson<ClientServiceItem[]>(buildClientServicesUrl());

@@ -12,6 +12,7 @@ import {
 	buildDashboardSummaryUrl,
 	buildEventsUrl,
 	buildImagesUrl,
+	buildImageResizeRecommendationsUrl,
 	buildLifecycleEventsUrl,
 	fetchTelemetryJson,
 	getTelemetryAdminToken,
@@ -122,6 +123,24 @@ describe('텔레메트리 API 클라이언트', () => {
 		expect(url.searchParams.get('sort')).toBe('cacheMisses');
 		expect(url.searchParams.get('order')).toBe('desc');
 		expect(url.searchParams.get('clientServiceSlug')).toBe('catalog-api');
+	});
+
+	it('리사이징 추천 API URL에 서비스와 추천 임계값을 포함한다', () => {
+		const url = new URL(
+			buildImageResizeRecommendationsUrl(
+				{
+					clientServiceId: 'svc-catalog',
+					minRequests: 3,
+					limit: 25,
+				},
+				'https://telemetry.test/api/admin',
+			),
+		);
+
+		expect(url.pathname).toBe('/api/admin/image-resize-recommendations');
+		expect(url.searchParams.get('clientServiceId')).toBe('svc-catalog');
+		expect(url.searchParams.get('minRequests')).toBe('3');
+		expect(url.searchParams.get('limit')).toBe('25');
 	});
 
 	it('서비스 레지스트리 API URL을 만든다', () => {
