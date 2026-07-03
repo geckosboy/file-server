@@ -174,11 +174,43 @@ a {
 }
 
 input,
-select {
+select,
+textarea {
 	border: 1px solid var(--border);
 	border-radius: 0.8rem;
 	font: inherit;
 	padding: 0.65rem 0.75rem;
+}
+
+textarea {
+	resize: vertical;
+}
+
+.button {
+	align-self: end;
+	background: var(--primary);
+	border: 0;
+	border-radius: 999px;
+	color: white;
+	cursor: pointer;
+	font: inherit;
+	font-weight: 800;
+	padding: 0.7rem 1rem;
+}
+
+.button-secondary {
+	background: var(--surface-muted);
+	color: var(--text);
+}
+
+.button-danger {
+	background: var(--danger);
+	color: white;
+}
+
+.button:disabled {
+	cursor: not-allowed;
+	opacity: 0.55;
 }
 
 table {
@@ -274,6 +306,115 @@ th {
 	font-weight: 800;
 	margin: 0 0 1rem;
 	padding: 1rem;
+}
+
+.success-state {
+	background: #dcfce7;
+	border: 1px solid #bbf7d0;
+	border-radius: 0.9rem;
+	color: var(--success);
+	font-weight: 800;
+	margin: 0 0 1rem;
+	padding: 1rem;
+}
+
+.stack {
+	display: grid;
+	gap: 1rem;
+}
+
+.service-card-grid {
+	grid-template-columns: 1fr;
+}
+
+.service-card {
+	display: grid;
+	gap: 1rem;
+}
+
+.compact-metrics {
+	background: var(--surface-muted);
+	border-radius: 0.9rem;
+	grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+	padding: 0.75rem;
+}
+
+.compact-metrics div {
+	display: grid;
+	gap: 0.2rem;
+}
+
+.compact-metrics strong {
+	font-size: 1rem;
+}
+
+.compact-metrics span {
+	color: var(--muted);
+	font-size: 0.78rem;
+	font-weight: 800;
+	text-transform: uppercase;
+}
+
+.sub-form {
+	background: var(--surface-muted);
+	border-radius: 0.9rem;
+	display: grid;
+	gap: 0.75rem;
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+	padding: 0.85rem;
+}
+
+.sub-form label {
+	color: var(--muted);
+	display: grid;
+	font-size: 0.85rem;
+	font-weight: 700;
+	gap: 0.35rem;
+}
+
+.key-form {
+	background: #eff6ff;
+}
+
+.key-list {
+	overflow-x: auto;
+}
+
+.key-list h3 {
+	margin-bottom: 0.75rem;
+}
+
+.key-output {
+	background: #0f172a;
+	border-radius: 1rem;
+	color: white;
+	display: grid;
+	gap: 0.5rem;
+	padding: 1rem;
+}
+
+.key-output p,
+.key-output small {
+	color: #cbd5e1;
+	margin: 0;
+}
+
+.key-output code {
+	background: rgb(255 255 255 / 12%);
+	border-radius: 0.75rem;
+	overflow-x: auto;
+	padding: 0.75rem;
+	white-space: nowrap;
+}
+
+.badge-active {
+	background: #dcfce7;
+	color: var(--success);
+}
+
+.badge-disabled {
+	background: var(--surface-muted);
+	color: var(--muted);
 }
 
 .pagination {

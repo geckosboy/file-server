@@ -20,6 +20,10 @@ export default function HomePage() {
 					<h2>Images</h2>
 					<p>요청량과 cache miss가 높은 이미지를 찾습니다.</p>
 				</a>
+				<a className="panel" href="/services">
+					<h2>Services</h2>
+					<p>서비스 레지스트리와 API key를 관리합니다.</p>
+				</a>
 			</section>
 		</main>
 	);

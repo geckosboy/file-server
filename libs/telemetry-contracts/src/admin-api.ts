@@ -55,6 +55,14 @@ export class DashboardSummaryQueryDto {
 
 	@IsISO8601()
 	to!: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceId?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceSlug?: string;
 }
 
 export class DashboardTimeseriesQueryDto extends DashboardSummaryQueryDto {

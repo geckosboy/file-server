@@ -1,4 +1,5 @@
-import { imageListFixture } from '@/lib/fixtures';
+import { ClientServiceSelect } from '@/components/client-service-select';
+import { clientServicesFixture, imageListFixture } from '@/lib/fixtures';
 import {
 	formatDateTime,
 	formatMs,
@@ -6,31 +7,87 @@ import {
 	formatPercent,
 } from '@/lib/format';
 import {
+	buildRangeFromPreset,
+	readOptionalSearchParam,
+	readRangePreset,
+	resolveSearchParams,
+	type PageSearchParams,
+} from '@/lib/search-params';
+import {
+	fetchClientServices,
 	fetchImages,
+	type ClientServiceItem,
 	type ImageListItem,
 	type ImageListResponse,
+	type ImagesQuery,
 } from '@/lib/telemetry-api';
 
-const sortImagesByReadsDesc = (items: ImageListItem[]) =>
-	[...items].sort((left, right) => right.totalReads - left.totalReads);
+type ImageSort = NonNullable<ImagesQuery['sort']>;
+type SortOrder = NonNullable<ImagesQuery['order']>;
+
+type ImagesFilters = {
+	range: string;
+	clientServiceId?: string;
+	q?: string;
+	sort: ImageSort;
+	order: SortOrder;
+};
 
 type ImagesPageContentProps = {
 	data: ImageListResponse;
+	services: ClientServiceItem[];
+	filters: ImagesFilters;
 	errorMessage?: string;
+};
+
+const sortImages = (
+	items: ImageListItem[],
+	sort: ImageSort,
+	order: SortOrder,
+) =>
+	[...items].sort((left, right) => {
+		const direction = order === 'asc' ? 1 : -1;
+		const leftValue = imageSortValue(left, sort);
+		const rightValue = imageSortValue(right, sort);
+		if (typeof leftValue === 'string' && typeof rightValue === 'string') {
+			return leftValue.localeCompare(rightValue) * direction;
+		}
+		return ((leftValue as number) - (rightValue as number)) * direction;
+	});
+
+const imageSortValue = (image: ImageListItem, sort: ImageSort) => {
+	if (sort === 'resizes') {
+		return image.totalResizes;
+	}
+	if (sort === 'cacheMisses') {
+		return image.totalCacheMisses;
+	}
+	if (sort === 'failures') {
+		return image.totalFailures;
+	}
+	if (sort === 'lastSeenAt') {
+		return image.lastSeenAt;
+	}
+	return image.totalReads;
 };
 
 export function ImagesPageContent({
 	data,
+	services,
+	filters,
 	errorMessage,
 }: ImagesPageContentProps) {
-	const images = sortImagesByReadsDesc(data.items);
+	const images = sortImages(data.items, filters.sort, filters.order);
 
 	return (
 		<main className="page-shell">
 			<section className="hero">
 				<div>
 					<h1>이미지 집계</h1>
-					<p>요청량, 리사이즈량, 캐시 miss, 실패가 많은 이미지를 비교합니다.</p>
+					<p>
+						서비스별 요청량, 리사이즈량, 캐시 miss, 실패가 많은 이미지를
+						비교합니다.
+					</p>
 				</div>
 			</section>
 			{errorMessage ? (
@@ -43,11 +100,19 @@ export function ImagesPageContent({
 				<form className="filter-panel" aria-label="이미지 필터">
 					<label>
 						검색어
-						<input name="q" placeholder="path, name, imageKey" />
+						<input
+							name="q"
+							placeholder="path, name, imageKey"
+							defaultValue={filters.q ?? ''}
+						/>
 					</label>
+					<ClientServiceSelect
+						services={services}
+						selectedClientServiceId={filters.clientServiceId}
+					/>
 					<label>
 						정렬
-						<select name="sort" defaultValue="reads">
+						<select name="sort" defaultValue={filters.sort}>
 							<option value="reads">요청 수</option>
 							<option value="resizes">리사이즈 수</option>
 							<option value="cacheMisses">캐시 miss</option>
@@ -56,13 +121,24 @@ export function ImagesPageContent({
 						</select>
 					</label>
 					<label>
+						순서
+						<select name="order" defaultValue={filters.order}>
+							<option value="desc">내림차순</option>
+							<option value="asc">오름차순</option>
+						</select>
+					</label>
+					<label>
 						기간
-						<select name="range" defaultValue="24h">
+						<select name="range" defaultValue={filters.range}>
 							<option value="1h">최근 1시간</option>
 							<option value="24h">최근 24시간</option>
+							<option value="7d">최근 7일</option>
 							<option value="30d">최근 30일</option>
 						</select>
 					</label>
+					<button className="button" type="submit">
+						필터 적용
+					</button>
 				</form>
 
 				{images.length === 0 ? (
@@ -111,21 +187,67 @@ export function ImagesPageContent({
 	);
 }
 
-async function fetchImagesPageData(): Promise<ImagesPageContentProps> {
+function readSort(params: PageSearchParams): ImageSort {
+	const sort = readOptionalSearchParam(params, 'sort');
+	return sort === 'resizes' ||
+		sort === 'cacheMisses' ||
+		sort === 'failures' ||
+		sort === 'lastSeenAt'
+		? sort
+		: 'reads';
+}
+
+function readOrder(params: PageSearchParams): SortOrder {
+	return readOptionalSearchParam(params, 'order') === 'asc' ? 'asc' : 'desc';
+}
+
+function buildImagesFilters(params: PageSearchParams): ImagesFilters {
+	return {
+		range: readRangePreset(params),
+		clientServiceId: readOptionalSearchParam(params, 'clientServiceId'),
+		q: readOptionalSearchParam(params, 'q'),
+		sort: readSort(params),
+		order: readOrder(params),
+	};
+}
+
+async function fetchImagesPageData(
+	params: PageSearchParams,
+): Promise<ImagesPageContentProps> {
+	const filters = buildImagesFilters(params);
+	const query: ImagesQuery = {
+		...buildRangeFromPreset(filters.range),
+		clientServiceId: filters.clientServiceId,
+		q: filters.q,
+		sort: filters.sort,
+		order: filters.order,
+		limit: 50,
+	};
+
 	try {
-		return {
-			data: await fetchImages({ sort: 'reads', order: 'desc', limit: 50 }),
-		};
+		const [services, data] = await Promise.all([
+			fetchClientServices(),
+			fetchImages(query),
+		]);
+		return { data, services, filters };
 	} catch {
 		return {
 			data: imageListFixture,
+			services: clientServicesFixture,
+			filters,
 			errorMessage:
 				'텔레메트리 API를 불러오지 못해 fixture 데이터로 표시합니다.',
 		};
 	}
 }
 
-export default async function ImagesPage() {
-	const props = await fetchImagesPageData();
+export default async function ImagesPage({
+	searchParams,
+}: {
+	searchParams?: Promise<PageSearchParams>;
+}) {
+	const props = await fetchImagesPageData(
+		await resolveSearchParams(searchParams),
+	);
 	return <ImagesPageContent {...props} />;
 }

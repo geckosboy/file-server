@@ -1,10 +1,15 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { EventsPageContent } from './page';
-import { eventListFixture } from '@/lib/fixtures';
+import { clientServicesFixture, eventListFixture } from '@/lib/fixtures';
 import type { EventListResponse } from '@/lib/telemetry-api';
 
+const defaultProps = {
+	services: clientServicesFixture,
+	filters: { range: '24h', clientServiceId: 'svc-catalog' },
+};
+
 const renderEvents = (data: EventListResponse) =>
-	renderToStaticMarkup(<EventsPageContent data={data} />);
+	renderToStaticMarkup(<EventsPageContent data={data} {...defaultProps} />);
 
 describe('이벤트 로그 페이지', () => {
 	it('이벤트 목록을 발생 시각 내림차순으로 표시한다', () => {
@@ -20,16 +25,19 @@ describe('이벤트 로그 페이지', () => {
 		expect(failedIndex).toBeLessThan(uploadIndex);
 	});
 
-	it('이벤트 타입 필터를 표시한다', () => {
+	it('이벤트 타입과 client service 필터를 표시한다', () => {
 		const html = renderEvents(eventListFixture);
 
 		expect(html).toContain('이벤트 타입');
+		expect(html).toContain('client service');
 		expect(html).toContain('image.cache.miss');
+		expect(html).toContain('Catalog API');
 	});
 
-	it('실패 이벤트 행에는 에러 메시지를 표시한다', () => {
+	it('실패 이벤트 행에는 서비스와 에러 메시지를 표시한다', () => {
 		const html = renderEvents(eventListFixture);
 
+		expect(html).toContain('catalog-api');
 		expect(html).toContain('SHARP_INPUT_INVALID');
 		expect(html).toContain('이미지 디코딩에 실패했습니다.');
 	});
@@ -53,6 +61,7 @@ describe('이벤트 로그 페이지', () => {
 		const html = renderToStaticMarkup(
 			<EventsPageContent
 				data={eventListFixture}
+				{...defaultProps}
 				errorMessage="텔레메트리 API를 불러오지 못해 fixture 데이터로 표시합니다."
 			/>,
 		);

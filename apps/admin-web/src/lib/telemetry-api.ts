@@ -1,5 +1,6 @@
 export type SourceApp = 'storage' | 'resize' | 'cache';
 export type EventStatus = 'success' | 'failed';
+export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
 
 export interface TimeRange {
 	from: string;
@@ -44,8 +45,12 @@ export interface EventListItem {
 	eventId: string;
 	eventType: string;
 	occurredAt: string;
+	receivedAt?: string;
 	sourceApp: SourceApp;
+	environment?: string;
 	status: EventStatus;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
 	path: string;
 	name: string;
 	imageKey: string;
@@ -55,6 +60,7 @@ export interface EventListItem {
 	inputBytes?: number;
 	outputBytes?: number;
 	requestId?: string;
+	traceId?: string;
 	errorCode?: string;
 	errorMessage?: string;
 	rawPayload: Record<string, unknown>;
@@ -87,11 +93,69 @@ export interface ImageListResponse {
 	nextCursor?: string;
 }
 
-export interface DashboardQuery extends Partial<TimeRange> {
+export interface ClientServiceKeyItem {
+	id: string;
+	clientServiceId: string;
+	name?: string;
+	keyPrefix: string;
+	scopes?: Record<string, unknown>;
+	expiresAt?: string;
+	revokedAt?: string;
+	lastUsedAt?: string;
+	createdAt: string;
+}
+
+export interface ClientServiceItem {
+	id: string;
+	slug: string;
+	name: string;
+	description?: string;
+	owner?: string;
+	status: ClientServiceStatus;
+	createdAt: string;
+	updatedAt: string;
+	keyCount: number;
+	activeKeyCount: number;
+	keys?: ClientServiceKeyItem[];
+}
+
+export interface CreateClientServiceInput {
+	slug: string;
+	name: string;
+	description?: string;
+	owner?: string;
+	status?: ClientServiceStatus;
+}
+
+export interface UpdateClientServiceInput {
+	slug?: string;
+	name?: string;
+	description?: string | null;
+	owner?: string | null;
+	status?: ClientServiceStatus;
+}
+
+export interface CreateClientServiceKeyInput {
+	name?: string;
+	scopes?: Record<string, unknown>;
+	expiresAt?: string;
+}
+
+export interface CreateClientServiceKeyResponse {
+	apiKey: string;
+	key: ClientServiceKeyItem;
+}
+
+export interface ServiceScopedQuery extends Partial<TimeRange> {
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+}
+
+export interface DashboardQuery extends ServiceScopedQuery {
 	interval?: 'minute' | 'hour' | 'day';
 }
 
-export interface EventsQuery extends Partial<TimeRange> {
+export interface EventsQuery extends ServiceScopedQuery {
 	eventType?: string;
 	sourceApp?: SourceApp;
 	status?: EventStatus;
@@ -103,7 +167,7 @@ export interface EventsQuery extends Partial<TimeRange> {
 	limit?: number;
 }
 
-export interface ImagesQuery extends Partial<TimeRange> {
+export interface ImagesQuery extends ServiceScopedQuery {
 	q?: string;
 	sort?: 'reads' | 'resizes' | 'cacheMisses' | 'failures' | 'lastSeenAt';
 	order?: 'asc' | 'desc';
@@ -149,13 +213,19 @@ const appendDefinedParams = (
 	return url;
 };
 
+const serviceScopedParams = (query: ServiceScopedQuery) => ({
+	from: query.from,
+	to: query.to,
+	clientServiceId: query.clientServiceId,
+	clientServiceSlug: query.clientServiceSlug,
+});
+
 export const buildDashboardSummaryUrl = (
 	query: DashboardQuery = {},
 	baseUrl = getTelemetryApiBaseUrl(),
 ) =>
 	appendDefinedParams(createAdminUrl(baseUrl, '/dashboard/summary'), {
-		from: query.from,
-		to: query.to,
+		...serviceScopedParams(query),
 	}).toString();
 
 export const buildDashboardTimeseriesUrl = (
@@ -163,8 +233,7 @@ export const buildDashboardTimeseriesUrl = (
 	baseUrl = getTelemetryApiBaseUrl(),
 ) =>
 	appendDefinedParams(createAdminUrl(baseUrl, '/dashboard/timeseries'), {
-		from: query.from,
-		to: query.to,
+		...serviceScopedParams(query),
 		interval: query.interval,
 	}).toString();
 
@@ -173,8 +242,7 @@ export const buildEventsUrl = (
 	baseUrl = getTelemetryApiBaseUrl(),
 ) =>
 	appendDefinedParams(createAdminUrl(baseUrl, '/events'), {
-		from: query.from,
-		to: query.to,
+		...serviceScopedParams(query),
 		eventType: query.eventType,
 		sourceApp: query.sourceApp,
 		status: query.status,
@@ -191,8 +259,7 @@ export const buildImagesUrl = (
 	baseUrl = getTelemetryApiBaseUrl(),
 ) =>
 	appendDefinedParams(createAdminUrl(baseUrl, '/images'), {
-		from: query.from,
-		to: query.to,
+		...serviceScopedParams(query),
 		q: query.q,
 		sort: query.sort,
 		order: query.order,
@@ -200,13 +267,46 @@ export const buildImagesUrl = (
 		limit: query.limit,
 	}).toString();
 
-export const fetchTelemetryJson = async <T>(url: string): Promise<T> => {
+export const buildClientServicesUrl = (baseUrl = getTelemetryApiBaseUrl()) =>
+	createAdminUrl(baseUrl, '/client-services').toString();
+
+export const buildClientServiceUrl = (
+	id: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) => createAdminUrl(baseUrl, `/client-services/${id}`).toString();
+
+export const buildClientServiceKeysUrl = (
+	id: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) => createAdminUrl(baseUrl, `/client-services/${id}/keys`).toString();
+
+export const buildClientServiceKeyRevokeUrl = (
+	serviceId: string,
+	keyId: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	createAdminUrl(
+		baseUrl,
+		`/client-services/${serviceId}/keys/${keyId}/revoke`,
+	).toString();
+
+export const fetchTelemetryJson = async <T>(
+	url: string,
+	init: RequestInit = {},
+): Promise<T> => {
 	const adminToken = getTelemetryAdminToken();
+	const headers = new Headers(init.headers);
+	headers.set('accept', 'application/json');
+	if (init.body && !headers.has('content-type')) {
+		headers.set('content-type', 'application/json');
+	}
+	if (adminToken) {
+		headers.set('x-admin-token', adminToken);
+	}
+
 	const response = await fetch(url, {
-		headers: {
-			accept: 'application/json',
-			...(adminToken ? { 'x-admin-token': adminToken } : {}),
-		},
+		...init,
+		headers,
 		cache: 'no-store',
 	});
 
@@ -221,6 +321,16 @@ export const fetchTelemetryJson = async <T>(url: string): Promise<T> => {
 	return (await response.json()) as T;
 };
 
+const writeTelemetryJson = <T>(
+	url: string,
+	method: 'POST' | 'PATCH',
+	payload?: unknown,
+) =>
+	fetchTelemetryJson<T>(url, {
+		method,
+		body: payload === undefined ? undefined : JSON.stringify(payload),
+	});
+
 export const fetchDashboardSummary = (query: DashboardQuery = {}) =>
 	fetchTelemetryJson<DashboardSummary>(buildDashboardSummaryUrl(query));
 
@@ -234,6 +344,52 @@ export const fetchEvents = (query: EventsQuery = {}) =>
 
 export const fetchImages = (query: ImagesQuery = {}) =>
 	fetchTelemetryJson<ImageListResponse>(buildImagesUrl(query));
+
+export const fetchClientServices = () =>
+	fetchTelemetryJson<ClientServiceItem[]>(buildClientServicesUrl());
+
+export const fetchClientService = (id: string) =>
+	fetchTelemetryJson<ClientServiceItem>(buildClientServiceUrl(id));
+
+export const fetchClientServiceDetailsList = async () => {
+	const services = await fetchClientServices();
+	return await Promise.all(
+		services.map((service) => fetchClientService(service.id)),
+	);
+};
+
+export const createClientService = (input: CreateClientServiceInput) =>
+	writeTelemetryJson<ClientServiceItem>(
+		buildClientServicesUrl(),
+		'POST',
+		input,
+	);
+
+export const updateClientService = (
+	id: string,
+	input: UpdateClientServiceInput,
+) =>
+	writeTelemetryJson<ClientServiceItem>(
+		buildClientServiceUrl(id),
+		'PATCH',
+		input,
+	);
+
+export const createClientServiceKey = (
+	id: string,
+	input: CreateClientServiceKeyInput,
+) =>
+	writeTelemetryJson<CreateClientServiceKeyResponse>(
+		buildClientServiceKeysUrl(id),
+		'POST',
+		input,
+	);
+
+export const revokeClientServiceKey = (serviceId: string, keyId: string) =>
+	writeTelemetryJson<ClientServiceKeyItem>(
+		buildClientServiceKeyRevokeUrl(serviceId, keyId),
+		'POST',
+	);
 
 export const toMetricDisplay = (
 	value: number | null | undefined,

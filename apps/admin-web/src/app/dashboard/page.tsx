@@ -1,6 +1,7 @@
+import { ClientServiceSelect } from '@/components/client-service-select';
 import { MetricCard } from '@/components/metric-card';
 import { SimpleBarChart } from '@/components/simple-bar-chart';
-import { dashboardDataFixture } from '@/lib/fixtures';
+import { clientServicesFixture, dashboardDataFixture } from '@/lib/fixtures';
 import {
 	formatDateTime,
 	formatMs,
@@ -8,30 +9,49 @@ import {
 	formatPercent,
 } from '@/lib/format';
 import {
+	buildRangeFromPreset,
+	readOptionalSearchParam,
+	readRangePreset,
+	resolveSearchParams,
+	type PageSearchParams,
+} from '@/lib/search-params';
+import {
+	fetchClientServices,
 	fetchDashboardSummary,
 	fetchDashboardTimeseries,
 	fetchImages,
+	type ClientServiceItem,
 	type DashboardData,
+	type DashboardQuery,
 	type DashboardSummary,
 } from '@/lib/telemetry-api';
 
 const isDangerFailureRate = (summary: DashboardSummary) =>
 	(summary.failureRate ?? 0) >= 0.02;
 
+type DashboardFilters = {
+	range: string;
+	clientServiceId?: string;
+};
+
 type DashboardPageContentProps = {
 	data: DashboardData;
+	services: ClientServiceItem[];
+	filters: DashboardFilters;
 	errorMessage?: string;
 };
 
 export function DashboardPageContent({
 	data,
+	services,
+	filters,
 	errorMessage,
 }: DashboardPageContentProps) {
 	const { summary, timeseries, topImages } = data;
 	const cacheHitDescription =
 		summary.cacheHitRate === null
 			? '캐시 이벤트 데이터 없음'
-			: '최근 24시간 hit / (hit + miss)';
+			: '선택한 기간 hit / (hit + miss)';
 	const failureDescription = isDangerFailureRate(summary)
 		? '위험: 실패율 임계값 초과'
 		: '전체 이벤트 대비 실패 이벤트';
@@ -42,7 +62,7 @@ export function DashboardPageContent({
 				<div>
 					<h1>파일서버 관리자 대시보드</h1>
 					<p>
-						최근 24시간 이미지 요청, 캐시, 리사이즈, 실패 이벤트를 한눈에
+						서비스별 이미지 요청, 캐시, 리사이즈, 실패 이벤트를 한눈에
 						확인합니다.
 					</p>
 				</div>
@@ -56,6 +76,27 @@ export function DashboardPageContent({
 					{errorMessage}
 				</p>
 			) : null}
+
+			<section className="panel">
+				<form className="filter-panel" aria-label="대시보드 필터">
+					<label>
+						기간
+						<select name="range" defaultValue={filters.range}>
+							<option value="1h">최근 1시간</option>
+							<option value="24h">최근 24시간</option>
+							<option value="7d">최근 7일</option>
+							<option value="30d">최근 30일</option>
+						</select>
+					</label>
+					<ClientServiceSelect
+						services={services}
+						selectedClientServiceId={filters.clientServiceId}
+					/>
+					<button className="button" type="submit">
+						필터 적용
+					</button>
+				</form>
+			</section>
 
 			<section className="grid metric-grid" aria-label="대시보드 KPI 카드">
 				<MetricCard
@@ -118,7 +159,7 @@ export function DashboardPageContent({
 			<section className="panel" style={{ marginTop: '1rem' }}>
 				<div className="panel-heading">
 					<h2>요청 많은 이미지 Top 10</h2>
-					<p>운영 비용과 cache miss 후보를 빠르게 확인합니다.</p>
+					<p>운영 비용과 cache miss 후보를 서비스별로 확인합니다.</p>
 				</div>
 				<table>
 					<thead>
@@ -147,12 +188,28 @@ export function DashboardPageContent({
 	);
 }
 
-async function fetchDashboardData(): Promise<DashboardPageContentProps> {
+function buildDashboardFilters(params: PageSearchParams): DashboardFilters {
+	return {
+		range: readRangePreset(params),
+		clientServiceId: readOptionalSearchParam(params, 'clientServiceId'),
+	};
+}
+
+async function fetchDashboardData(
+	params: PageSearchParams,
+): Promise<DashboardPageContentProps> {
+	const filters = buildDashboardFilters(params);
+	const query: DashboardQuery = {
+		...buildRangeFromPreset(filters.range),
+		clientServiceId: filters.clientServiceId,
+	};
+
 	try {
-		const [summary, timeseries, images] = await Promise.all([
-			fetchDashboardSummary(),
-			fetchDashboardTimeseries({ interval: 'hour' }),
-			fetchImages({ sort: 'reads', order: 'desc', limit: 10 }),
+		const [services, summary, timeseries, images] = await Promise.all([
+			fetchClientServices(),
+			fetchDashboardSummary(query),
+			fetchDashboardTimeseries({ ...query, interval: 'hour' }),
+			fetchImages({ ...query, sort: 'reads', order: 'desc', limit: 10 }),
 		]);
 
 		return {
@@ -161,17 +218,27 @@ async function fetchDashboardData(): Promise<DashboardPageContentProps> {
 				timeseries: timeseries.points,
 				topImages: images.items,
 			},
+			services,
+			filters,
 		};
 	} catch {
 		return {
 			data: dashboardDataFixture,
+			services: clientServicesFixture,
+			filters,
 			errorMessage:
 				'텔레메트리 API를 불러오지 못해 fixture 데이터로 표시합니다.',
 		};
 	}
 }
 
-export default async function DashboardPage() {
-	const props = await fetchDashboardData();
+export default async function DashboardPage({
+	searchParams,
+}: {
+	searchParams?: Promise<PageSearchParams>;
+}) {
+	const props = await fetchDashboardData(
+		await resolveSearchParams(searchParams),
+	);
 	return <DashboardPageContent {...props} />;
 }

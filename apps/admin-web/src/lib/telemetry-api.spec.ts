@@ -1,5 +1,9 @@
 import {
 	TelemetryApiError,
+	buildClientServiceKeyRevokeUrl,
+	buildClientServiceKeysUrl,
+	buildClientServiceUrl,
+	buildClientServicesUrl,
 	buildDashboardSummaryUrl,
 	buildEventsUrl,
 	buildImagesUrl,
@@ -18,6 +22,7 @@ describe('텔레메트리 API 클라이언트', () => {
 				{
 					from: '2026-07-01T00:00:00.000Z',
 					to: '2026-07-02T00:00:00.000Z',
+					clientServiceId: 'svc-catalog',
 				},
 				'https://telemetry.test/api/admin',
 			),
@@ -26,6 +31,7 @@ describe('텔레메트리 API 클라이언트', () => {
 		expect(url.pathname).toBe('/api/admin/dashboard/summary');
 		expect(url.searchParams.get('from')).toBe('2026-07-01T00:00:00.000Z');
 		expect(url.searchParams.get('to')).toBe('2026-07-02T00:00:00.000Z');
+		expect(url.searchParams.get('clientServiceId')).toBe('svc-catalog');
 	});
 
 	it('이벤트 목록 API URL에 필터와 cursor를 포함한다', () => {
@@ -35,6 +41,7 @@ describe('텔레메트리 API 클라이언트', () => {
 					eventType: 'image.cache.miss',
 					sourceApp: 'cache',
 					status: 'success',
+					clientServiceId: 'svc-catalog',
 					cursor: 'cursor-1',
 					limit: 50,
 				},
@@ -46,6 +53,7 @@ describe('텔레메트리 API 클라이언트', () => {
 		expect(url.searchParams.get('eventType')).toBe('image.cache.miss');
 		expect(url.searchParams.get('sourceApp')).toBe('cache');
 		expect(url.searchParams.get('status')).toBe('success');
+		expect(url.searchParams.get('clientServiceId')).toBe('svc-catalog');
 		expect(url.searchParams.get('cursor')).toBe('cursor-1');
 		expect(url.searchParams.get('limit')).toBe('50');
 	});
@@ -57,6 +65,7 @@ describe('텔레메트리 API 클라이언트', () => {
 					q: 'hero',
 					sort: 'cacheMisses',
 					order: 'desc',
+					clientServiceSlug: 'catalog-api',
 				},
 				'https://telemetry.test/api/admin',
 			),
@@ -66,6 +75,28 @@ describe('텔레메트리 API 클라이언트', () => {
 		expect(url.searchParams.get('q')).toBe('hero');
 		expect(url.searchParams.get('sort')).toBe('cacheMisses');
 		expect(url.searchParams.get('order')).toBe('desc');
+		expect(url.searchParams.get('clientServiceSlug')).toBe('catalog-api');
+	});
+
+	it('서비스 레지스트리 API URL을 만든다', () => {
+		expect(buildClientServicesUrl('https://telemetry.test/api/admin')).toBe(
+			'https://telemetry.test/api/admin/client-services',
+		);
+		expect(
+			buildClientServiceUrl('svc-1', 'https://telemetry.test/api/admin'),
+		).toBe('https://telemetry.test/api/admin/client-services/svc-1');
+		expect(
+			buildClientServiceKeysUrl('svc-1', 'https://telemetry.test/api/admin'),
+		).toBe('https://telemetry.test/api/admin/client-services/svc-1/keys');
+		expect(
+			buildClientServiceKeyRevokeUrl(
+				'svc-1',
+				'key-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe(
+			'https://telemetry.test/api/admin/client-services/svc-1/keys/key-1/revoke',
+		);
 	});
 
 	it('요청이 실패하면 사용자에게 표시할 에러를 반환한다', async () => {

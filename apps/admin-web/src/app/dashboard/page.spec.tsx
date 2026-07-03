@@ -1,10 +1,15 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DashboardPageContent } from './page';
-import { dashboardDataFixture } from '@/lib/fixtures';
+import { clientServicesFixture, dashboardDataFixture } from '@/lib/fixtures';
 import type { DashboardData } from '@/lib/telemetry-api';
 
+const defaultProps = {
+	services: clientServicesFixture,
+	filters: { range: '24h', clientServiceId: 'svc-catalog' },
+};
+
 const renderDashboard = (data: DashboardData) =>
-	renderToStaticMarkup(<DashboardPageContent data={data} />);
+	renderToStaticMarkup(<DashboardPageContent data={data} {...defaultProps} />);
 
 describe('관리자 대시보드 페이지', () => {
 	it('대시보드가 KPI 카드를 표시한다', () => {
@@ -42,10 +47,12 @@ describe('관리자 대시보드 페이지', () => {
 		expect(html).toContain('metric-card-danger');
 	});
 
-	it('기간 필터와 주요 차트를 표시한다', () => {
+	it('기간과 client service 필터 및 주요 차트를 표시한다', () => {
 		const html = renderDashboard(dashboardDataFixture);
 
 		expect(html).toContain('기간:');
+		expect(html).toContain('client service');
+		expect(html).toContain('Catalog API');
 		expect(html).toContain('캐시 hit/miss 추이');
 		expect(html).toContain('resize/upload 이벤트 추이');
 	});
@@ -54,6 +61,7 @@ describe('관리자 대시보드 페이지', () => {
 		const html = renderToStaticMarkup(
 			<DashboardPageContent
 				data={dashboardDataFixture}
+				{...defaultProps}
 				errorMessage="텔레메트리 API를 불러오지 못해 fixture 데이터로 표시합니다."
 			/>,
 		);

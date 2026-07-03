@@ -196,6 +196,7 @@ http://127.0.0.1:3000
 http://127.0.0.1:3000/dashboard
 http://127.0.0.1:3000/events
 http://127.0.0.1:3000/images
+http://127.0.0.1:3000/services
 ```
 
 API 연결 실패 시 admin-web은 fixture 데이터로 fallback합니다. 화면에 `텔레메트리 API를 불러오지 못해 fixture 데이터로 표시합니다.`가 보이면 telemetry-api 주소, 포트, token을 다시 확인하세요.
@@ -371,6 +372,18 @@ curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limi
   | python3 -m json.tool
 ```
 
+서비스 레지스트리:
+
+```bash
+curl -s 'http://127.0.0.1:3100/api/admin/client-services' \
+  -H 'x-admin-token: dev-admin-token' \
+  | python3 -m json.tool
+
+curl -s "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID" \
+  -H 'x-admin-token: dev-admin-token' \
+  | python3 -m json.tool
+```
+
 이미지 집계:
 
 ```bash
@@ -399,14 +412,24 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
 
 - `/dashboard`
   - 총 이벤트 수가 0이 아니어야 합니다.
+  - `client service` 필터에서 방금 등록한 서비스가 보여야 합니다.
+  - 방금 등록한 서비스를 선택하면 해당 서비스 이벤트 기준으로 KPI가 바뀌어야 합니다.
   - 캐시 hit/miss, resize/upload 차트가 표시되어야 합니다.
   - fixture fallback 경고 문구가 없어야 합니다.
 - `/events`
   - `manual-upload-*`, `manual-cache-miss-*`, `manual-resize-*` 이벤트가 보여야 합니다.
   - source app이 각각 `storage`, `cache`, `resize`로 보여야 합니다.
+  - service 컬럼에 등록한 `clientServiceSlug`가 보여야 합니다.
+  - `client service` 필터로 서비스별 이벤트를 좁힐 수 있어야 합니다.
 - `/images`
   - `demo/image/sample.png`가 목록에 보여야 합니다.
   - 요청 수, 리사이즈 수, cache miss 수가 API 응답과 맞아야 합니다.
+  - `client service` 필터로 서비스별 이미지 집계를 좁힐 수 있어야 합니다.
+- `/services`
+  - 서비스 등록/수정 폼이 보여야 합니다.
+  - API key 발급 시 key 원문이 화면에 1회 표시되어야 합니다.
+  - 발급된 key 목록에는 prefix만 보이고 hash나 원문은 노출되지 않아야 합니다.
+  - key 폐기 버튼으로 key 상태를 폐기 처리할 수 있어야 합니다.
 
 ### 10-7. 자동 테스트 명령
 

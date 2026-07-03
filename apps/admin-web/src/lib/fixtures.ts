@@ -1,10 +1,56 @@
 import {
+	ClientServiceItem,
 	DashboardData,
 	DashboardSummary,
 	EventListResponse,
 	ImageListResponse,
 	TimeseriesPoint,
 } from './telemetry-api';
+
+export const clientServicesFixture: ClientServiceItem[] = [
+	{
+		id: 'svc-catalog',
+		slug: 'catalog-api',
+		name: 'Catalog API',
+		description: '상품 이미지 업로드와 조회를 담당하는 백엔드 서비스',
+		owner: 'commerce-team',
+		status: 'ACTIVE',
+		createdAt: '2026-07-01T00:00:00.000Z',
+		updatedAt: '2026-07-01T00:00:00.000Z',
+		keyCount: 2,
+		activeKeyCount: 1,
+		keys: [
+			{
+				id: 'key-catalog-active',
+				clientServiceId: 'svc-catalog',
+				name: 'local backend key',
+				keyPrefix: 'cat123',
+				scopes: { telemetry: 'write' },
+				createdAt: '2026-07-01T00:10:00.000Z',
+			},
+			{
+				id: 'key-catalog-revoked',
+				clientServiceId: 'svc-catalog',
+				name: 'old key',
+				keyPrefix: 'old123',
+				revokedAt: '2026-07-01T01:00:00.000Z',
+				createdAt: '2026-07-01T00:05:00.000Z',
+			},
+		],
+	},
+	{
+		id: 'svc-admin',
+		slug: 'admin-api',
+		name: 'Admin API',
+		owner: 'platform-team',
+		status: 'DISABLED',
+		createdAt: '2026-07-01T03:00:00.000Z',
+		updatedAt: '2026-07-01T04:00:00.000Z',
+		keyCount: 0,
+		activeKeyCount: 0,
+		keys: [],
+	},
+];
 
 export const dashboardSummaryFixture: DashboardSummary = {
 	range: {
@@ -71,6 +117,8 @@ export const eventListFixture: EventListResponse = {
 			occurredAt: '2026-07-01T12:31:00.000Z',
 			sourceApp: 'resize',
 			status: 'failed',
+			clientServiceId: 'svc-catalog',
+			clientServiceSlug: 'catalog-api',
 			path: 'products/main',
 			name: 'broken.png',
 			imageKey: 'products/main/broken.png',
@@ -87,6 +135,8 @@ export const eventListFixture: EventListResponse = {
 			occurredAt: '2026-07-01T12:20:00.000Z',
 			sourceApp: 'cache',
 			status: 'success',
+			clientServiceId: 'svc-catalog',
+			clientServiceSlug: 'catalog-api',
 			path: 'products/main',
 			name: 'hero.png',
 			imageKey: 'products/main/hero.png',
@@ -102,6 +152,8 @@ export const eventListFixture: EventListResponse = {
 			occurredAt: '2026-07-01T11:00:00.000Z',
 			sourceApp: 'storage',
 			status: 'success',
+			clientServiceId: 'svc-admin',
+			clientServiceSlug: 'admin-api',
 			path: 'products/main',
 			name: 'hero.png',
 			imageKey: 'products/main/hero.png',

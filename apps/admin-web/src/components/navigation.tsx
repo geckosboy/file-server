@@ -2,6 +2,7 @@ const links = [
 	{ href: '/dashboard', label: 'Dashboard' },
 	{ href: '/images', label: 'Images' },
 	{ href: '/events', label: 'Events' },
+	{ href: '/services', label: 'Services' },
 ];
 
 export function Navigation() {
