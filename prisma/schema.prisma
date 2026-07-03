@@ -7,112 +7,118 @@ datasource db {
 }
 
 model ClientService {
-  id          String   @id @default(cuid())
-  slug        String   @unique
+  id          String  @id(map: "client_services_pkey") @default(cuid())
+  slug        String  @unique(map: "client_services_slug_key")
   name        String
   description String?
   owner       String?
-  status      String   @default("ACTIVE")
+  status      String  @default("ACTIVE")
 
   keys     ClientServiceKey[]
   policies ClientServicePolicy[]
   events   TelemetryEvent[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@index([status])
+  @@index([status], map: "client_services_status_idx")
+  @@map("client_services")
 }
 
 model ClientServiceKey {
-  id              String        @id @default(cuid())
-  clientServiceId String
-  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade)
+  id              String        @id(map: "client_service_keys_pkey") @default(cuid())
+  clientServiceId String        @map("client_service_id")
+  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade, map: "client_service_keys_client_service_id_fkey")
 
   name       String?
-  keyPrefix  String   @unique
-  keyHash    String   @unique
+  keyPrefix  String    @unique(map: "client_service_keys_key_prefix_key") @map("key_prefix")
+  keyHash    String    @unique(map: "client_service_keys_key_hash_key") @map("key_hash")
   scopes     Json?
-  expiresAt  DateTime?
-  revokedAt  DateTime?
-  lastUsedAt DateTime?
+  expiresAt  DateTime? @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  lastUsedAt DateTime? @map("last_used_at")
 
-  createdAt DateTime @default(now())
+  createdAt DateTime @default(now()) @map("created_at")
 
-  @@index([clientServiceId])
-  @@index([revokedAt])
-  @@index([expiresAt])
+  @@index([clientServiceId], map: "client_service_keys_client_service_id_idx")
+  @@index([revokedAt], map: "client_service_keys_revoked_at_idx")
+  @@index([expiresAt], map: "client_service_keys_expires_at_idx")
+  @@map("client_service_keys")
 }
 
 model ClientServicePolicy {
-  id              String        @id @default(cuid())
-  clientServiceId String
-  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade)
+  id              String        @id(map: "client_service_policies_pkey") @default(cuid())
+  clientServiceId String        @map("client_service_id")
+  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade, map: "client_service_policies_client_service_id_fkey")
 
-  pathPattern     String
-  canRead         Boolean @default(true)
-  canUpload       Boolean @default(false)
-  canDelete       Boolean @default(false)
-  maxUploadBytes  Int?
-  rateLimitPerMin Int?
+  pathPattern     String  @map("path_pattern")
+  canRead         Boolean @default(true) @map("can_read")
+  canUpload       Boolean @default(false) @map("can_upload")
+  canDelete       Boolean @default(false) @map("can_delete")
+  maxUploadBytes  Int?    @map("max_upload_bytes")
+  rateLimitPerMin Int?    @map("rate_limit_per_min")
   metadata        Json?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@index([clientServiceId])
-  @@index([pathPattern])
+  @@index([clientServiceId], map: "client_service_policies_client_service_id_idx")
+  @@index([pathPattern], map: "client_service_policies_path_pattern_idx")
+  @@map("client_service_policies")
 }
 
 model TelemetryEvent {
-  id          String @id @default(cuid())
-  eventId     String @unique
-  eventType   String
-  sourceApp   String
+  id          String @id(map: "telemetry_events_pkey") @default(cuid())
+  eventId     String @unique(map: "telemetry_events_event_id_key") @map("event_id")
+  eventType   String @map("event_type")
+  sourceApp   String @map("source_app")
   environment String
   status      String
 
-  occurredAt DateTime
-  receivedAt DateTime @default(now())
+  occurredAt DateTime @map("occurred_at")
+  receivedAt DateTime @default(now()) @map("received_at")
 
-  clientServiceId   String?
-  clientServiceSlug String?
-  clientService     ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+  clientServiceId   String?        @map("client_service_id")
+  clientServiceSlug String?        @map("client_service_slug")
+  clientService     ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull, map: "telemetry_events_client_service_id_fkey")
 
-  requestId String?
-  traceId   String?
+  requestId String? @map("request_id")
+  traceId   String? @map("trace_id")
 
-  imageId  Int?
+  imageId  Int?    @map("image_id")
   path     String
   name     String
-  imageKey String
-  cacheKey String?
+  imageKey String  @map("image_key")
+  cacheKey String? @map("cache_key")
 
-  width      Int?
-  height     Int?
-  format     String?
-  inputBytes Int?
-  outputBytes Int?
-  durationMs Float?
+  width       Int?
+  height      Int?
+  format      String?
+  inputBytes  Int?    @map("input_bytes")
+  outputBytes Int?    @map("output_bytes")
+  durationMs  Float?  @map("duration_ms")
 
-  errorCode    String?
-  errorMessage String?
-  rawPayload   Json
+  errorCode    String? @map("error_code")
+  errorMessage String? @map("error_message")
+  rawPayload   Json    @map("raw_payload")
 
-  @@index([clientServiceId, occurredAt])
-  @@index([clientServiceSlug, occurredAt])
-  @@index([eventType, occurredAt])
-  @@index([sourceApp, occurredAt])
-  @@index([status, occurredAt])
-  @@index([imageKey, occurredAt])
-  @@index([requestId])
-  @@index([traceId])
+  @@index([clientServiceId, occurredAt], map: "telemetry_events_client_service_id_occurred_at_idx")
+  @@index([clientServiceSlug, occurredAt], map: "telemetry_events_client_service_slug_occurred_at_idx")
+  @@index([eventType, occurredAt], map: "telemetry_events_event_type_occurred_at_idx")
+  @@index([sourceApp, occurredAt], map: "telemetry_events_source_app_occurred_at_idx")
+  @@index([status, occurredAt], map: "telemetry_events_status_occurred_at_idx")
+  @@index([imageKey, occurredAt], map: "telemetry_events_image_key_occurred_at_idx")
+  @@index([requestId], map: "telemetry_events_request_id_idx")
+  @@index([traceId], map: "telemetry_events_trace_id_idx")
+  @@map("telemetry_events")
 }
 
 model TelemetryIngestionMetric {
-  id                     String    @id
-  validationFailureCount Int       @default(0)
-  insertFailureCount     Int       @default(0)
-  lastConsumedEventAt    DateTime?
-  updatedAt              DateTime  @updatedAt
+  id                     String    @id(map: "telemetry_ingestion_metrics_pkey")
+  validationFailureCount Int       @default(0) @map("validation_failure_count")
+  insertFailureCount     Int       @default(0) @map("insert_failure_count")
+  lastConsumedEventAt    DateTime? @map("last_consumed_event_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  @@map("telemetry_ingestion_metrics")
 }

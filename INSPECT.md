@@ -20,6 +20,8 @@
 
 4단계부터 `telemetry-api`가 Kafka `file.image.events.v1` topic을 직접 consume해서 `TelemetryEvent` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
 
+DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
+
 ## 0. PostgreSQL / API key 준비
 
 ```bash
@@ -28,6 +30,8 @@ docker compose -f docker/docker-compose.postgres.yml up -d
 DATABASE_URL="postgresql://file_server:file_server@127.0.0.1:5432/file_server" \
   pnpm db:migrate:deploy
 ```
+
+위 `DATABASE_URL`은 이 repo의 Docker PostgreSQL 기본값입니다. 이미 설치된 PostgreSQL을 쓸 때는 사용자/비밀번호/DB 이름을 본인 환경에 맞게 바꿔서 모든 앱에 같은 값으로 넣으세요. `P1000 Authentication failed`는 코드 문제가 아니라 URL의 인증 정보가 실제 DB와 다르다는 뜻입니다.
 
 `apps/telemetry-api/.env.local`을 만듭니다.
 
