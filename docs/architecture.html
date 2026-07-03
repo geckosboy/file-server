@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="ko">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>File Server Architecture</title>
+		<style>
+			:root {
+				color-scheme: light;
+				--bg: #f6f8fb;
+				--card: #ffffff;
+				--text: #172033;
+				--muted: #65728a;
+				--line: #d9e1ee;
+				--accent: #2563eb;
+				--accent-soft: #eaf1ff;
+				--warn: #b45309;
+				--warn-soft: #fff7ed;
+				--ok: #047857;
+				--ok-soft: #ecfdf5;
+				--code: #0f172a;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				font-family:
+					Inter,
+					ui-sans-serif,
+					system-ui,
+					-apple-system,
+					BlinkMacSystemFont,
+					'Segoe UI',
+					sans-serif;
+				background: var(--bg);
+				color: var(--text);
+				line-height: 1.65;
+			}
+
+			header {
+				padding: 56px 24px 28px;
+				background:
+					radial-gradient(circle at top left, #dbeafe 0, transparent 28rem),
+					linear-gradient(135deg, #ffffff 0%, #eff6ff 100%);
+				border-bottom: 1px solid var(--line);
+			}
+
+			main {
+				width: min(1180px, calc(100% - 32px));
+				margin: 0 auto 64px;
+			}
+
+			h1 {
+				margin: 0 0 12px;
+				font-size: clamp(2rem, 4vw, 3.6rem);
+				letter-spacing: -0.04em;
+				line-height: 1.1;
+			}
+
+			h2 {
+				margin: 0 0 16px;
+				font-size: 1.65rem;
+				letter-spacing: -0.025em;
+			}
+
+			h3 {
+				margin: 24px 0 10px;
+				font-size: 1.15rem;
+			}
+
+			p {
+				margin: 0 0 12px;
+			}
+
+			ul,
+			ol {
+				margin: 10px 0 0;
+				padding-left: 22px;
+			}
+
+			code {
+				font-family:
+					'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+				font-size: 0.92em;
+				padding: 2px 6px;
+				border-radius: 6px;
+				background: #eef2f7;
+				color: var(--code);
+			}
+
+			pre.code {
+				overflow: auto;
+				padding: 16px;
+				border-radius: 14px;
+				background: #0f172a;
+				color: #e5e7eb;
+				font-size: 0.9rem;
+				line-height: 1.55;
+			}
+
+			.hero {
+				width: min(1180px, calc(100% - 32px));
+				margin: 0 auto;
+			}
+
+			.subtitle {
+				max-width: 860px;
+				font-size: 1.05rem;
+				color: var(--muted);
+			}
+
+			.meta {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 8px;
+				margin-top: 18px;
+			}
+
+			.badge {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				padding: 6px 10px;
+				border-radius: 999px;
+				background: var(--accent-soft);
+				color: #1d4ed8;
+				font-weight: 700;
+				font-size: 0.84rem;
+			}
+
+			.card {
+				margin-top: 22px;
+				padding: 24px;
+				border: 1px solid var(--line);
+				border-radius: 20px;
+				background: var(--card);
+				box-shadow: 0 14px 40px rgba(15, 23, 42, 0.05);
+			}
+
+			.grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+				gap: 14px;
+			}
+
+			.info {
+				padding: 16px;
+				border: 1px solid var(--line);
+				border-radius: 16px;
+				background: #fbfdff;
+			}
+
+			.info strong {
+				display: block;
+				margin-bottom: 4px;
+			}
+
+			.note {
+				padding: 14px 16px;
+				border-radius: 14px;
+				border: 1px solid #bfdbfe;
+				background: var(--accent-soft);
+			}
+
+			.warn {
+				padding: 14px 16px;
+				border-radius: 14px;
+				border: 1px solid #fed7aa;
+				background: var(--warn-soft);
+				color: var(--warn);
+			}
+
+			.ok {
+				padding: 14px 16px;
+				border-radius: 14px;
+				border: 1px solid #bbf7d0;
+				background: var(--ok-soft);
+				color: var(--ok);
+			}
+
+			.diagram {
+				overflow-x: auto;
+				padding: 12px;
+				border: 1px solid var(--line);
+				border-radius: 16px;
+				background: #ffffff;
+			}
+
+			.mermaid {
+				min-width: 760px;
+			}
+
+			table {
+				width: 100%;
+				border-collapse: collapse;
+				overflow: hidden;
+				border-radius: 14px;
+				border: 1px solid var(--line);
+			}
+
+			th,
+			td {
+				padding: 12px 14px;
+				border-bottom: 1px solid var(--line);
+				vertical-align: top;
+				text-align: left;
+			}
+
+			th {
+				background: #f1f5f9;
+				font-size: 0.9rem;
+			}
+
+			tr:last-child td {
+				border-bottom: 0;
+			}
+		</style>
+	</head>
+	<body>
+		<header>
+			<div class="hero">
+				<h1>File Server 구조 정리</h1>
+				<p class="subtitle">
+					여러 Client Service가 공용으로 사용하는 이미지 서버의 현재 구조입니다.
+					DB 기반 서비스 레지스트리, API key guard, Kafka telemetry/lifecycle,
+					outbox, pre-generate 리사이징 정책과 admin-web 운영 흐름까지 포함합니다.
+				</p>
+				<div class="meta">
+					<span class="badge">Storage / Resize / Cache</span>
+					<span class="badge">Telemetry API</span>
+					<span class="badge">Admin Web</span>
+					<span class="badge">PostgreSQL + Prisma</span>
+					<span class="badge">Kafka</span>
+				</div>
+			</div>
+		</header>
+
+		<main>
+			<section class="card">
+				<h2>1. 전체 런타임 구조</h2>
+				<p>
+					<code>storage</code>, <code>resize</code>, <code>cache</code>의 이미지
+					라우트는 모두 <code>x-client-api-key</code>를 DB에서 검증합니다. 표준
+					telemetry는 <code>file.image.events.v1</code>로, Client Service 후속
+					업무용 lifecycle은 <code>file.image.lifecycle.v1</code>로 나뉘며, 기존
+					<code>image-topic</code>은 호환용으로 유지됩니다.
+				</p>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart TB
+	Client["Client Service"]
+	AdminUser["운영자"]
+
+	subgraph Runtime["이미지 런타임 앱"]
+		Storage["storage<br/>업로드 삭제 원본조회"]
+		Resize["resize<br/>sharp 리사이징"]
+		Cache["cache<br/>메모리 캐시"]
+	end
+
+	subgraph Control["관리와 관측"]
+		Telemetry["telemetry-api<br/>registry ingestion query"]
+		AdminWeb["admin-web<br/>운영 화면"]
+	end
+
+	subgraph Infra["인프라"]
+		Database["PostgreSQL<br/>Prisma"]
+		EventsTopic["Kafka topic<br/>file.image.events.v1"]
+		LifecycleTopic["Kafka topic<br/>file.image.lifecycle.v1"]
+		LegacyTopic["Kafka topic<br/>image-topic"]
+		Volume["Docker volume<br/>file_dump_volume"]
+	end
+
+	Client -->|"x-client-api-key 요청"| Storage
+	Client -->|"x-client-api-key 요청"| Resize
+	Client -->|"x-client-api-key 요청"| Cache
+	Storage -->|"원본 파일 저장"| Volume
+	Resize -->|"원본 fetch"| Storage
+	Cache -->|"cache miss"| Resize
+	Storage -->|"telemetry"| EventsTopic
+	Resize -->|"telemetry"| EventsTopic
+	Cache -->|"telemetry"| EventsTopic
+	Storage -->|"upload lifecycle outbox publish"| LifecycleTopic
+	Storage -->|"legacy publish"| LegacyTopic
+	Telemetry -->|"consume telemetry"| EventsTopic
+	Telemetry -->|"consume lifecycle"| LifecycleTopic
+	Telemetry -->|"DB read/write"| Database
+	Storage -->|"API key and resize policy lookup"| Database
+	Resize -->|"API key lookup"| Database
+	Cache -->|"API key lookup"| Database
+	AdminUser --> AdminWeb
+	AdminWeb -->|"x-admin-token"| Telemetry
+	Client -->|"own consumer group"| LifecycleTopic
+					</pre>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>2. 앱별 책임</h2>
+				<div class="grid">
+					<div class="info">
+						<strong>storage</strong>
+						원본 업로드/삭제/조회, legacy event 발행, telemetry 발행,
+						lifecycle outbox 저장/재시도, pre-generate variant 생성을 담당합니다.
+					</div>
+					<div class="info">
+						<strong>resize</strong>
+						storage에서 원본을 가져와 on-demand 리사이징을 수행하고 결과를
+						바로 응답합니다.
+					</div>
+					<div class="info">
+						<strong>cache</strong>
+						on-demand resize 결과를 NodeCache 메모리에 저장합니다. 서버
+						재시작 시 캐시는 사라집니다.
+					</div>
+					<div class="info">
+						<strong>telemetry-api</strong>
+						Client Service/API key/subscription/resize policy 관리, Kafka consumer,
+						event 저장, dashboard와 추천 API를 제공합니다.
+					</div>
+					<div class="info">
+						<strong>admin-web</strong>
+						서비스 레지스트리, API key, lifecycle subscription, 리사이징 정책,
+						추천 반영, dashboard/events/images/lifecycle 조회 화면을 제공합니다.
+					</div>
+					<div class="info">
+						<strong>libs</strong>
+						PrismaService, API key hash/verify, Client Service guard, request context,
+						telemetry/lifecycle event contract를 공유합니다.
+					</div>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>3. 신규 Client Service 추가와 재시작 기준</h2>
+				<p>
+					새 서비스는 admin API 또는 admin-web에서 DB에 등록하고 API key를 발급하면
+					됩니다. <code>storage</code>, <code>resize</code>, <code>cache</code>는 요청마다
+					key prefix와 hash를 DB에서 조회하므로 서비스 추가만으로는 재시작이 필요 없습니다.
+				</p>
+				<table>
+					<thead>
+						<tr>
+							<th>대상</th>
+							<th>신규 서비스 후 재시작</th>
+							<th>재시작이 필요한 경우</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td>storage / resize / cache</td>
+							<td>불필요</td>
+							<td><code>DATABASE_URL</code>, <code>CLIENT_API_KEY_PEPPER</code>, 서버 URL, Kafka broker, 코드 변경</td>
+						</tr>
+						<tr>
+							<td>telemetry-api</td>
+							<td>불필요</td>
+							<td>DB/Admin token/Kafka 설정, Prisma migration, 코드 변경</td>
+						</tr>
+						<tr>
+							<td>admin-web</td>
+							<td>불필요</td>
+							<td><code>TELEMETRY_API_BASE_URL</code>, <code>TELEMETRY_ADMIN_TOKEN</code>, 코드 변경</td>
+						</tr>
+						<tr>
+							<td>Kafka</td>
+							<td>불필요</td>
+							<td>topic 최초 생성, broker/보안/ACL 정책 변경</td>
+						</tr>
+					</tbody>
+				</table>
+			</section>
+
+			<section class="card">
+				<h2>4. 업로드와 lifecycle outbox 플로우</h2>
+				<p>
+					업로드 성공/실패 lifecycle event는 먼저 <code>image_lifecycle_outbox</code>에
+					저장된 뒤 Kafka로 발행됩니다. 발행 실패 시 scheduled publisher가 재시도하고,
+					전달 보장은 at-least-once입니다. Client Service는 <code>eventId</code>를
+					idempotency key로 처리해야 합니다.
+				</p>
+				<div class="diagram">
+					<pre class="mermaid">
+sequenceDiagram
+	autonumber
+	participant C as ClientService
+	participant S as Storage
+	participant DB as PostgreSQL
+	participant K as Kafka
+	participant T as TelemetryAPI
+	participant CS as ClientConsumer
+
+	C->>S: POST /image with x-client-api-key
+	S->>DB: API key and service status lookup
+	S->>S: temp file write and sharp normalize
+	S->>S: save original to assets volume
+	S->>DB: insert image_lifecycle_outbox
+	S->>K: publish file.image.events.v1
+	S->>K: publish legacy image-topic
+	S-->>C: 201 Created
+	S->>DB: read pre-generate policy
+	alt mode is PRE_GENERATE
+		S->>S: create active resize variants
+		S->>K: publish image.resize.completed or failed telemetry
+	else mode is ON_DEMAND
+		S->>S: keep upload-only flow
+	end
+	S->>K: outbox publisher sends file.image.lifecycle.v1
+	T->>K: consume telemetry and lifecycle topics
+	T->>DB: save telemetry_events and image_lifecycle_events
+	CS->>K: consume lifecycle with own consumer group
+					</pre>
+				</div>
+				<div class="note">
+					현재 pre-generate 파일명은 원본과 같은 directory에
+					<code>&lt;원본&gt;__w&lt;width|auto&gt;_h&lt;height|auto&gt;.&lt;format&gt;</code>
+					형태로 저장됩니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>5. 조회 / resize / cache 플로우</h2>
+				<div class="diagram">
+					<pre class="mermaid">
+sequenceDiagram
+	autonumber
+	participant C as ClientService
+	participant Ca as Cache
+	participant R as Resize
+	participant S as Storage
+	participant K as Kafka
+	participant T as TelemetryAPI
+	participant DB as PostgreSQL
+
+	C->>Ca: GET /image/path/name?width=400&height=400
+	Ca->>DB: API key lookup
+	Ca->>Ca: cache key lookup
+	alt cache hit
+		Ca->>K: image.cache.hit
+		Ca-->>C: cached image buffer
+	else cache miss
+		Ca->>K: image.cache.miss
+		Ca->>R: forward request and auth context
+		R->>DB: API key lookup
+		R->>S: fetch original with auth context
+		S->>DB: API key lookup
+		S-->>R: original image buffer
+		R->>R: sharp resize
+		R->>K: image.resize.completed or failed
+		R-->>Ca: resized image buffer
+		Ca->>Ca: store in memory cache
+		Ca->>K: image.cache.stored
+		Ca-->>C: resized image buffer
+	end
+	T->>K: consume file.image.events.v1
+	T->>DB: save telemetry_events
+					</pre>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>6. 주요 DB 테이블</h2>
+				<div class="diagram">
+					<pre class="mermaid">
+erDiagram
+	CLIENT_SERVICES ||--o{ CLIENT_SERVICE_KEYS : has
+	CLIENT_SERVICES ||--o{ CLIENT_SERVICE_POLICIES : has
+	CLIENT_SERVICES ||--o{ CLIENT_SERVICE_LIFECYCLE_SUBSCRIPTIONS : has
+	CLIENT_SERVICES ||--|| CLIENT_SERVICE_IMAGE_RESIZE_POLICIES : has
+	CLIENT_SERVICE_IMAGE_RESIZE_POLICIES ||--o{ CLIENT_SERVICE_IMAGE_RESIZE_VARIANTS : has
+	CLIENT_SERVICES ||--o{ TELEMETRY_EVENTS : emits
+	CLIENT_SERVICES ||--o{ IMAGE_LIFECYCLE_EVENTS : emits
+
+	CLIENT_SERVICES {
+		string id PK
+		string slug UK
+		string name
+		string status
+		string owner
+	}
+
+	CLIENT_SERVICE_KEYS {
+		string id PK
+		string client_service_id FK
+		string key_prefix UK
+		string key_hash UK
+		datetime revoked_at
+		datetime expires_at
+	}
+
+	CLIENT_SERVICE_LIFECYCLE_SUBSCRIPTIONS {
+		string id PK
+		string client_service_id FK
+		string event_type
+		string consumer_group
+		boolean is_enabled
+	}
+
+	CLIENT_SERVICE_IMAGE_RESIZE_POLICIES {
+		string id PK
+		string client_service_id UK
+		string mode
+	}
+
+	CLIENT_SERVICE_IMAGE_RESIZE_VARIANTS {
+		string id PK
+		string policy_id FK
+		int width
+		int height
+		string format
+		boolean is_enabled
+	}
+
+	TELEMETRY_EVENTS {
+		string event_id UK
+		string event_type
+		string source_app
+		string client_service_id FK
+		string image_key
+		int width
+		int height
+		float duration_ms
+		string cache_key
+	}
+
+	IMAGE_LIFECYCLE_EVENTS {
+		string event_id UK
+		string event_type
+		string client_service_id FK
+		string image_key
+		string status
+	}
+
+	IMAGE_LIFECYCLE_OUTBOX {
+		string event_id UK
+		string topic
+		string kafka_key
+		json payload
+		string status
+		int attempts
+		datetime next_attempt_at
+	}
+					</pre>
+				</div>
+				<p>
+					DB 물리 이름은 PostgreSQL 관례에 맞춰 <code>snake_case</code>입니다.
+					Prisma 모델명은 타입 친화적인 PascalCase를 사용하지만 실제 테이블은
+					<code>client_services</code>, <code>telemetry_events</code>처럼 생성됩니다.
+				</p>
+			</section>
+
+			<section class="card">
+				<h2>7. 리사이징 정책과 추천</h2>
+				<p>
+					Client Service별 정책은 <code>ON_DEMAND</code> 또는 <code>PRE_GENERATE</code>입니다.
+					<code>PRE_GENERATE</code>에서는 업로드 직후 활성 variant(width/height/format)를
+					미리 생성하고, 결과는 telemetry event로 남깁니다. 추천 API는 과거
+					on-demand resize 성공 이벤트 중 <code>cacheKey</code>가 없는 요청만 집계하여
+					pre-generate 후보를 보여줍니다.
+				</p>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart LR
+	Events["telemetry_events<br/>image.resize.completed"]
+	Filter["exclude pre-generated telemetry<br/>cacheKey is empty"]
+	Aggregate["group by clientService + width + height + format"]
+	Score["requestCount imageCount duration sum"]
+	API["telemetry-api<br/>image-resize-recommendations"]
+	Admin["admin-web<br/>resize recommendations"]
+	Policy["DB policy<br/>PRE_GENERATE variant"]
+
+	Events --> Filter
+	Filter --> Aggregate
+	Aggregate --> Score
+	Score --> API
+	API --> Admin
+	Admin -->|"운영자 클릭"| Policy
+					</pre>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>8. admin-web 운영 화면</h2>
+				<ul>
+					<li><code>/dashboard</code>: 서비스별 KPI, cache hit/miss, resize/upload 추이</li>
+					<li><code>/events</code>: 표준 telemetry event 조회와 필터</li>
+					<li><code>/lifecycle-events</code>: upload completed/failed 업무 이벤트 조회</li>
+					<li><code>/images</code>: imageKey별 요청/resize/cache/failure 집계</li>
+					<li><code>/services</code>: 서비스, API key, lifecycle subscription, 리사이징 정책 관리</li>
+					<li><code>/resize-recommendations</code>: pre-generate 후보 조회와 정책 반영</li>
+				</ul>
+			</section>
+
+			<section class="card">
+				<h2>9. 실서버 저장 위치</h2>
+				<p>
+					<code>.github/workflows/storage.yml</code> 기준 production storage 컨테이너는
+					Docker named volume <code>file_dump_volume</code>을 assets 경로에 mount합니다.
+				</p>
+				<pre class="code">
+docker run -d \
+  --env-file ${{ secrets.STORAGE_ENV_PATH }} \
+  -v file_dump_volume:/usr/index/apps/storage/dist/apps/storage/assets \
+  -p ${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }} \
+  --name file_server_storage \
+  --restart always ghcr.io/.../storage:latest</pre>
+				<div class="ok">
+					컨테이너를 삭제/재생성해도 <code>file_dump_volume</code>은 유지됩니다.
+					호스트 실제 경로는 <code>docker volume inspect file_dump_volume</code>으로 확인합니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>10. end-to-end 점검 순서</h2>
+				<ol>
+					<li>PostgreSQL/Kafka topic을 준비하고 Prisma migration을 적용합니다.</li>
+					<li>telemetry-api를 켜고 Client Service를 등록한 뒤 API key를 발급합니다.</li>
+					<li>storage/resize/cache를 켜고 같은 <code>CLIENT_API_KEY_PEPPER</code>와 DB를 보게 합니다.</li>
+					<li>API key로 업로드, 원본 조회, resize, cache hit/miss를 수행합니다.</li>
+					<li>Client Service consumer group으로 <code>file.image.lifecycle.v1</code> 이벤트를 소비합니다.</li>
+					<li>admin-web에서 dashboard/events/lifecycle/images/services/recommendations를 확인합니다.</li>
+					<li><code>PRE_GENERATE</code> 정책을 켠 서비스 업로드에서 variant 생성과 resize telemetry를 확인합니다.</li>
+				</ol>
+				<div class="note">
+					명령어 기반 상세 절차는 repository 루트의 <code>INSPECT.md</code>를 기준으로 점검합니다.
+				</div>
+			</section>
+		</main>
+
+		<script type="module">
+			import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+			mermaid.initialize({
+				startOnLoad: true,
+				theme: 'base',
+				securityLevel: 'loose',
+				themeVariables: {
+					primaryColor: '#eaf1ff',
+					primaryTextColor: '#172033',
+					primaryBorderColor: '#2563eb',
+					lineColor: '#64748b',
+					secondaryColor: '#ecfdf5',
+					tertiaryColor: '#fff7ed',
+					fontFamily:
+						'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+				},
+			});
+		</script>
+	</body>
+</html>

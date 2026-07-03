@@ -329,6 +329,7 @@ pnpm file:admin-web dev
 http://127.0.0.1:3000
 http://127.0.0.1:3000/dashboard
 http://127.0.0.1:3000/events
+http://127.0.0.1:3000/lifecycle-events
 http://127.0.0.1:3000/images
 http://127.0.0.1:3000/services
 http://127.0.0.1:3000/resize-recommendations
@@ -645,6 +646,10 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - source app이 각각 `storage`, `cache`, `resize`로 보여야 합니다.
   - service 컬럼에 등록한 `clientServiceSlug`가 보여야 합니다.
   - `client service` 필터로 서비스별 이벤트를 좁힐 수 있어야 합니다.
+- `/lifecycle-events`
+  - 업로드 성공/실패가 `image.upload.completed` / `image.upload.failed`로 보여야 합니다.
+  - `file.image.lifecycle.v1` consumer가 본 이벤트와 같은 `eventId`, `requestId`, `clientServiceSlug`가 DB 조회에도 보여야 합니다.
+  - event type, status, imageKey, 기간, client service 필터로 업로드 업무 이벤트를 좁힐 수 있어야 합니다.
 - `/images`
   - `demo/image/sample.png`가 목록에 보여야 합니다.
   - 요청 수, 리사이즈 수, cache miss 수가 API 응답과 맞아야 합니다.
@@ -691,3 +696,16 @@ pnpm all:test:e2e
 - admin-web이 API를 못 불러오면 에러로 죽지 않고 fixture를 보여줍니다. 실제 연동 확인 시 fallback 경고 문구가 없는지 꼭 보세요.
 - admin API는 `x-admin-token` 헤더가 필요합니다.
 - admin-web은 기본 API 주소가 `http://localhost:3001/api/admin`이라, 로컬 telemetry-api 포트 `3100`을 쓰려면 `apps/admin-web/.env.local`의 `TELEMETRY_API_BASE_URL` 설정이 필요합니다.
+
+## 11. 전체 end-to-end 완료 기준
+
+아래가 한 번에 이어지면 현재 구조의 핵심 플로우가 정상입니다.
+
+1. PostgreSQL migration 적용 후 `telemetry-api`가 health check에서 PostgreSQL/Kafka connected 상태를 보입니다.
+2. admin API 또는 `/services`에서 신규 Client Service를 등록하고 API key를 발급합니다.
+3. 앱 재시작 없이 그 API key로 `storage`, `resize`, `cache` `/image` 요청이 통과합니다.
+4. 업로드 성공/실패 lifecycle event가 `file.image.lifecycle.v1` consumer와 `/lifecycle-events` 양쪽에서 같은 `eventId`로 확인됩니다.
+5. `storage`/`resize`/`cache` telemetry event가 `file.image.events.v1`을 거쳐 `/events`, `/dashboard`, `/images`에 반영됩니다.
+6. `/services`에서 Client Service의 리사이징 정책을 `PRE_GENERATE`로 바꾸고 variant를 추가하면 다음 업로드 때 사전 생성 파일과 `image.resize.completed` telemetry가 남습니다.
+7. on-demand resize 사용량이 쌓이면 `/resize-recommendations`에서 추천 사이즈가 보이고, `정책에 반영` 버튼으로 같은 서비스의 active pre-generate variant가 생성됩니다.
+8. 구조 다이어그램과 책임 관계는 `docs/architecture.html`을 기준으로 확인합니다.
