@@ -29,6 +29,8 @@ storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.im
 
 8단계부터 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. 9단계부터 admin-web `/services`에서 이 정책을 조회/수정하고 pre-generate variant를 추가/수정/삭제할 수 있습니다. 10단계부터 `storage` 업로드 성공 시 해당 Client Service 정책이 `PRE_GENERATE`이면 활성 variant를 즉시 생성하고 `image.resize.completed` / `image.resize.failed` telemetry event를 남깁니다. `ON_DEMAND` 서비스는 기존처럼 업로드만 수행합니다.
 
+11단계부터 `telemetry-api`는 `image.resize.completed` 사용량을 Client Service + width/height/format 단위로 집계해서 pre-generate 추천 API를 제공합니다. 추천의 예상 절감 효과(`estimatedSavedResizeMs`)는 과거 on-demand resize 요청들의 `durationMs` 합계입니다. storage가 업로드 직후 만든 pre-generate telemetry는 `cacheKey`가 있어 추천 집계에서 제외됩니다.
+
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
 ## 신규 Client Service 추가 시 재시작 기준
@@ -605,6 +607,10 @@ curl -s "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID" \
 
 ```bash
 curl -s 'http://127.0.0.1:3100/api/admin/images?limit=10&sort=reads&order=desc' \
+  -H 'x-admin-token: dev-admin-token' \
+  | python3 -m json.tool
+
+curl -s "http://127.0.0.1:3100/api/admin/image-resize-recommendations?clientServiceId=$SERVICE_ID&minRequests=2&limit=10" \
   -H 'x-admin-token: dev-admin-token' \
   | python3 -m json.tool
 ```

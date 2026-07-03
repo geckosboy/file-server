@@ -99,6 +99,39 @@ export interface LifecycleEventListResponse {
 	nextCursor?: string;
 }
 
+export interface ImageResizeRecommendationQuery extends Partial<TelemetryRange> {
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+	minRequests?: number;
+	limit?: number;
+}
+
+export interface ImageResizeRecommendationItem {
+	recommendationKey: string;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+	width?: number;
+	height?: number;
+	format?: string;
+	requestCount: number;
+	imageCount: number;
+	avgDurationMs: number | null;
+	p95DurationMs: number | null;
+	estimatedSavedResizeMs: number;
+	totalInputBytes: number;
+	totalOutputBytes: number;
+	lastRequestedAt: string;
+	sampleImageKeys: string[];
+	recommended: boolean;
+}
+
+export interface ImageResizeRecommendationResponse {
+	threshold: {
+		minRequests: number;
+	};
+	items: ImageResizeRecommendationItem[];
+}
+
 @Injectable()
 export class AdminQueryService {
 	constructor(
@@ -309,6 +342,62 @@ export class AdminQueryService {
 		return { items: await this.repository.listVariants(imageKey) };
 	}
 
+	async listImageResizeRecommendations(
+		query: ImageResizeRecommendationQuery,
+	): Promise<ImageResizeRecommendationResponse> {
+		const limit = parseLimit(query.limit);
+		const minRequests = parseMinRequests(query.minRequests);
+		const events = await this.eventsForQuery({
+			from: query.from,
+			to: query.to,
+			clientServiceId: query.clientServiceId,
+			clientServiceSlug: query.clientServiceSlug,
+			eventType: 'image.resize.completed',
+			status: 'success',
+		});
+		const grouped = new Map<string, MutableImageResizeRecommendation>();
+
+		for (const event of events) {
+			if (!isOnDemandResizeEvent(event)) {
+				continue;
+			}
+
+			const key = createResizeRecommendationKey(event);
+			const current =
+				grouped.get(key) ?? createMutableImageResizeRecommendation(key, event);
+			current.requestCount += 1;
+			current.totalInputBytes += event.inputBytes ?? 0;
+			current.totalOutputBytes += event.outputBytes ?? 0;
+			current.lastRequestedAt = maxIso(
+				current.lastRequestedAt,
+				event.occurredAt,
+			);
+			current.imageKeys.add(event.imageKey);
+			if (current.sampleImageKeys.length < 5) {
+				current.sampleImageKeys.push(event.imageKey);
+			}
+			if (event.durationMs !== undefined) {
+				current.durations.push(event.durationMs);
+			}
+
+			grouped.set(key, current);
+		}
+
+		const items = [...grouped.values()]
+			.map((item) =>
+				toImageResizeRecommendationItem(item, {
+					minRequests,
+				}),
+			)
+			.sort(compareImageResizeRecommendations)
+			.slice(0, limit);
+
+		return {
+			threshold: { minRequests },
+			items,
+		};
+	}
+
 	private async eventsForQuery(query: Partial<EventFilter>) {
 		const range = parseRange(query, true);
 		return (await this.repository.listEvents())
@@ -383,6 +472,22 @@ export class AdminQueryService {
 	}
 }
 
+interface MutableImageResizeRecommendation {
+	recommendationKey: string;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+	width?: number;
+	height?: number;
+	format?: string;
+	requestCount: number;
+	totalInputBytes: number;
+	totalOutputBytes: number;
+	lastRequestedAt: string;
+	imageKeys: Set<string>;
+	sampleImageKeys: string[];
+	durations: number[];
+}
+
 interface MutableTimeseriesPoint extends Omit<
 	TimeseriesPoint,
 	'cacheHitRate' | 'avgDurationMs' | 'p95DurationMs'
@@ -423,6 +528,17 @@ function parseLimit(limit: number | undefined): number {
 	return limit;
 }
 
+function parseMinRequests(minRequests: number | undefined): number {
+	if (minRequests === undefined) {
+		return 3;
+	}
+	if (!Number.isInteger(minRequests) || minRequests < 1) {
+		throw new BadRequestException('minRequests must be a positive integer');
+	}
+
+	return minRequests;
+}
+
 function parseCursor(cursor: string | undefined): number {
 	if (cursor === undefined) {
 		return 0;
@@ -437,8 +553,105 @@ function parseCursor(cursor: string | undefined): number {
 	return parsed;
 }
 
+function isOnDemandResizeEvent(event: ImageTelemetryEvent): boolean {
+	return (
+		event.eventType === 'image.resize.completed' &&
+		event.status === 'success' &&
+		(event.clientServiceId !== undefined ||
+			event.clientServiceSlug !== undefined) &&
+		(event.width !== undefined || event.height !== undefined) &&
+		event.cacheKey === undefined
+	);
+}
+
+function createResizeRecommendationKey(event: ImageTelemetryEvent): string {
+	return [
+		event.clientServiceId ?? 'unknown-id',
+		event.clientServiceSlug ?? 'unknown-slug',
+		event.width ?? 'auto',
+		event.height ?? 'auto',
+		event.format ?? 'unknown',
+	].join(':');
+}
+
+function createMutableImageResizeRecommendation(
+	recommendationKey: string,
+	event: ImageTelemetryEvent,
+): MutableImageResizeRecommendation {
+	return {
+		recommendationKey,
+		clientServiceId: event.clientServiceId,
+		clientServiceSlug: event.clientServiceSlug,
+		width: event.width,
+		height: event.height,
+		format: event.format,
+		requestCount: 0,
+		totalInputBytes: 0,
+		totalOutputBytes: 0,
+		lastRequestedAt: event.occurredAt,
+		imageKeys: new Set<string>(),
+		sampleImageKeys: [],
+		durations: [],
+	};
+}
+
+function toImageResizeRecommendationItem(
+	item: MutableImageResizeRecommendation,
+	threshold: { minRequests: number },
+): ImageResizeRecommendationItem {
+	const estimatedSavedResizeMs = item.durations.reduce(
+		(total, duration) => total + duration,
+		0,
+	);
+
+	return {
+		recommendationKey: item.recommendationKey,
+		clientServiceId: item.clientServiceId,
+		clientServiceSlug: item.clientServiceSlug,
+		width: item.width,
+		height: item.height,
+		format: item.format,
+		requestCount: item.requestCount,
+		imageCount: item.imageKeys.size,
+		avgDurationMs: average(item.durations),
+		p95DurationMs: percentile(item.durations, 0.95),
+		estimatedSavedResizeMs,
+		totalInputBytes: item.totalInputBytes,
+		totalOutputBytes: item.totalOutputBytes,
+		lastRequestedAt: item.lastRequestedAt,
+		sampleImageKeys: [...new Set(item.sampleImageKeys)],
+		recommended: item.requestCount >= threshold.minRequests,
+	};
+}
+
+function compareImageResizeRecommendations(
+	left: ImageResizeRecommendationItem,
+	right: ImageResizeRecommendationItem,
+): number {
+	if (left.recommended !== right.recommended) {
+		return left.recommended ? -1 : 1;
+	}
+	if (left.requestCount !== right.requestCount) {
+		return right.requestCount - left.requestCount;
+	}
+	if (left.estimatedSavedResizeMs !== right.estimatedSavedResizeMs) {
+		return right.estimatedSavedResizeMs - left.estimatedSavedResizeMs;
+	}
+
+	const timeDiff =
+		new Date(right.lastRequestedAt).getTime() -
+		new Date(left.lastRequestedAt).getTime();
+	return timeDiff === 0
+		? left.recommendationKey.localeCompare(right.recommendationKey)
+		: timeDiff;
+}
+
 function isValidDate(value: string): boolean {
 	return Number.isFinite(new Date(value).getTime());
+}
+
+function maxIso(left: string, right: string): string {
+	return new Date(left).getTime() >= new Date(right).getTime() ? left : right;
 }
 
 function matchesOptionalRange(

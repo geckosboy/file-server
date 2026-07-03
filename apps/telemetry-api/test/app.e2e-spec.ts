@@ -224,6 +224,36 @@ describe('텔레메트리 API e2e', () => {
 			});
 	});
 
+	it('리사이징 추천 엔드포인트는 서비스별 요청 횟수와 예상 절감 효과를 반환한다', async () => {
+		await seedResizeRecommendationEvents(app);
+
+		await request(app.getHttpServer())
+			.get('/api/admin/image-resize-recommendations')
+			.set('x-admin-token', adminToken)
+			.query({
+				clientServiceSlug: 'catalog-api',
+				minRequests: 2,
+				limit: 10,
+			})
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body.threshold).toEqual({ minRequests: 2 });
+				expect(body.items).toEqual([
+					expect.objectContaining({
+						clientServiceId: 'service-e2e',
+						clientServiceSlug: 'catalog-api',
+						width: 400,
+						height: 400,
+						format: 'webp',
+						requestCount: 2,
+						imageCount: 1,
+						estimatedSavedResizeMs: 30,
+						recommended: true,
+					}),
+				]);
+			});
+	});
+
 	it('lifecycle 이벤트 목록 요청에 upload completed/failed 이벤트를 반환한다', async () => {
 		await seedLifecycleEvents(app);
 
@@ -499,6 +529,46 @@ async function seedLifecycleEvents(app: INestApplication) {
 	const lifecycleIngestionService = app.get(LifecycleIngestionService);
 	await lifecycleIngestionService.ingest(lifecycleCompletedEvent);
 	await lifecycleIngestionService.ingest(lifecycleFailedEvent);
+}
+
+async function seedResizeRecommendationEvents(app: INestApplication) {
+	for (const [index, durationMs] of [10, 20].entries()) {
+		await request(app.getHttpServer())
+			.post('/api/ingestion/events')
+			.send({
+				...uploadEvent,
+				eventId: `evt-e2e-rec-${index + 1}`,
+				eventType: 'image.resize.completed',
+				occurredAt: `2026-07-01T00:4${index}:00.000Z`,
+				sourceApp: 'resize',
+				clientServiceId: 'service-e2e',
+				clientServiceSlug: 'catalog-api',
+				width: 400,
+				height: 400,
+				format: 'webp',
+				outputBytes: 300,
+				durationMs,
+			})
+			.expect(202);
+	}
+	await request(app.getHttpServer())
+		.post('/api/ingestion/events')
+		.send({
+			...uploadEvent,
+			eventId: 'evt-e2e-rec-pregenerated-skip',
+			eventType: 'image.resize.completed',
+			occurredAt: '2026-07-01T00:45:00.000Z',
+			sourceApp: 'resize',
+			clientServiceId: 'service-e2e',
+			clientServiceSlug: 'catalog-api',
+			width: 400,
+			height: 400,
+			format: 'webp',
+			cacheKey: 'products/image/sample.png:400x400:webp',
+			outputBytes: 300,
+			durationMs: 999,
+		})
+		.expect(202);
 }
 
 function testRange() {

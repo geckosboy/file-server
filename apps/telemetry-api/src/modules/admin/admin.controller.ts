@@ -1,6 +1,9 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { AdminAuthGuard } from './admin-auth.guard';
-import { AdminQueryService } from './admin-query.service';
+import {
+	AdminQueryService,
+	ImageResizeRecommendationQuery,
+} from './admin-query.service';
 import { LifecycleEventFilter } from '../lifecycle/lifecycle.types';
 import {
 	EventFilter,
@@ -43,6 +46,15 @@ export class AdminController {
 	@Get('images')
 	listImages(@Query() query: ImageFilter) {
 		return this.queryService.listImages(normalizeImageQuery(query));
+	}
+
+	@Get('image-resize-recommendations')
+	listImageResizeRecommendations(
+		@Query() query: ImageResizeRecommendationQuery,
+	) {
+		return this.queryService.listImageResizeRecommendations(
+			normalizeImageResizeRecommendationQuery(query),
+		);
 	}
 
 	@Get('images/:imageKey')
@@ -98,6 +110,16 @@ function normalizeImageQuery(query: ImageFilter): ImageFilter {
 	return {
 		...query,
 		limit: normalizeNumber(query.limit),
+	};
+}
+
+function normalizeImageResizeRecommendationQuery(
+	query: ImageResizeRecommendationQuery,
+): ImageResizeRecommendationQuery {
+	return {
+		...query,
+		limit: normalizeNumber(query.limit),
+		minRequests: normalizeNumber(query.minRequests),
 	};
 }
 

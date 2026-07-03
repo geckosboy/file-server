@@ -198,6 +198,59 @@ describe('관리자 조회 서비스', () => {
 		]);
 	});
 
+	it('리사이징 추천은 Client Service별 온디맨드 resize 사용량으로 계산한다', async () => {
+		await seedResizeRecommendationEvents();
+
+		const response = await queryService.listImageResizeRecommendations({
+			minRequests: 3,
+			limit: 10,
+		});
+
+		expect(response.threshold.minRequests).toBe(3);
+		expect(response.items[0]).toMatchObject({
+			clientServiceId: 'service-a',
+			clientServiceSlug: 'catalog-api',
+			width: 400,
+			height: 400,
+			format: 'webp',
+			requestCount: 3,
+			imageCount: 2,
+			avgDurationMs: 20,
+			p95DurationMs: 30,
+			estimatedSavedResizeMs: 60,
+			totalInputBytes: 3000,
+			totalOutputBytes: 900,
+			lastRequestedAt: '2026-07-01T03:02:00.000Z',
+			recommended: true,
+		});
+		expect(response.items[0].sampleImageKeys).toEqual([
+			'products/image/a.png',
+			'products/image/b.png',
+		]);
+		expect(response.items).toContainEqual(
+			expect.objectContaining({
+				clientServiceId: 'service-b',
+				width: 320,
+				height: 240,
+				requestCount: 1,
+				recommended: false,
+			}),
+		);
+
+		const filtered = await queryService.listImageResizeRecommendations({
+			clientServiceSlug: 'catalog-api',
+			minRequests: 4,
+			limit: 10,
+		});
+
+		expect(filtered.items).toHaveLength(1);
+		expect(filtered.items[0]).toMatchObject({
+			clientServiceSlug: 'catalog-api',
+			requestCount: 3,
+			recommended: false,
+		});
+	});
+
 	it('이미지 목록은 totalReads 기준으로 정렬한다', async () => {
 		const response = await queryService.listImages({
 			sort: 'reads',
@@ -335,6 +388,72 @@ describe('관리자 조회 서비스', () => {
 			errorCode: 'ENOENT',
 			errorMessage: 'missing image',
 			durationMs: 50,
+		});
+	}
+
+	async function seedResizeRecommendationEvents() {
+		const common = {
+			...baseEvent,
+			eventType: 'image.resize.completed',
+			sourceApp: 'resize',
+			status: 'success',
+			format: 'webp',
+			width: 400,
+			height: 400,
+			inputBytes: 1000,
+			outputBytes: 300,
+			clientServiceId: 'service-a',
+			clientServiceSlug: 'catalog-api',
+		};
+
+		await ingestionService.ingest({
+			...common,
+			eventId: 'evt-rec-a-1',
+			occurredAt: '2026-07-01T03:00:00.000Z',
+			imageKey: 'products/image/a.png',
+			name: 'a.png',
+			durationMs: 10,
+		});
+		await ingestionService.ingest({
+			...common,
+			eventId: 'evt-rec-a-2',
+			occurredAt: '2026-07-01T03:01:00.000Z',
+			imageKey: 'products/image/a.png',
+			name: 'a.png',
+			durationMs: 20,
+		});
+		await ingestionService.ingest({
+			...common,
+			eventId: 'evt-rec-a-3',
+			occurredAt: '2026-07-01T03:02:00.000Z',
+			imageKey: 'products/image/b.png',
+			name: 'b.png',
+			durationMs: 30,
+		});
+		await ingestionService.ingest({
+			...common,
+			eventId: 'evt-rec-pregenerated-skip',
+			occurredAt: '2026-07-01T03:03:00.000Z',
+			cacheKey: 'products/image/a.png:400x400:webp',
+			durationMs: 999,
+		});
+		await ingestionService.ingest({
+			...baseEvent,
+			eventId: 'evt-rec-b-1',
+			eventType: 'image.resize.completed',
+			occurredAt: '2026-07-01T03:04:00.000Z',
+			sourceApp: 'resize',
+			status: 'success',
+			clientServiceId: 'service-b',
+			clientServiceSlug: 'admin-api',
+			imageKey: 'admin/image/c.png',
+			path: 'admin/image',
+			name: 'c.png',
+			width: 320,
+			height: 240,
+			inputBytes: 800,
+			outputBytes: 200,
+			durationMs: 12,
 		});
 	}
 });

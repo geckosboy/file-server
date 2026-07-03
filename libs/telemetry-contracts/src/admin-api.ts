@@ -230,6 +230,37 @@ export class ImagesListQueryDto {
 	limit?: number;
 }
 
+export class ImageResizeRecommendationsQueryDto {
+	@IsOptional()
+	@IsISO8601()
+	from?: string;
+
+	@IsOptional()
+	@IsISO8601()
+	to?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceId?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceSlug?: string;
+
+	@Type(() => Number)
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	minRequests?: number;
+
+	@Type(() => Number)
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	@Max(100)
+	limit?: number;
+}
+
 export type TelemetryHealthResponse = {
 	ok: true;
 	service: 'telemetry-api';
@@ -392,6 +423,32 @@ export type ImageVariantListItem = {
 export type ImageVariantsResponse = {
 	imageKey: string;
 	items: ImageVariantListItem[];
+};
+
+export type ImageResizeRecommendationItem = {
+	recommendationKey: string;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+	width?: number;
+	height?: number;
+	format?: string;
+	requestCount: number;
+	imageCount: number;
+	avgDurationMs: number | null;
+	p95DurationMs: number | null;
+	estimatedSavedResizeMs: number;
+	totalInputBytes: number;
+	totalOutputBytes: number;
+	lastRequestedAt: string;
+	sampleImageKeys: string[];
+	recommended: boolean;
+};
+
+export type ImageResizeRecommendationsResponse = {
+	threshold: {
+		minRequests: number;
+	};
+	items: ImageResizeRecommendationItem[];
 };
 
 export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
