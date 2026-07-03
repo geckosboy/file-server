@@ -86,7 +86,7 @@ $ KAFKA_CLIENT_BROKERS=localhost:9094 \
   pnpm kafka:lifecycle:consume
 ```
 
-이 consumer는 `file.image.lifecycle.v1`에서 `image.upload.completed` / `image.upload.failed` 이벤트를 읽고 `@file/telemetry-contracts/lifecycle` 계약으로 payload를 검증합니다.
+이 consumer는 `file.image.lifecycle.v1`에서 `image.upload.completed` / `image.upload.failed` 이벤트를 읽고 `@file/telemetry-contracts/lifecycle` 계약으로 payload를 검증합니다. storage는 lifecycle 이벤트를 PostgreSQL `image_lifecycle_outbox`에 먼저 저장한 뒤 Kafka로 발행하므로, consumer는 at-least-once 중복에 대비해 `eventId`를 idempotency key로 사용하세요.
 
 ## Environment files
 

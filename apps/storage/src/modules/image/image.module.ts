@@ -6,8 +6,9 @@ import { ImageService } from './image.service';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
-import { ClientServiceAuthModule } from '@file/database';
+import { ClientServiceAuthModule, PrismaModule } from '@file/database';
 import { envConfig } from 'src/config';
+import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
 
 const strategyList = [JpegStrategy, PngStrategy, ImageManager];
 const KafkaModule = ClientsModule.register([
@@ -29,8 +30,8 @@ const KafkaModule = ClientsModule.register([
 ]);
 
 @Module({
-	imports: [KafkaModule, ClientServiceAuthModule],
+	imports: [KafkaModule, ClientServiceAuthModule, PrismaModule],
 	controllers: [ImageController],
-	providers: [ImageService, ...strategyList],
+	providers: [ImageService, ImageLifecycleOutboxService, ...strategyList],
 })
 export class ImageModule {}

@@ -29,8 +29,8 @@ import {
 	ImageLifecycleEvent,
 	ImageLifecycleEventType,
 	ImageLifecycleStatus,
-	publishImageLifecycleEvent,
 } from './image.lifecycle';
+import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
@@ -47,6 +47,7 @@ export class ImageService {
 		private readonly jpegStrategy: JpegStrategy,
 		private readonly imageManager: ImageManager,
 		@Inject('IMAGE_MICROSERVICE') private readonly imageClient: ClientKafka,
+		private readonly lifecycleOutbox: ImageLifecycleOutboxService,
 		@Optional() private readonly appConfig?: AppConfig,
 	) {}
 
@@ -59,11 +60,7 @@ export class ImageService {
 	}
 
 	private async publishLifecycleEvent(event: ImageLifecycleEvent) {
-		await publishImageLifecycleEvent({
-			client: this.imageClient,
-			event,
-			logger: this.logger,
-		});
+		await this.lifecycleOutbox.enqueueAndPublish(event);
 	}
 
 	private getTelemetryFileName(file: Express.Multer.File) {

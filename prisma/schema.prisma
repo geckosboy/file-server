@@ -188,6 +188,25 @@ model ImageLifecycleIngestionMetric {
   @@map("image_lifecycle_ingestion_metrics")
 }
 
+model ImageLifecycleOutbox {
+  id            String    @id(map: "image_lifecycle_outbox_pkey") @default(cuid())
+  eventId       String    @unique(map: "image_lifecycle_outbox_event_id_key") @map("event_id")
+  topic         String
+  kafkaKey      String    @map("kafka_key")
+  payload       Json
+  status        String    @default("PENDING")
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
+  publishedAt   DateTime? @map("published_at")
+  lastError     String?   @map("last_error")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt], map: "image_lifecycle_outbox_status_next_attempt_at_idx")
+  @@index([createdAt], map: "image_lifecycle_outbox_created_at_idx")
+  @@map("image_lifecycle_outbox")
+}
+
 model TelemetryIngestionMetric {
   id                     String    @id(map: "telemetry_ingestion_metrics_pkey")
   validationFailureCount Int       @default(0) @map("validation_failure_count")

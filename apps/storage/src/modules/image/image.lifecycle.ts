@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { lastValueFrom } from 'rxjs';
 
 export {
+	createLifecycleKafkaKey,
 	IMAGE_LIFECYCLE_TOPIC,
 	ImageLifecycleEventType,
 	ImageLifecycleStatus,
@@ -100,15 +101,29 @@ export const publishImageLifecycleEvent = async ({
 	}
 
 	try {
-		await lastValueFrom(
-			client.emit(IMAGE_LIFECYCLE_TOPIC, {
-				key: createLifecycleKafkaKey(event),
-				value: JSON.stringify(event),
-			}),
-		);
+		await publishImageLifecycleEventOrThrow({ client, event });
 	} catch (error) {
 		logger.warn(`이미지 lifecycle 이벤트 발행 실패: ${errorToMessage(error)}`);
 	}
+};
+
+export const publishImageLifecycleEventOrThrow = async ({
+	client,
+	event,
+}: {
+	client?: Pick<ClientKafka, 'emit'>;
+	event: ImageLifecycleEvent;
+}) => {
+	if (!client || typeof client.emit !== 'function') {
+		throw new Error('Kafka client is not configured');
+	}
+
+	await lastValueFrom(
+		client.emit(IMAGE_LIFECYCLE_TOPIC, {
+			key: createLifecycleKafkaKey(event),
+			value: JSON.stringify(event),
+		}),
+	);
 };
 
 const errorToMessage = (error: unknown): string =>

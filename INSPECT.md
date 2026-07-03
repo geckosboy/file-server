@@ -25,6 +25,8 @@
 
 storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.image.lifecycle.v1`에도 발행됩니다. Client Service는 이 topic을 자기 consumer group으로 소비해서 이미지 업로드 완료 후속 처리나 실패 알림을 붙일 수 있습니다. 기존 `image-topic`은 호환용으로 계속 발행됩니다.
 
+7단계부터 lifecycle 발행은 storage의 outbox를 거칩니다. 업로드 성공/실패 이벤트는 먼저 PostgreSQL `image_lifecycle_outbox`에 저장되고, Kafka 발행 성공 시 `PUBLISHED`로 표시됩니다. Kafka가 잠깐 죽어 발행에 실패하면 row가 `FAILED`로 남고 `LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS` 주기로 재시도합니다. 전달 보장은 at-least-once이며, 같은 이벤트가 중복 발행될 수 있으므로 Client Service consumer는 `eventId`를 idempotency key로 저장/무시해야 합니다.
+
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
 ## 신규 Client Service 추가 시 재시작 기준
@@ -375,6 +377,8 @@ curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limi
 
 `file.image.lifecycle.v1`은 telemetry 저장용이 아니라 Client Service가 후속 업무를 붙이기 위한 topic입니다. 각 Client Service는 자기 consumer group을 사용해야 서로 offset을 빼앗지 않습니다.
 
+발행 유실 방지를 위해 storage는 upload lifecycle 이벤트를 바로 Kafka에만 쓰지 않고 `image_lifecycle_outbox`에 먼저 저장합니다. 점검 중 Kafka를 잠시 내려도 row는 남아 있어야 하며, Kafka를 다시 올리면 scheduled publisher가 같은 `eventId`로 재발행합니다. 이 구조는 유실 방지용 at-least-once 패턴이라 중복 수신이 가능하므로 실제 Client Service는 `eventId`를 처리 완료 테이블이나 cache에 기록해 중복 처리를 막아야 합니다.
+
 먼저 topic을 명시 생성합니다.
 
 ```bash
@@ -663,6 +667,7 @@ pnpm all:test:e2e
 
 - `telemetry-api`는 기본적으로 PostgreSQL 저장소를 사용합니다. DB 없이 잠깐만 확인하려면 `TELEMETRY_STORAGE_DRIVER=memory`를 명시하세요.
 - `storage/resize/cache → Kafka` 이벤트가 DB에 안 보이면 `telemetry-api`를 Kafka보다 먼저 켠 상태일 수 있습니다. Kafka를 켠 뒤 telemetry-api를 재시작하세요.
+- upload lifecycle 이벤트가 consumer에 안 보이면 먼저 PostgreSQL의 `image_lifecycle_outbox`에서 해당 `event_id` row의 `status`, `attempts`, `last_error`, `next_attempt_at`을 확인하세요. `FAILED`면 Kafka 복구 후 storage outbox publisher가 재시도합니다.
 - admin-web이 API를 못 불러오면 에러로 죽지 않고 fixture를 보여줍니다. 실제 연동 확인 시 fallback 경고 문구가 없는지 꼭 보세요.
 - admin API는 `x-admin-token` 헤더가 필요합니다.
 - admin-web은 기본 API 주소가 `http://localhost:3001/api/admin`이라, 로컬 telemetry-api 포트 `3100`을 쓰려면 `apps/admin-web/.env.local`의 `TELEMETRY_API_BASE_URL` 설정이 필요합니다.

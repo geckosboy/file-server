@@ -19,9 +19,12 @@ import {
 	ImageTelemetryEventType,
 } from '../src/modules/image/image.telemetry';
 import {
+	createLifecycleKafkaKey,
 	IMAGE_LIFECYCLE_TOPIC,
+	ImageLifecycleEvent,
 	ImageLifecycleEventType,
 } from '../src/modules/image/image.lifecycle';
+import { ImageLifecycleOutboxService } from '../src/modules/image/image-lifecycle-outbox.service';
 import { ImageManager } from '../src/modules/image/strategies/manager';
 import { JpegStrategy } from '../src/modules/image/strategies/sharp/jpeg.strategy';
 import { PngStrategy } from '../src/modules/image/strategies/sharp/png.strategy';
@@ -77,6 +80,9 @@ const authorized = (agent: request.Test) =>
 describe('스토리지 앱 e2e', () => {
 	let app: INestApplication;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
+	let lifecycleOutbox: jest.Mocked<
+		Pick<ImageLifecycleOutboxService, 'enqueueAndPublish'>
+	>;
 	let authService: ReturnType<typeof createAuthService>;
 
 	const getTelemetryPayloads = () =>
@@ -96,6 +102,14 @@ describe('스토리지 앱 e2e', () => {
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
 		};
+		lifecycleOutbox = {
+			enqueueAndPublish: jest.fn(async (event: ImageLifecycleEvent) => {
+				imageClient.emit(IMAGE_LIFECYCLE_TOPIC, {
+					key: createLifecycleKafkaKey(event),
+					value: JSON.stringify(event),
+				});
+			}),
+		};
 		authService = createAuthService();
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -113,6 +127,10 @@ describe('스토리지 앱 e2e', () => {
 				{
 					provide: 'IMAGE_MICROSERVICE',
 					useValue: imageClient,
+				},
+				{
+					provide: ImageLifecycleOutboxService,
+					useValue: lifecycleOutbox,
 				},
 			],
 		}).compile();

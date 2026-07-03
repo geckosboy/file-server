@@ -7,9 +7,12 @@ import {
 	ImageTelemetryEventType,
 } from './image.telemetry';
 import {
+	createLifecycleKafkaKey,
 	IMAGE_LIFECYCLE_TOPIC,
+	ImageLifecycleEvent,
 	ImageLifecycleEventType,
 } from './image.lifecycle';
+import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
@@ -61,6 +64,9 @@ describe('스토리지 이미지 서비스', () => {
 		>
 	>;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
+	let lifecycleOutbox: jest.Mocked<
+		Pick<ImageLifecycleOutboxService, 'enqueueAndPublish'>
+	>;
 	let service: ImageService;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
 
@@ -88,11 +94,20 @@ describe('스토리지 이미지 서비스', () => {
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
 		};
+		lifecycleOutbox = {
+			enqueueAndPublish: jest.fn(async (event: ImageLifecycleEvent) => {
+				imageClient.emit(IMAGE_LIFECYCLE_TOPIC, {
+					key: createLifecycleKafkaKey(event),
+					value: JSON.stringify(event),
+				});
+			}),
+		};
 		service = new ImageService(
 			new PngStrategy(),
 			new JpegStrategy(),
 			imageManager as unknown as ImageManager,
 			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
 		);
 		fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue(
 			new Response(null, {
@@ -320,6 +335,7 @@ describe('스토리지 이미지 서비스', () => {
 			new JpegStrategy(),
 			imageManager as unknown as ImageManager,
 			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
 			{
 				CACHE_SERVER: 'http://cache.test',
 			} as AppConfig,
