@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as sharp from 'sharp';
 import { Root } from 'src/enum';
 import { SharpStrategy } from './sharp';
-import { ImageManager } from './manager';
+import { createPreGeneratedVariantName, ImageManager } from './manager';
 
 class CopyStrategy extends SharpStrategy {
 	async compressAndSave(info: {
@@ -80,6 +80,58 @@ describe('스토리지 이미지 매니저', () => {
 				name: 'delete.png',
 			}),
 		).rejects.toBeInstanceOf(NotFoundException);
+	});
+
+	it('저장된 원본에서 사전 생성 리사이징 파일을 만든다', async () => {
+		const source = await sharp({
+			create: {
+				width: 12,
+				height: 8,
+				channels: 3,
+				background: '#123456',
+			},
+		})
+			.png()
+			.toBuffer();
+		await mkdir(path.resolve(assetRoot, 'image'), { recursive: true });
+		await writeFile(path.resolve(assetRoot, 'image', 'main.png'), source);
+
+		const result = await manager.createPreGeneratedVariant({
+			path: 'unit-manager/image',
+			name: 'main.png',
+			width: 4,
+			height: 4,
+			format: 'webp',
+		});
+		const variant = await manager.getBufferImage({
+			path: 'unit-manager/image',
+			name: 'main__w4_h4.webp',
+		});
+		const metadata = await sharp(variant.image).metadata();
+
+		expect(result).toEqual(
+			expect.objectContaining({
+				name: 'main__w4_h4.webp',
+				width: 4,
+				height: 4,
+				format: 'webp',
+				inputBytes: source.byteLength,
+				outputBytes: expect.any(Number),
+			}),
+		);
+		expect(metadata.format).toBe('webp');
+		expect(metadata.width).toBe(4);
+		expect(metadata.height).toBe(4);
+	});
+
+	it('사전 생성 파일명을 원본 이름과 사이즈 기준으로 만든다', () => {
+		expect(
+			createPreGeneratedVariantName({
+				name: 'hero.banner.png',
+				width: 320,
+				format: 'jpeg',
+			}),
+		).toBe('hero.banner__w320_hauto.jpeg');
 	});
 
 	it('이미지로 끝나지 않는 메인 경로를 거부한다', async () => {

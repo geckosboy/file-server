@@ -27,7 +27,7 @@ storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.im
 
 7단계부터 lifecycle 발행은 storage의 outbox를 거칩니다. 업로드 성공/실패 이벤트는 먼저 PostgreSQL `image_lifecycle_outbox`에 저장되고, Kafka 발행 성공 시 `PUBLISHED`로 표시됩니다. Kafka가 잠깐 죽어 발행에 실패하면 row가 `FAILED`로 남고 `LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS` 주기로 재시도합니다. 전달 보장은 at-least-once이며, 같은 이벤트가 중복 발행될 수 있으므로 Client Service consumer는 `eventId`를 idempotency key로 저장/무시해야 합니다.
 
-8단계부터 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. 9단계부터 admin-web `/services`에서 이 정책을 조회/수정하고 pre-generate variant를 추가/수정/삭제할 수 있습니다. 업로드 시 실제 사전 리사이징 실행은 10단계에서 붙입니다.
+8단계부터 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. 9단계부터 admin-web `/services`에서 이 정책을 조회/수정하고 pre-generate variant를 추가/수정/삭제할 수 있습니다. 10단계부터 `storage` 업로드 성공 시 해당 Client Service 정책이 `PRE_GENERATE`이면 활성 variant를 즉시 생성하고 `image.resize.completed` / `image.resize.failed` telemetry event를 남깁니다. `ON_DEMAND` 서비스는 기존처럼 업로드만 수행합니다.
 
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
@@ -211,6 +211,8 @@ curl -i -X POST http://127.0.0.1:3032/image \
 ```
 
 성공하면 `201 Created`.
+
+서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<원본이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 `sample.png`에 `400x400 webp` variant를 두면 storage 내부에는 `sample__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다.
 
 ## 6. 원본 조회 확인
 
@@ -647,6 +649,7 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - key 폐기 버튼으로 key 상태를 폐기 처리할 수 있어야 합니다.
   - 리사이징 정책 영역에서 `ON_DEMAND` / `PRE_GENERATE` 모드를 저장할 수 있어야 합니다.
   - pre-generate variant의 width/height/format/활성화 여부/설명을 추가·수정·삭제할 수 있어야 합니다.
+  - `PRE_GENERATE` 서비스로 업로드한 뒤 `/events`에서 같은 원본 `imageKey`의 `image.resize.completed` 또는 `image.resize.failed` 이벤트가 보여야 합니다.
 
 ### 10-8. 자동 테스트 명령
 

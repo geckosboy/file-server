@@ -25,6 +25,7 @@ import {
 	ImageLifecycleEventType,
 } from '../src/modules/image/image.lifecycle';
 import { ImageLifecycleOutboxService } from '../src/modules/image/image-lifecycle-outbox.service';
+import { ImagePregenerationService } from '../src/modules/image/image-pregeneration.service';
 import { ImageManager } from '../src/modules/image/strategies/manager';
 import { JpegStrategy } from '../src/modules/image/strategies/sharp/jpeg.strategy';
 import { PngStrategy } from '../src/modules/image/strategies/sharp/png.strategy';
@@ -83,6 +84,9 @@ describe('스토리지 앱 e2e', () => {
 	let lifecycleOutbox: jest.Mocked<
 		Pick<ImageLifecycleOutboxService, 'enqueueAndPublish'>
 	>;
+	let imagePregenerationService: jest.Mocked<
+		Pick<ImagePregenerationService, 'preGenerateForUpload'>
+	>;
 	let authService: ReturnType<typeof createAuthService>;
 
 	const getTelemetryPayloads = () =>
@@ -110,6 +114,9 @@ describe('스토리지 앱 e2e', () => {
 				});
 			}),
 		};
+		imagePregenerationService = {
+			preGenerateForUpload: jest.fn().mockResolvedValue([]),
+		};
 		authService = createAuthService();
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -131,6 +138,10 @@ describe('스토리지 앱 e2e', () => {
 				{
 					provide: ImageLifecycleOutboxService,
 					useValue: lifecycleOutbox,
+				},
+				{
+					provide: ImagePregenerationService,
+					useValue: imagePregenerationService,
 				},
 			],
 		}).compile();

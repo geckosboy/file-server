@@ -3,7 +3,8 @@ import {
 	Injectable,
 	NotFoundException,
 } from '@nestjs/common';
-import { mkdir, readFile, rm } from 'fs/promises';
+import type { Sharp } from 'sharp';
+import { mkdir, readFile, rm, stat } from 'fs/promises';
 import { SharpStrategy } from './sharp';
 import {
 	normalizeSafeFileName,
@@ -56,6 +57,49 @@ export class ImageManager {
 		return result;
 	}
 
+	/** Main 폴더에 저장된 원본을 지정된 사전 생성 사이즈 파일로 리사이징한다. */
+	async createPreGeneratedVariant(info: {
+		path: string;
+		name: string;
+		width?: number | null;
+		height?: number | null;
+		format: PreGeneratedImageFormat;
+	}) {
+		const { format, height, name, path, width } = info;
+		const safePath = this.normalizeMainPath(path);
+		const safeName = normalizeSafeFileName(name, 'main name');
+		const variantName = createPreGeneratedVariantName({
+			name: safeName,
+			width,
+			height,
+			format,
+		});
+		const sourcePath = this.pathStrategy.getMainDirectory(
+			`${safePath}/${safeName}`,
+		);
+		const outputPath = this.pathStrategy.getMainDirectory(
+			`${safePath}/${variantName}`,
+		);
+		const sourceStats = await stat(sourcePath);
+		const tool = this.pathStrategy.getToolInstance();
+		const resizedImage = tool(sourcePath).resize({
+			...(width ? { width } : {}),
+			...(height ? { height } : {}),
+			fit: 'fill',
+		});
+
+		const result = await toFormat(resizedImage, format).toFile(outputPath);
+
+		return {
+			name: variantName,
+			width: width ?? undefined,
+			height: height ?? undefined,
+			format,
+			inputBytes: sourceStats.size,
+			outputBytes: result.size,
+		};
+	}
+
 	/** Main 폴더에 있는 이미지 제거 */
 	async deleteMainImage({ path, name }: { path: string; name: string }) {
 		const safePath = this.normalizeMainPath(path);
@@ -91,5 +135,34 @@ export class ImageManager {
 				'파일이 존재하지 않거나 불러올 수 없는 상태입니다.',
 			);
 		}
+	}
+}
+
+export type PreGeneratedImageFormat = 'png' | 'jpeg' | 'webp';
+
+export const createPreGeneratedVariantName = ({
+	format,
+	height,
+	name,
+	width,
+}: {
+	name: string;
+	width?: number | null;
+	height?: number | null;
+	format: PreGeneratedImageFormat;
+}) => {
+	const extensionIndex = name.lastIndexOf('.');
+	const baseName = extensionIndex > 0 ? name.slice(0, extensionIndex) : name;
+	return `${baseName}__w${width ?? 'auto'}_h${height ?? 'auto'}.${format}`;
+};
+
+function toFormat(image: Sharp, format: PreGeneratedImageFormat) {
+	switch (format) {
+		case 'png':
+			return image.png({ compressionLevel: 5 });
+		case 'jpeg':
+			return image.jpeg({ quality: 60 });
+		case 'webp':
+			return image.webp({ quality: 75 });
 	}
 }

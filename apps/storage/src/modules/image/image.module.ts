@@ -9,6 +9,7 @@ import { ImageManager } from './strategies/manager';
 import { ClientServiceAuthModule, PrismaModule } from '@file/database';
 import { envConfig } from 'src/config';
 import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
+import { ImagePregenerationService } from './image-pregeneration.service';
 
 const strategyList = [JpegStrategy, PngStrategy, ImageManager];
 const KafkaModule = ClientsModule.register([
@@ -32,6 +33,11 @@ const KafkaModule = ClientsModule.register([
 @Module({
 	imports: [KafkaModule, ClientServiceAuthModule, PrismaModule],
 	controllers: [ImageController],
-	providers: [ImageService, ImageLifecycleOutboxService, ...strategyList],
+	providers: [
+		ImageService,
+		ImageLifecycleOutboxService,
+		ImagePregenerationService,
+		...strategyList,
+	],
 })
 export class ImageModule {}

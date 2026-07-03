@@ -31,6 +31,10 @@ import {
 	ImageLifecycleStatus,
 } from './image.lifecycle';
 import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
+import {
+	ImagePregenerationResult,
+	ImagePregenerationService,
+} from './image-pregeneration.service';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
@@ -48,6 +52,7 @@ export class ImageService {
 		private readonly imageManager: ImageManager,
 		@Inject('IMAGE_MICROSERVICE') private readonly imageClient: ClientKafka,
 		private readonly lifecycleOutbox: ImageLifecycleOutboxService,
+		private readonly imagePregenerationService: ImagePregenerationService,
 		@Optional() private readonly appConfig?: AppConfig,
 	) {}
 
@@ -112,6 +117,66 @@ export class ImageService {
 		}
 
 		return storagePath;
+	}
+
+	private createPreGeneratedVariantKey(
+		imageKey: string,
+		result: Pick<ImagePregenerationResult, 'width' | 'height' | 'format'>,
+	) {
+		return `${imageKey}:${result.width ?? 'auto'}x${result.height ?? 'auto'}:${result.format}`;
+	}
+
+	private async publishPregenerationTelemetryEvents({
+		imageId,
+		name,
+		path,
+		results,
+		telemetryContext,
+	}: {
+		imageId: number;
+		path: string;
+		name: string;
+		results: ImagePregenerationResult[];
+		telemetryContext: ReturnType<typeof createClientServiceTelemetryFields>;
+	}) {
+		const imageKey = `${path}/${name}`;
+		for (const result of results) {
+			const eventBase = {
+				sourceApp: 'resize' as const,
+				imageId,
+				path,
+				name,
+				imageKey,
+				cacheKey: this.createPreGeneratedVariantKey(imageKey, result),
+				width: result.width,
+				height: result.height,
+				format: normalizeImageFormat(result.format),
+				durationMs: result.durationMs,
+				...telemetryContext,
+			};
+
+			if (result.status === 'success') {
+				await this.publishTelemetryEvent(
+					createImageTelemetryEvent({
+						...eventBase,
+						eventType: ImageTelemetryEventType.ResizeCompleted,
+						inputBytes: result.inputBytes ?? 0,
+						outputBytes: result.outputBytes ?? 0,
+						status: 'success',
+					}),
+				);
+				continue;
+			}
+
+			await this.publishTelemetryEvent(
+				createImageTelemetryEvent({
+					...eventBase,
+					eventType: ImageTelemetryEventType.ResizeFailed,
+					status: 'failed',
+					...createFailedTelemetryFields(result.error),
+				}),
+			);
+		}
 	}
 
 	private async invalidateCachedImage({
@@ -320,6 +385,20 @@ export class ImageService {
 					...telemetryContext,
 				}),
 			);
+
+			const pregenerationResults =
+				await this.imagePregenerationService.preGenerateForUpload({
+					clientServiceId: clientServiceContext?.clientServiceId,
+					path,
+					name,
+				});
+			await this.publishPregenerationTelemetryEvents({
+				imageId: id,
+				path,
+				name,
+				results: pregenerationResults,
+				telemetryContext,
+			});
 
 			await this.invalidateCachedImage({
 				path,
