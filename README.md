@@ -56,21 +56,37 @@ KAFKA_CLIENT_BROKERS=kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
 KAFKA_CLIENT_BROKERS=실서버_DNS_또는_IP:19092,실서버_DNS_또는_IP:19093,실서버_DNS_또는_IP:19094
 ```
 
-운영용 compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값이므로 topic을 먼저 만들어야 합니다.
+운영용 compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값이므로 topic을 먼저 만들어야 합니다. 아래 스크립트는 기존 호환용 `image-topic`, telemetry 저장용 `file.image.events.v1`, Client Service lifecycle 소비용 `file.image.lifecycle.v1`을 생성하고 describe까지 출력합니다.
 
 ```bash
-$ docker compose -f docker/docker-compose.kafka.yml exec kafka-broker-1 \
-  /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-broker-1:9092 \
-  --create --if-not-exists --topic image-topic \
-  --partitions 6 --replication-factor 3 --config min.insync.replicas=2
+# 로컬 단일 브로커 compose
+$ pnpm kafka:topics:dev
 
-$ docker compose -f docker/docker-compose.kafka.yml exec kafka-broker-1 \
-  /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-broker-1:9092 \
-  --create --if-not-exists --topic file.image.events.v1 \
-  --partitions 6 --replication-factor 3 --config min.insync.replicas=2
+# 실서버 3 broker compose
+$ pnpm kafka:topics:prod
+```
+
+운영 partition/replication 값을 조정하려면 env로 덮어씁니다.
+
+```bash
+$ KAFKA_TOPIC_PARTITIONS=12 \
+  KAFKA_TOPIC_REPLICATION_FACTOR=3 \
+  KAFKA_TOPIC_MIN_ISR=2 \
+  pnpm kafka:topics:prod
 ```
 
 주의: 이 compose는 한 서버 안에 6개 Kafka 프로세스를 띄우는 형태라 프로세스 장애와 롤링 재시작에는 유리하지만, 서버 자체 장애까지 버티려면 controller/broker를 여러 서버로 나눠야 합니다.
+
+Client Service가 업로드 성공/실패 이벤트를 소비해 보려면 예시 consumer를 실행합니다.
+
+```bash
+$ KAFKA_CLIENT_BROKERS=localhost:9094 \
+  KAFKA_LIFECYCLE_GROUP_ID=my-service-image-lifecycle-local \
+  CLIENT_SERVICE_SLUG=local-demo \
+  pnpm kafka:lifecycle:consume
+```
+
+이 consumer는 `file.image.lifecycle.v1`에서 `image.upload.completed` / `image.upload.failed` 이벤트를 읽고 `@file/telemetry-contracts/lifecycle` 계약으로 payload를 검증합니다.
 
 ## Environment files
 

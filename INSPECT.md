@@ -3,7 +3,10 @@
 ## 전체 플로우
 
 업로드/삭제:
-내 백엔드 → storage → 로컬 파일 저장/삭제 → Kafka 이벤트 발행 → telemetry-api consumer → PostgreSQL 저장
+내 백엔드 → storage → 로컬 파일 저장/삭제 → Kafka 이벤트 발행
+├─ `file.image.events.v1` → telemetry-api consumer → PostgreSQL 저장
+├─ `file.image.lifecycle.v1` → Client Service consumer가 업로드 완료/실패 후속 처리
+└─ `image-topic` → 기존 호환용 legacy consumer
 
 원본 조회:
 내 백엔드 → storage → 로컬 파일 반환
@@ -19,6 +22,8 @@
 3단계부터 `storage`, `resize`, `cache`의 `/image` 라우트는 모두 `x-client-api-key`가 필요합니다. API key는 PostgreSQL 서비스 레지스트리에 저장된 key만 통과하고, 세 앱과 `telemetry-api`는 같은 `CLIENT_API_KEY_PEPPER`를 써야 합니다. 요청 ID는 `x-request-id`를 주면 그대로 쓰고, 없으면 guard가 자동 생성해서 telemetry event에 넣습니다.
 
 4단계부터 `telemetry-api`가 Kafka `file.image.events.v1` topic을 직접 consume해서 Prisma `TelemetryEvent` 모델/DB `telemetry_events` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
+
+storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.image.lifecycle.v1`에도 발행됩니다. Client Service는 이 topic을 자기 consumer group으로 소비해서 이미지 업로드 완료 후속 처리나 실패 알림을 붙일 수 있습니다. 기존 `image-topic`은 호환용으로 계속 발행됩니다.
 
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
@@ -98,6 +103,27 @@ echo "CLIENT_API_KEY=$CLIENT_API_KEY"
 
 ```bash
 docker compose -f docker/docker-compose.dev.yml --profile ui up -d
+```
+
+로컬 Compose는 개발 편의를 위해 topic auto-create가 켜져 있지만, 실제 운영과 같은 조건으로 보려면 topic을 명시 생성합니다. 이 스크립트는 `image-topic`, `file.image.events.v1`, `file.image.lifecycle.v1`을 만들고 describe까지 출력합니다.
+
+```bash
+pnpm kafka:topics:dev
+```
+
+실서버 Kafka Compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값입니다. Kafka broker 3대가 뜬 뒤 서버에서 아래를 먼저 실행해야 storage 발행과 Client Service 소비가 안정적으로 시작됩니다.
+
+```bash
+pnpm kafka:topics:prod
+```
+
+운영에서 partition/replication 값을 바꾸고 싶으면 env로 덮어씁니다.
+
+```bash
+KAFKA_TOPIC_PARTITIONS=12 \
+KAFKA_TOPIC_REPLICATION_FACTOR=3 \
+KAFKA_TOPIC_MIN_ISR=2 \
+pnpm kafka:topics:prod
 ```
 
 Kafka UI는 필요하면:
@@ -317,6 +343,72 @@ curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limi
 ```
 
 이벤트가 없다면 Kafka UI에서 `file.image.events.v1` topic에 메시지가 있는지, telemetry-api 헬스체크의 `kafka.connected`가 `true`인지 확인하세요. Kafka를 telemetry-api보다 나중에 켰다면 telemetry-api를 재시작하세요.
+
+### 10-4-1. Client Service lifecycle 이벤트 소비 확인
+
+`file.image.lifecycle.v1`은 telemetry 저장용이 아니라 Client Service가 후속 업무를 붙이기 위한 topic입니다. 각 Client Service는 자기 consumer group을 사용해야 서로 offset을 빼앗지 않습니다.
+
+먼저 topic을 명시 생성합니다.
+
+```bash
+pnpm kafka:topics:dev
+```
+
+새 터미널에서 예시 consumer를 켭니다. `CLIENT_SERVICE_SLUG`를 넣으면 해당 서비스 이벤트만 출력합니다. 과거 메시지까지 다시 보려면 매번 다른 `KAFKA_LIFECYCLE_GROUP_ID`를 쓰면 됩니다.
+
+```bash
+KAFKA_CLIENT_BROKERS=localhost:9094 \
+KAFKA_LIFECYCLE_GROUP_ID="local-demo-lifecycle-$SERVICE_SLUG-$(date +%s)" \
+CLIENT_SERVICE_SLUG="$SERVICE_SLUG" \
+pnpm kafka:lifecycle:consume
+```
+
+성공 이벤트는 5단계 업로드를 다시 실행하면 확인할 수 있습니다. consumer에 아래처럼 `image.upload.completed`가 찍히면 정상입니다.
+
+```json
+{
+	"eventType": "image.upload.completed",
+	"status": "success",
+	"clientServiceSlug": "local-demo-...",
+	"requestId": "inspect-upload-...",
+	"imageKey": "inspect/image/file-server-sample.png"
+}
+```
+
+실패 이벤트는 인증 실패가 아니라 storage 업로드 처리 중 실패해야 발행됩니다. 예를 들어 이미지가 아닌 `text/plain` 파일을 업로드하면 guard는 통과하지만 storage 이미지 처리에서 실패하고 `image.upload.failed` lifecycle 이벤트가 발행됩니다.
+
+```bash
+printf 'not image' > /tmp/file-server-not-image.txt
+STAMP="$(date +%s)"
+
+curl -i -X POST http://127.0.0.1:3032/image \
+  -H "x-client-api-key: $CLIENT_API_KEY" \
+  -H "x-request-id: inspect-upload-failed-$STAMP" \
+  -F id=999 \
+  -F path=inspect/image \
+  -F 'file=@/tmp/file-server-not-image.txt;type=text/plain;filename=not-image.txt'
+```
+
+응답은 `400 Bad Request`가 정상이고, consumer에 아래처럼 실패 이벤트가 찍혀야 합니다.
+
+```json
+{
+	"eventType": "image.upload.failed",
+	"status": "failed",
+	"clientServiceSlug": "local-demo-...",
+	"requestId": "inspect-upload-failed-...",
+	"imageKey": "inspect/image/not-image.txt",
+	"errorCode": "BadRequestException"
+}
+```
+
+예시 consumer 옵션은 아래에서 볼 수 있습니다.
+
+```bash
+pnpm kafka:lifecycle:consume -- --help
+```
+
+실제 Client Service 코드에서는 예시처럼 `file.image.lifecycle.v1`을 구독하고, 메시지를 공통 계약 `@file/telemetry-contracts/lifecycle`의 `validateImageLifecycleEvent`로 검증한 뒤 `image.upload.completed` / `image.upload.failed`만 처리하면 됩니다.
 
 ### 10-5. 수동 테스트 이벤트 넣기
 

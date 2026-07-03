@@ -34,7 +34,10 @@
 		"db:generate": "prisma generate",
 		"db:migrate:dev": "prisma migrate dev",
 		"db:migrate:deploy": "prisma migrate deploy",
-		"db:studio": "prisma studio"
+		"db:studio": "prisma studio",
+		"kafka:topics:dev": "scripts/kafka/ensure-image-topics.sh dev",
+		"kafka:topics:prod": "scripts/kafka/ensure-image-topics.sh prod",
+		"kafka:lifecycle:consume": "scripts/kafka/consume-image-lifecycle-example.sh"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",
