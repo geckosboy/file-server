@@ -1,6 +1,7 @@
 import {
 	Body,
 	Controller,
+	Delete,
 	Get,
 	Param,
 	Patch,
@@ -61,5 +62,41 @@ export class ClientServicesController {
 			subscriptionId,
 			body,
 		);
+	}
+
+	@Get(':id/image-resize-policy')
+	getImageResizePolicy(@Param('id') id: string) {
+		return this.clientServicesService.getImageResizePolicy(id);
+	}
+
+	@Patch(':id/image-resize-policy')
+	updateImageResizePolicy(@Param('id') id: string, @Body() body: unknown) {
+		return this.clientServicesService.updateImageResizePolicy(id, body);
+	}
+
+	@Post(':id/image-resize-policy/variants')
+	createImageResizeVariant(@Param('id') id: string, @Body() body: unknown) {
+		return this.clientServicesService.createImageResizeVariant(id, body);
+	}
+
+	@Patch(':id/image-resize-policy/variants/:variantId')
+	updateImageResizeVariant(
+		@Param('id') id: string,
+		@Param('variantId') variantId: string,
+		@Body() body: unknown,
+	) {
+		return this.clientServicesService.updateImageResizeVariant(
+			id,
+			variantId,
+			body,
+		);
+	}
+
+	@Delete(':id/image-resize-policy/variants/:variantId')
+	deleteImageResizeVariant(
+		@Param('id') id: string,
+		@Param('variantId') variantId: string,
+	) {
+		return this.clientServicesService.deleteImageResizeVariant(id, variantId);
 	}
 }

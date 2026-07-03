@@ -1,12 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import {
+	ClientServiceImageResizePolicyRecord,
+	ClientServiceImageResizeVariantRecord,
 	ClientServiceLifecycleSubscriptionRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
 	ClientServiceStatus,
+	CreateClientServiceImageResizeVariantInput,
 	CreateClientServiceLifecycleSubscriptionInput,
 	CreateClientServiceInput,
 	JsonObject,
+	UpdateClientServiceImageResizePolicyInput,
+	UpdateClientServiceImageResizeVariantInput,
 	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
 } from './client-services.types';
@@ -14,8 +19,11 @@ import {
 export class ClientServiceNotFoundError extends Error {}
 export class ClientServiceKeyNotFoundError extends Error {}
 export class ClientServiceLifecycleSubscriptionNotFoundError extends Error {}
+export class ClientServiceImageResizePolicyNotFoundError extends Error {}
+export class ClientServiceImageResizeVariantNotFoundError extends Error {}
 export class DuplicateClientServiceSlugError extends Error {}
 export class DuplicateClientServiceLifecycleSubscriptionError extends Error {}
+export class DuplicateClientServiceImageResizeVariantError extends Error {}
 
 export interface ClientServicesRepository {
 	listServices(): Promise<ClientServiceRecord[]>;
@@ -53,6 +61,29 @@ export interface ClientServicesRepository {
 			subscriptionId: string;
 		},
 	): Promise<ClientServiceLifecycleSubscriptionRecord>;
+	getOrCreateImageResizePolicy(
+		clientServiceId: string,
+	): Promise<ClientServiceImageResizePolicyRecord>;
+	updateImageResizePolicy(
+		clientServiceId: string,
+		input: UpdateClientServiceImageResizePolicyInput,
+	): Promise<ClientServiceImageResizePolicyRecord>;
+	createImageResizeVariant(
+		input: CreateClientServiceImageResizeVariantInput & {
+			clientServiceId: string;
+			isEnabled: boolean;
+		},
+	): Promise<ClientServiceImageResizeVariantRecord>;
+	updateImageResizeVariant(
+		input: UpdateClientServiceImageResizeVariantInput & {
+			clientServiceId: string;
+			variantId: string;
+		},
+	): Promise<ClientServiceImageResizeVariantRecord>;
+	deleteImageResizeVariant(input: {
+		clientServiceId: string;
+		variantId: string;
+	}): Promise<ClientServiceImageResizeVariantRecord>;
 	clear(): Promise<void>;
 	getStorageKind(): 'memory' | 'postgresql';
 }
@@ -92,6 +123,26 @@ interface MutableClientServiceLifecycleSubscription {
 	updatedAt: string;
 }
 
+interface MutableClientServiceImageResizePolicy {
+	id: string;
+	clientServiceId: string;
+	mode: ClientServiceImageResizePolicyRecord['mode'];
+	createdAt: string;
+	updatedAt: string;
+}
+
+interface MutableClientServiceImageResizeVariant {
+	id: string;
+	policyId: string;
+	width?: number;
+	height?: number;
+	format: ClientServiceImageResizeVariantRecord['format'];
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
 @Injectable()
 export class InMemoryClientServicesRepository implements ClientServicesRepository {
 	private readonly services = new Map<string, MutableClientService>();
@@ -99,6 +150,14 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 	private readonly lifecycleSubscriptions = new Map<
 		string,
 		MutableClientServiceLifecycleSubscription
+	>();
+	private readonly imageResizePolicies = new Map<
+		string,
+		MutableClientServiceImageResizePolicy
+	>();
+	private readonly imageResizeVariants = new Map<
+		string,
+		MutableClientServiceImageResizeVariant
 	>();
 	private sequence = 0;
 
@@ -280,10 +339,99 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 		return toLifecycleSubscriptionRecord(next);
 	}
 
+	async getOrCreateImageResizePolicy(
+		clientServiceId: string,
+	): Promise<ClientServiceImageResizePolicyRecord> {
+		if (!this.services.has(clientServiceId)) {
+			throw new ClientServiceNotFoundError(clientServiceId);
+		}
+		return this.toImageResizePolicyRecord(
+			this.getOrCreateMutableImageResizePolicy(clientServiceId),
+		);
+	}
+
+	async updateImageResizePolicy(
+		clientServiceId: string,
+		input: UpdateClientServiceImageResizePolicyInput,
+	): Promise<ClientServiceImageResizePolicyRecord> {
+		const policy = this.getOrCreateMutableImageResizePolicy(clientServiceId);
+		const next: MutableClientServiceImageResizePolicy = {
+			...policy,
+			mode: input.mode,
+			updatedAt: new Date().toISOString(),
+		};
+		this.imageResizePolicies.set(next.id, next);
+		return this.toImageResizePolicyRecord(next);
+	}
+
+	async createImageResizeVariant(
+		input: CreateClientServiceImageResizeVariantInput & {
+			clientServiceId: string;
+			isEnabled: boolean;
+		},
+	): Promise<ClientServiceImageResizeVariantRecord> {
+		const policy = this.getOrCreateMutableImageResizePolicy(
+			input.clientServiceId,
+		);
+		this.assertUniqueImageResizeVariant(policy.id, input);
+
+		const now = new Date().toISOString();
+		const variant: MutableClientServiceImageResizeVariant = {
+			id: `variant_${++this.sequence}`,
+			policyId: policy.id,
+			width: input.width,
+			height: input.height,
+			format: input.format,
+			isEnabled: input.isEnabled,
+			description: input.description,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.imageResizeVariants.set(variant.id, variant);
+		return toImageResizeVariantRecord(variant);
+	}
+
+	async updateImageResizeVariant(
+		input: UpdateClientServiceImageResizeVariantInput & {
+			clientServiceId: string;
+			variantId: string;
+		},
+	): Promise<ClientServiceImageResizeVariantRecord> {
+		const { policy, variant } = this.findMutableImageResizeVariant(input);
+		const next: MutableClientServiceImageResizeVariant = {
+			...variant,
+			...stripUndefined({
+				width: input.width,
+				height: input.height,
+				format: input.format,
+				isEnabled: input.isEnabled,
+			}),
+			description:
+				input.description === null
+					? undefined
+					: (input.description ?? variant.description),
+			updatedAt: new Date().toISOString(),
+		};
+		this.assertUniqueImageResizeVariant(policy.id, next, variant.id);
+		this.imageResizeVariants.set(variant.id, next);
+		return toImageResizeVariantRecord(next);
+	}
+
+	async deleteImageResizeVariant(input: {
+		clientServiceId: string;
+		variantId: string;
+	}): Promise<ClientServiceImageResizeVariantRecord> {
+		const { variant } = this.findMutableImageResizeVariant(input);
+		this.imageResizeVariants.delete(variant.id);
+		return toImageResizeVariantRecord(variant);
+	}
+
 	async clear(): Promise<void> {
 		this.services.clear();
 		this.keys.clear();
 		this.lifecycleSubscriptions.clear();
+		this.imageResizePolicies.clear();
+		this.imageResizeVariants.clear();
 	}
 
 	getStorageKind(): 'memory' {
@@ -304,6 +452,9 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 					? left.consumerGroup.localeCompare(right.consumerGroup)
 					: left.eventType.localeCompare(right.eventType),
 			);
+		const imageResizePolicy = [...this.imageResizePolicies.values()].find(
+			(policy) => policy.clientServiceId === service.id,
+		);
 		return {
 			id: service.id,
 			slug: service.slug,
@@ -327,7 +478,96 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 						),
 					}
 				: {}),
+			...(includeKeys && imageResizePolicy
+				? {
+						imageResizePolicy:
+							this.toImageResizePolicyRecord(imageResizePolicy),
+					}
+				: {}),
 		};
+	}
+
+	private getOrCreateMutableImageResizePolicy(
+		clientServiceId: string,
+	): MutableClientServiceImageResizePolicy {
+		if (!this.services.has(clientServiceId)) {
+			throw new ClientServiceNotFoundError(clientServiceId);
+		}
+
+		const existing = [...this.imageResizePolicies.values()].find(
+			(policy) => policy.clientServiceId === clientServiceId,
+		);
+		if (existing) {
+			return existing;
+		}
+
+		const now = new Date().toISOString();
+		const policy: MutableClientServiceImageResizePolicy = {
+			id: `policy_${++this.sequence}`,
+			clientServiceId,
+			mode: 'ON_DEMAND',
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.imageResizePolicies.set(policy.id, policy);
+		return policy;
+	}
+
+	private toImageResizePolicyRecord(
+		policy: MutableClientServiceImageResizePolicy,
+	): ClientServiceImageResizePolicyRecord {
+		return {
+			id: policy.id,
+			clientServiceId: policy.clientServiceId,
+			mode: policy.mode,
+			variants: [...this.imageResizeVariants.values()]
+				.filter((variant) => variant.policyId === policy.id)
+				.sort(compareResizeVariants)
+				.map(toImageResizeVariantRecord),
+			createdAt: policy.createdAt,
+			updatedAt: policy.updatedAt,
+		};
+	}
+
+	private findMutableImageResizeVariant(input: {
+		clientServiceId: string;
+		variantId: string;
+	}): {
+		policy: MutableClientServiceImageResizePolicy;
+		variant: MutableClientServiceImageResizeVariant;
+	} {
+		const policy = [...this.imageResizePolicies.values()].find(
+			(item) => item.clientServiceId === input.clientServiceId,
+		);
+		const variant = this.imageResizeVariants.get(input.variantId);
+		if (!policy || !variant || variant.policyId !== policy.id) {
+			throw new ClientServiceImageResizeVariantNotFoundError(input.variantId);
+		}
+		return { policy, variant };
+	}
+
+	private assertUniqueImageResizeVariant(
+		policyId: string,
+		input: {
+			width?: number;
+			height?: number;
+			format?: string;
+		},
+		ignoreId?: string,
+	): void {
+		const duplicated = [...this.imageResizeVariants.values()].some(
+			(variant) =>
+				variant.id !== ignoreId &&
+				variant.policyId === policyId &&
+				variant.width === input.width &&
+				variant.height === input.height &&
+				variant.format === input.format,
+		);
+		if (duplicated) {
+			throw new DuplicateClientServiceImageResizeVariantError(
+				`${policyId}:${input.width ?? 'auto'}:${input.height ?? 'auto'}:${input.format}`,
+			);
+		}
 	}
 
 	private assertUniqueLifecycleSubscription(
@@ -380,6 +620,33 @@ function toLifecycleSubscriptionRecord(
 		createdAt: subscription.createdAt,
 		updatedAt: subscription.updatedAt,
 	};
+}
+
+function toImageResizeVariantRecord(
+	variant: MutableClientServiceImageResizeVariant,
+): ClientServiceImageResizeVariantRecord {
+	return {
+		id: variant.id,
+		policyId: variant.policyId,
+		width: variant.width,
+		height: variant.height,
+		format: variant.format,
+		isEnabled: variant.isEnabled,
+		description: variant.description,
+		createdAt: variant.createdAt,
+		updatedAt: variant.updatedAt,
+	};
+}
+
+function compareResizeVariants(
+	left: MutableClientServiceImageResizeVariant,
+	right: MutableClientServiceImageResizeVariant,
+): number {
+	return (
+		(left.width ?? 0) - (right.width ?? 0) ||
+		(left.height ?? 0) - (right.height ?? 0) ||
+		left.format.localeCompare(right.format)
+	);
 }
 
 function stripUndefined<T extends Record<string, unknown>>(

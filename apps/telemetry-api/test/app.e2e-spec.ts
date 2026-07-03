@@ -378,6 +378,86 @@ describe('텔레메트리 API e2e', () => {
 				]);
 			});
 	});
+
+	it('관리자 API로 서비스별 이미지 리사이징 정책과 pre-generate variant를 관리한다', async () => {
+		const created = await request(app.getHttpServer())
+			.post('/api/admin/client-services')
+			.set('x-admin-token', adminToken)
+			.send({
+				slug: 'media-api',
+				name: 'Media API',
+				owner: 'media-team',
+			})
+			.expect(201)
+			.then(({ body }) => body);
+
+		await request(app.getHttpServer())
+			.get(`/api/admin/client-services/${created.id}/image-resize-policy`)
+			.set('x-admin-token', adminToken)
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body).toMatchObject({
+					clientServiceId: created.id,
+					mode: 'ON_DEMAND',
+					variants: [],
+				});
+			});
+
+		await request(app.getHttpServer())
+			.patch(`/api/admin/client-services/${created.id}/image-resize-policy`)
+			.set('x-admin-token', adminToken)
+			.send({ mode: 'PRE_GENERATE' })
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body.mode).toBe('PRE_GENERATE');
+			});
+
+		const variant = await request(app.getHttpServer())
+			.post(
+				`/api/admin/client-services/${created.id}/image-resize-policy/variants`,
+			)
+			.set('x-admin-token', adminToken)
+			.send({
+				width: 400,
+				height: 400,
+				format: 'webp',
+				description: '미디어 썸네일',
+			})
+			.expect(201)
+			.then(({ body }) => body);
+
+		expect(variant).toMatchObject({
+			width: 400,
+			height: 400,
+			format: 'webp',
+			isEnabled: true,
+			description: '미디어 썸네일',
+		});
+
+		await request(app.getHttpServer())
+			.patch(
+				`/api/admin/client-services/${created.id}/image-resize-policy/variants/${variant.id}`,
+			)
+			.set('x-admin-token', adminToken)
+			.send({ isEnabled: false, description: '잠시 끔' })
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body).toMatchObject({
+					isEnabled: false,
+					description: '잠시 끔',
+				});
+			});
+
+		await request(app.getHttpServer())
+			.delete(
+				`/api/admin/client-services/${created.id}/image-resize-policy/variants/${variant.id}`,
+			)
+			.set('x-admin-token', adminToken)
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body.id).toBe(variant.id);
+			});
+	});
 });
 
 async function seedEvents(app: INestApplication) {

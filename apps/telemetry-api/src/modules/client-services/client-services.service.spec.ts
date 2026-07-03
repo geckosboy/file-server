@@ -145,4 +145,82 @@ describe('클라이언트 서비스 관리 서비스', () => {
 			service.createLifecycleSubscription(created.id, payload),
 		).rejects.toBeInstanceOf(ConflictException);
 	});
+
+	it('이미지 리사이징 정책을 기본 on-demand로 만들고 pre-generate로 전환한다', async () => {
+		const created = await service.createService(createPayload);
+
+		const initialPolicy = await service.getImageResizePolicy(created.id);
+		expect(initialPolicy).toMatchObject({
+			clientServiceId: created.id,
+			mode: 'ON_DEMAND',
+			variants: [],
+		});
+
+		const updatedPolicy = await service.updateImageResizePolicy(created.id, {
+			mode: 'PRE_GENERATE',
+		});
+
+		expect(updatedPolicy.mode).toBe('PRE_GENERATE');
+	});
+
+	it('pre-generate 대상 variant를 등록, 수정, 삭제한다', async () => {
+		const created = await service.createService(createPayload);
+
+		const variant = await service.createImageResizeVariant(created.id, {
+			width: 400,
+			height: 400,
+			format: 'webp',
+			description: '상품 썸네일',
+		});
+		expect(variant).toMatchObject({
+			width: 400,
+			height: 400,
+			format: 'webp',
+			isEnabled: true,
+			description: '상품 썸네일',
+		});
+
+		const disabled = await service.updateImageResizeVariant(
+			created.id,
+			variant.id,
+			{
+				isEnabled: false,
+				description: '임시 비활성화',
+			},
+		);
+		expect(disabled).toMatchObject({
+			isEnabled: false,
+			description: '임시 비활성화',
+		});
+
+		const policy = await service.getImageResizePolicy(created.id);
+		expect(policy.variants).toEqual([
+			expect.objectContaining({
+				id: variant.id,
+				isEnabled: false,
+			}),
+		]);
+
+		const deleted = await service.deleteImageResizeVariant(
+			created.id,
+			variant.id,
+		);
+		expect(deleted.id).toBe(variant.id);
+		await expect(
+			service.updateImageResizeVariant(created.id, variant.id, {
+				isEnabled: true,
+			}),
+		).rejects.toBeInstanceOf(NotFoundException);
+	});
+
+	it('같은 서비스의 width/height/format 중복 variant는 409로 매핑한다', async () => {
+		const created = await service.createService(createPayload);
+		const payload = { width: 800, height: 600, format: 'webp' };
+
+		await service.createImageResizeVariant(created.id, payload);
+
+		await expect(
+			service.createImageResizeVariant(created.id, payload),
+		).rejects.toBeInstanceOf(ConflictException);
+	});
 });

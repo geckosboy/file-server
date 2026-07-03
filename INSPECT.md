@@ -27,6 +27,8 @@ storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.im
 
 7단계부터 lifecycle 발행은 storage의 outbox를 거칩니다. 업로드 성공/실패 이벤트는 먼저 PostgreSQL `image_lifecycle_outbox`에 저장되고, Kafka 발행 성공 시 `PUBLISHED`로 표시됩니다. Kafka가 잠깐 죽어 발행에 실패하면 row가 `FAILED`로 남고 `LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS` 주기로 재시도합니다. 전달 보장은 at-least-once이며, 같은 이벤트가 중복 발행될 수 있으므로 Client Service consumer는 `eventId`를 idempotency key로 저장/무시해야 합니다.
 
+8단계부터 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. 이 단계에서는 admin API/DB 관리까지만 구현되어 있으며, 업로드 시 실제 사전 리사이징 실행은 다음 단계에서 붙입니다.
+
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
 ## 신규 Client Service 추가 시 재시작 기준
@@ -643,6 +645,7 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - API key 발급 시 key 원문이 화면에 1회 표시되어야 합니다.
   - 발급된 key 목록에는 prefix만 보이고 hash나 원문은 노출되지 않아야 합니다.
   - key 폐기 버튼으로 key 상태를 폐기 처리할 수 있어야 합니다.
+  - 리사이징 정책 API 기준으로 `ON_DEMAND` / `PRE_GENERATE` 모드와 variant 목록을 조회할 수 있어야 합니다. admin-web UI 연결은 9단계 범위입니다.
 
 ### 10-8. 자동 테스트 명령
 

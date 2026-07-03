@@ -14,6 +14,21 @@ export const ClientServiceLifecycleEventType = {
 export type ClientServiceLifecycleEventType =
 	(typeof ClientServiceLifecycleEventType)[keyof typeof ClientServiceLifecycleEventType];
 
+export const ClientServiceImageResizeMode = {
+	OnDemand: 'ON_DEMAND',
+	PreGenerate: 'PRE_GENERATE',
+} as const;
+export type ClientServiceImageResizeMode =
+	(typeof ClientServiceImageResizeMode)[keyof typeof ClientServiceImageResizeMode];
+
+export const ClientServiceImageResizeFormat = {
+	Png: 'png',
+	Jpeg: 'jpeg',
+	Webp: 'webp',
+} as const;
+export type ClientServiceImageResizeFormat =
+	(typeof ClientServiceImageResizeFormat)[keyof typeof ClientServiceImageResizeFormat];
+
 export interface ClientServiceRecord {
 	id: string;
 	slug: string;
@@ -29,6 +44,7 @@ export interface ClientServiceRecord {
 	activeSubscriptionCount: number;
 	keys?: ClientServiceKeyRecord[];
 	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionRecord[];
+	imageResizePolicy?: ClientServiceImageResizePolicyRecord;
 }
 
 export interface ClientServiceKeyRecord {
@@ -48,6 +64,27 @@ export interface ClientServiceLifecycleSubscriptionRecord {
 	clientServiceId: string;
 	eventType: ClientServiceLifecycleEventType;
 	consumerGroup: string;
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ClientServiceImageResizePolicyRecord {
+	id: string;
+	clientServiceId: string;
+	mode: ClientServiceImageResizeMode;
+	variants: ClientServiceImageResizeVariantRecord[];
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface ClientServiceImageResizeVariantRecord {
+	id: string;
+	policyId: string;
+	width?: number;
+	height?: number;
+	format: ClientServiceImageResizeFormat;
 	isEnabled: boolean;
 	description?: string;
 	createdAt: string;
@@ -86,6 +123,26 @@ export interface CreateClientServiceLifecycleSubscriptionInput {
 export interface UpdateClientServiceLifecycleSubscriptionInput {
 	eventType?: ClientServiceLifecycleEventType;
 	consumerGroup?: string;
+	isEnabled?: boolean;
+	description?: string | null;
+}
+
+export interface UpdateClientServiceImageResizePolicyInput {
+	mode: ClientServiceImageResizeMode;
+}
+
+export interface CreateClientServiceImageResizeVariantInput {
+	width?: number;
+	height?: number;
+	format: ClientServiceImageResizeFormat;
+	isEnabled?: boolean;
+	description?: string;
+}
+
+export interface UpdateClientServiceImageResizeVariantInput {
+	width?: number;
+	height?: number;
+	format?: ClientServiceImageResizeFormat;
 	isEnabled?: boolean;
 	description?: string | null;
 }

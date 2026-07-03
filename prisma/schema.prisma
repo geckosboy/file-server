@@ -17,6 +17,7 @@ model ClientService {
   keys     ClientServiceKey[]
   policies ClientServicePolicy[]
   lifecycleSubscriptions ClientServiceLifecycleSubscription[]
+  imageResizePolicy ClientServiceImageResizePolicy?
   events          TelemetryEvent[]
   lifecycleEvents ImageLifecycleEvent[]
 
@@ -88,6 +89,43 @@ model ClientServiceLifecycleSubscription {
   @@index([consumerGroup], map: "client_service_lifecycle_subscriptions_consumer_group_idx")
   @@index([isEnabled], map: "client_service_lifecycle_subscriptions_is_enabled_idx")
   @@map("client_service_lifecycle_subscriptions")
+}
+
+model ClientServiceImageResizePolicy {
+  id              String        @id(map: "client_service_image_resize_policies_pkey") @default(cuid())
+  clientServiceId String        @unique(map: "client_service_image_resize_policies_client_service_id_key") @map("client_service_id")
+  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade, map: "client_service_image_resize_policies_client_service_id_fkey")
+
+  mode String @default("ON_DEMAND")
+
+  variants ClientServiceImageResizeVariant[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([mode], map: "client_service_image_resize_policies_mode_idx")
+  @@map("client_service_image_resize_policies")
+}
+
+model ClientServiceImageResizeVariant {
+  id       String                         @id(map: "client_service_image_resize_variants_pkey") @default(cuid())
+  policyId String                         @map("policy_id")
+  policy   ClientServiceImageResizePolicy @relation(fields: [policyId], references: [id], onDelete: Cascade, map: "client_service_image_resize_variants_policy_id_fkey")
+
+  width       Int?
+  height      Int?
+  format      String
+  isEnabled   Boolean @default(true) @map("is_enabled")
+  description String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([policyId, width, height, format], map: "client_service_image_resize_variants_policy_size_format_key")
+  @@index([policyId], map: "client_service_image_resize_variants_policy_id_idx")
+  @@index([format], map: "client_service_image_resize_variants_format_idx")
+  @@index([isEnabled], map: "client_service_image_resize_variants_is_enabled_idx")
+  @@map("client_service_image_resize_variants")
 }
 
 model TelemetryEvent {

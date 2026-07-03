@@ -2,21 +2,28 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
 import {
+	ClientServiceImageResizePolicyRecord,
+	ClientServiceImageResizeVariantRecord,
 	ClientServiceLifecycleSubscriptionRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
 	ClientServiceStatus,
+	CreateClientServiceImageResizeVariantInput,
 	CreateClientServiceLifecycleSubscriptionInput,
 	CreateClientServiceInput,
 	JsonObject,
+	UpdateClientServiceImageResizePolicyInput,
+	UpdateClientServiceImageResizeVariantInput,
 	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
 } from './client-services.types';
 import {
+	ClientServiceImageResizeVariantNotFoundError,
 	ClientServiceKeyNotFoundError,
 	ClientServiceLifecycleSubscriptionNotFoundError,
 	ClientServiceNotFoundError,
 	ClientServicesRepository,
+	DuplicateClientServiceImageResizeVariantError,
 	DuplicateClientServiceLifecycleSubscriptionError,
 	DuplicateClientServiceSlugError,
 } from './client-services.repository';
@@ -27,7 +34,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 
 	async listServices(): Promise<ClientServiceRecord[]> {
 		const services = await this.prisma.clientService.findMany({
-			include: { keys: true, lifecycleSubscriptions: true },
+			include: serviceInclude,
 			orderBy: { slug: 'asc' },
 		});
 		return services.map((service) => toServiceRecord(service));
@@ -36,7 +43,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 	async findServiceById(id: string): Promise<ClientServiceRecord | null> {
 		const service = await this.prisma.clientService.findUnique({
 			where: { id },
-			include: { keys: true, lifecycleSubscriptions: true },
+			include: serviceInclude,
 		});
 		return service ? toServiceRecord(service, true) : null;
 	}
@@ -44,7 +51,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 	async findServiceBySlug(slug: string): Promise<ClientServiceRecord | null> {
 		const service = await this.prisma.clientService.findUnique({
 			where: { slug },
-			include: { keys: true, lifecycleSubscriptions: true },
+			include: serviceInclude,
 		});
 		return service ? toServiceRecord(service, true) : null;
 	}
@@ -55,7 +62,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 		try {
 			const service = await this.prisma.clientService.create({
 				data: input,
-				include: { keys: true, lifecycleSubscriptions: true },
+				include: serviceInclude,
 			});
 			return toServiceRecord(service, true);
 		} catch (error) {
@@ -74,7 +81,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 			const service = await this.prisma.clientService.update({
 				where: { id },
 				data: input,
-				include: { keys: true, lifecycleSubscriptions: true },
+				include: serviceInclude,
 			});
 			return toServiceRecord(service, true);
 		} catch (error) {
@@ -211,10 +218,152 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 		}
 	}
 
+	async getOrCreateImageResizePolicy(
+		clientServiceId: string,
+	): Promise<ClientServiceImageResizePolicyRecord> {
+		await this.assertClientServiceExists(clientServiceId);
+		return toImageResizePolicyRecord(
+			await this.prisma.clientServiceImageResizePolicy.upsert({
+				where: { clientServiceId },
+				create: { clientServiceId, mode: 'ON_DEMAND' },
+				update: {},
+				include: imageResizePolicyInclude,
+			}),
+		);
+	}
+
+	async updateImageResizePolicy(
+		clientServiceId: string,
+		input: UpdateClientServiceImageResizePolicyInput,
+	): Promise<ClientServiceImageResizePolicyRecord> {
+		await this.assertClientServiceExists(clientServiceId);
+		return toImageResizePolicyRecord(
+			await this.prisma.clientServiceImageResizePolicy.upsert({
+				where: { clientServiceId },
+				create: { clientServiceId, mode: input.mode },
+				update: { mode: input.mode },
+				include: imageResizePolicyInclude,
+			}),
+		);
+	}
+
+	async createImageResizeVariant(
+		input: CreateClientServiceImageResizeVariantInput & {
+			clientServiceId: string;
+			isEnabled: boolean;
+		},
+	): Promise<ClientServiceImageResizeVariantRecord> {
+		const policy = await this.getOrCreateImageResizePolicy(
+			input.clientServiceId,
+		);
+		try {
+			return toImageResizeVariantRecord(
+				await this.prisma.clientServiceImageResizeVariant.create({
+					data: {
+						policyId: policy.id,
+						width: input.width,
+						height: input.height,
+						format: input.format,
+						isEnabled: input.isEnabled,
+						description: input.description,
+					},
+				}),
+			);
+		} catch (error) {
+			if (isUniqueConstraintError(error)) {
+				throw new DuplicateClientServiceImageResizeVariantError(
+					`${policy.id}:${input.width ?? 'auto'}:${input.height ?? 'auto'}:${input.format}`,
+				);
+			}
+			throw error;
+		}
+	}
+
+	async updateImageResizeVariant(
+		input: UpdateClientServiceImageResizeVariantInput & {
+			clientServiceId: string;
+			variantId: string;
+		},
+	): Promise<ClientServiceImageResizeVariantRecord> {
+		const variant = await this.findImageResizeVariant(
+			input.clientServiceId,
+			input.variantId,
+		);
+
+		try {
+			return toImageResizeVariantRecord(
+				await this.prisma.clientServiceImageResizeVariant.update({
+					where: { id: variant.id },
+					data: {
+						width: input.width,
+						height: input.height,
+						format: input.format,
+						isEnabled: input.isEnabled,
+						description: input.description === null ? null : input.description,
+					},
+				}),
+			);
+		} catch (error) {
+			if (isUniqueConstraintError(error)) {
+				throw new DuplicateClientServiceImageResizeVariantError(
+					`${variant.policyId}:${input.width ?? variant.width ?? 'auto'}:${input.height ?? variant.height ?? 'auto'}:${input.format ?? variant.format}`,
+				);
+			}
+			throw error;
+		}
+	}
+
+	async deleteImageResizeVariant(input: {
+		clientServiceId: string;
+		variantId: string;
+	}): Promise<ClientServiceImageResizeVariantRecord> {
+		const variant = await this.findImageResizeVariant(
+			input.clientServiceId,
+			input.variantId,
+		);
+		return toImageResizeVariantRecord(
+			await this.prisma.clientServiceImageResizeVariant.delete({
+				where: { id: variant.id },
+			}),
+		);
+	}
+
+	private async assertClientServiceExists(
+		clientServiceId: string,
+	): Promise<void> {
+		const service = await this.prisma.clientService.findUnique({
+			where: { id: clientServiceId },
+			select: { id: true },
+		});
+		if (!service) {
+			throw new ClientServiceNotFoundError(clientServiceId);
+		}
+	}
+
+	private async findImageResizeVariant(
+		clientServiceId: string,
+		variantId: string,
+	): Promise<ImageResizeVariantRow> {
+		const variant = await this.prisma.clientServiceImageResizeVariant.findFirst(
+			{
+				where: {
+					id: variantId,
+					policy: { clientServiceId },
+				},
+			},
+		);
+		if (!variant) {
+			throw new ClientServiceImageResizeVariantNotFoundError(variantId);
+		}
+		return variant;
+	}
+
 	async clear(): Promise<void> {
 		await this.prisma.$transaction([
 			this.prisma.clientServiceKey.deleteMany(),
 			this.prisma.clientServiceLifecycleSubscription.deleteMany(),
+			this.prisma.clientServiceImageResizeVariant.deleteMany(),
+			this.prisma.clientServiceImageResizePolicy.deleteMany(),
 			this.prisma.clientServicePolicy.deleteMany(),
 			this.prisma.clientService.deleteMany(),
 		]);
@@ -225,12 +374,28 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 	}
 }
 
+const imageResizePolicyInclude = {
+	variants: true,
+} satisfies Prisma.ClientServiceImageResizePolicyInclude;
+
+const serviceInclude = {
+	keys: true,
+	lifecycleSubscriptions: true,
+	imageResizePolicy: { include: imageResizePolicyInclude },
+} satisfies Prisma.ClientServiceInclude;
+
 type ServiceWithKeys = Prisma.ClientServiceGetPayload<{
-	include: { keys: true; lifecycleSubscriptions: true };
+	include: typeof serviceInclude;
 }>;
 type KeyRow = Prisma.ClientServiceKeyGetPayload<Record<string, never>>;
 type LifecycleSubscriptionRow =
 	Prisma.ClientServiceLifecycleSubscriptionGetPayload<Record<string, never>>;
+type ImageResizePolicyRow = Prisma.ClientServiceImageResizePolicyGetPayload<{
+	include: typeof imageResizePolicyInclude;
+}>;
+type ImageResizeVariantRow = Prisma.ClientServiceImageResizeVariantGetPayload<
+	Record<string, never>
+>;
 
 function toServiceRecord(
 	service: ServiceWithKeys,
@@ -261,6 +426,13 @@ function toServiceRecord(
 								: left.eventType.localeCompare(right.eventType),
 						)
 						.map(toLifecycleSubscriptionRecord),
+				}
+			: {}),
+		...(includeKeys && service.imageResizePolicy
+			? {
+					imageResizePolicy: toImageResizePolicyRecord(
+						service.imageResizePolicy,
+					),
 				}
 			: {}),
 	};
@@ -294,6 +466,48 @@ function toLifecycleSubscriptionRecord(
 		createdAt: subscription.createdAt.toISOString(),
 		updatedAt: subscription.updatedAt.toISOString(),
 	};
+}
+
+function toImageResizePolicyRecord(
+	policy: ImageResizePolicyRow,
+): ClientServiceImageResizePolicyRecord {
+	return {
+		id: policy.id,
+		clientServiceId: policy.clientServiceId,
+		mode: policy.mode as ClientServiceImageResizePolicyRecord['mode'],
+		variants: [...policy.variants]
+			.sort(compareResizeVariants)
+			.map(toImageResizeVariantRecord),
+		createdAt: policy.createdAt.toISOString(),
+		updatedAt: policy.updatedAt.toISOString(),
+	};
+}
+
+function toImageResizeVariantRecord(
+	variant: ImageResizeVariantRow,
+): ClientServiceImageResizeVariantRecord {
+	return {
+		id: variant.id,
+		policyId: variant.policyId,
+		width: variant.width ?? undefined,
+		height: variant.height ?? undefined,
+		format: variant.format as ClientServiceImageResizeVariantRecord['format'],
+		isEnabled: variant.isEnabled,
+		description: variant.description ?? undefined,
+		createdAt: variant.createdAt.toISOString(),
+		updatedAt: variant.updatedAt.toISOString(),
+	};
+}
+
+function compareResizeVariants(
+	left: ImageResizeVariantRow,
+	right: ImageResizeVariantRow,
+): number {
+	return (
+		(left.width ?? 0) - (right.width ?? 0) ||
+		(left.height ?? 0) - (right.height ?? 0) ||
+		left.format.localeCompare(right.format)
+	);
 }
 
 function toJsonObject(value: Prisma.JsonValue | null): JsonObject | undefined {

@@ -7,21 +7,28 @@ import {
 } from '@nestjs/common';
 import { generateClientApiKey } from '@file/database';
 import {
+	ClientServiceImageResizeFormat,
+	ClientServiceImageResizeMode,
 	ClientServiceLifecycleEventType,
 	ClientServiceStatus,
+	CreateClientServiceImageResizeVariantInput,
 	CreateClientServiceLifecycleSubscriptionInput,
 	CreateClientServiceInput,
 	CreateClientServiceKeyInput,
 	CreateClientServiceKeyResult,
 	JsonObject,
+	UpdateClientServiceImageResizePolicyInput,
+	UpdateClientServiceImageResizeVariantInput,
 	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
 } from './client-services.types';
 import {
+	ClientServiceImageResizeVariantNotFoundError,
 	ClientServiceKeyNotFoundError,
 	ClientServiceLifecycleSubscriptionNotFoundError,
 	ClientServiceNotFoundError,
 	ClientServicesRepository,
+	DuplicateClientServiceImageResizeVariantError,
 	DuplicateClientServiceLifecycleSubscriptionError,
 	DuplicateClientServiceSlugError,
 } from './client-services.repository';
@@ -29,6 +36,7 @@ import { CLIENT_SERVICES_REPOSITORY } from './client-services-repository.provide
 
 const SERVICE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const CONSUMER_GROUP_PATTERN = /^[A-Za-z0-9._-]{2,128}$/;
+const MAX_RESIZE_DIMENSION = 10_000;
 
 @Injectable()
 export class ClientServicesService {
@@ -129,6 +137,69 @@ export class ClientServicesService {
 			throw mapRepositoryError(error);
 		}
 	}
+
+	async getImageResizePolicy(clientServiceId: string) {
+		try {
+			return await this.repository.getOrCreateImageResizePolicy(
+				clientServiceId,
+			);
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
+
+	async updateImageResizePolicy(clientServiceId: string, payload: unknown) {
+		const input = parseUpdateImageResizePolicyInput(payload);
+		try {
+			return await this.repository.updateImageResizePolicy(
+				clientServiceId,
+				input,
+			);
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
+
+	async createImageResizeVariant(clientServiceId: string, payload: unknown) {
+		const input = parseCreateImageResizeVariantInput(payload);
+		try {
+			return await this.repository.createImageResizeVariant({
+				clientServiceId,
+				...input,
+				isEnabled: input.isEnabled ?? true,
+			});
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
+
+	async updateImageResizeVariant(
+		clientServiceId: string,
+		variantId: string,
+		payload: unknown,
+	) {
+		const input = parseUpdateImageResizeVariantInput(payload);
+		try {
+			return await this.repository.updateImageResizeVariant({
+				clientServiceId,
+				variantId,
+				...input,
+			});
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
+
+	async deleteImageResizeVariant(clientServiceId: string, variantId: string) {
+		try {
+			return await this.repository.deleteImageResizeVariant({
+				clientServiceId,
+				variantId,
+			});
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
 }
 
 function parseCreateServiceInput(
@@ -209,6 +280,47 @@ function parseUpdateLifecycleSubscriptionInput(
 	const input: UpdateClientServiceLifecycleSubscriptionInput = {
 		eventType,
 		consumerGroup,
+		isEnabled: readOptionalBoolean(record, 'isEnabled'),
+		description: readNullableString(record, 'description'),
+	};
+
+	if (Object.values(input).every((value) => value === undefined)) {
+		throw new BadRequestException('수정할 필드가 필요합니다');
+	}
+
+	return input;
+}
+
+function parseUpdateImageResizePolicyInput(
+	payload: unknown,
+): UpdateClientServiceImageResizePolicyInput {
+	const record = requireRecord(payload);
+	return { mode: readRequiredImageResizeMode(record, 'mode') };
+}
+
+function parseCreateImageResizeVariantInput(
+	payload: unknown,
+): CreateClientServiceImageResizeVariantInput {
+	const record = requireRecord(payload);
+	const input: CreateClientServiceImageResizeVariantInput = {
+		width: readOptionalResizeDimension(record, 'width'),
+		height: readOptionalResizeDimension(record, 'height'),
+		format: readRequiredImageResizeFormat(record, 'format'),
+		isEnabled: readOptionalBoolean(record, 'isEnabled'),
+		description: readOptionalString(record, 'description'),
+	};
+	assertHasResizeDimension(input);
+	return input;
+}
+
+function parseUpdateImageResizeVariantInput(
+	payload: unknown,
+): UpdateClientServiceImageResizeVariantInput {
+	const record = requireRecord(payload);
+	const input: UpdateClientServiceImageResizeVariantInput = {
+		width: readOptionalResizeDimension(record, 'width'),
+		height: readOptionalResizeDimension(record, 'height'),
+		format: readOptionalImageResizeFormat(record, 'format'),
 		isEnabled: readOptionalBoolean(record, 'isEnabled'),
 		description: readNullableString(record, 'description'),
 	};
@@ -310,6 +422,80 @@ function readOptionalLifecycleEventType(
 	return value as ClientServiceLifecycleEventType;
 }
 
+function readRequiredImageResizeMode(
+	record: Record<string, unknown>,
+	key: string,
+): ClientServiceImageResizeMode {
+	const value = record[key];
+	if (
+		!Object.values(ClientServiceImageResizeMode).includes(
+			value as ClientServiceImageResizeMode,
+		)
+	) {
+		throw new BadRequestException(`${key} must be ON_DEMAND or PRE_GENERATE`);
+	}
+	return value as ClientServiceImageResizeMode;
+}
+
+function readRequiredImageResizeFormat(
+	record: Record<string, unknown>,
+	key: string,
+): ClientServiceImageResizeFormat {
+	const value = readOptionalImageResizeFormat(record, key);
+	if (!value) {
+		throw new BadRequestException(`${key} is required`);
+	}
+	return value;
+}
+
+function readOptionalImageResizeFormat(
+	record: Record<string, unknown>,
+	key: string,
+): ClientServiceImageResizeFormat | undefined {
+	const value = record[key];
+	if (value === undefined) {
+		return undefined;
+	}
+	if (
+		!Object.values(ClientServiceImageResizeFormat).includes(
+			value as ClientServiceImageResizeFormat,
+		)
+	) {
+		throw new BadRequestException(`${key} must be png, jpeg or webp`);
+	}
+	return value as ClientServiceImageResizeFormat;
+}
+
+function readOptionalResizeDimension(
+	record: Record<string, unknown>,
+	key: string,
+): number | undefined {
+	const value = record[key];
+	if (value === undefined) {
+		return undefined;
+	}
+	if (
+		typeof value !== 'number' ||
+		!Number.isInteger(value) ||
+		value <= 0 ||
+		value > MAX_RESIZE_DIMENSION
+	) {
+		throw new BadRequestException(
+			`${key} must be an integer between 1 and ${MAX_RESIZE_DIMENSION}`,
+		);
+	}
+	return value;
+}
+
+function assertHasResizeDimension(input: {
+	width?: number;
+	height?: number;
+}): void {
+	if (input.width === undefined && input.height === undefined) {
+		throw new BadRequestException('width 또는 height 중 하나는 필요합니다');
+	}
+}
+
 function readOptionalBoolean(
 	record: Record<string, unknown>,
 	key: string,
@@ -377,6 +563,11 @@ function mapRepositoryError(error: unknown): Error {
 			'client service lifecycle subscription already exists',
 		);
 	}
+	if (error instanceof DuplicateClientServiceImageResizeVariantError) {
+		return new ConflictException(
+			'client service image resize variant already exists',
+		);
+	}
 	if (error instanceof ClientServiceNotFoundError) {
 		return new NotFoundException('client service not found');
 	}
@@ -386,6 +577,11 @@ function mapRepositoryError(error: unknown): Error {
 	if (error instanceof ClientServiceLifecycleSubscriptionNotFoundError) {
 		return new NotFoundException(
 			'client service lifecycle subscription not found',
+		);
+	}
+	if (error instanceof ClientServiceImageResizeVariantNotFoundError) {
+		return new NotFoundException(
+			'client service image resize variant not found',
 		);
 	}
 	return error instanceof Error ? error : new Error('unknown repository error');

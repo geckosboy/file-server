@@ -397,6 +397,8 @@ export type ImageVariantsResponse = {
 export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
 export type ClientServiceLifecycleEventType =
 	'image.upload.completed' | 'image.upload.failed';
+export type ClientServiceImageResizeMode = 'ON_DEMAND' | 'PRE_GENERATE';
+export type ClientServiceImageResizeFormat = 'png' | 'jpeg' | 'webp';
 
 export type ClientServiceKeyItem = {
 	id: string;
@@ -421,6 +423,27 @@ export type ClientServiceLifecycleSubscriptionItem = {
 	updatedAt: string;
 };
 
+export type ClientServiceImageResizeVariantItem = {
+	id: string;
+	policyId: string;
+	width?: number;
+	height?: number;
+	format: ClientServiceImageResizeFormat;
+	isEnabled: boolean;
+	description?: string;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ClientServiceImageResizePolicyItem = {
+	id: string;
+	clientServiceId: string;
+	mode: ClientServiceImageResizeMode;
+	variants: ClientServiceImageResizeVariantItem[];
+	createdAt: string;
+	updatedAt: string;
+};
+
 export type ClientServiceItem = {
 	id: string;
 	slug: string;
@@ -436,6 +459,7 @@ export type ClientServiceItem = {
 	activeSubscriptionCount: number;
 	keys?: ClientServiceKeyItem[];
 	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionItem[];
+	imageResizePolicy?: ClientServiceImageResizePolicyItem;
 };
 
 export type CreateClientServiceKeyResponse = {
