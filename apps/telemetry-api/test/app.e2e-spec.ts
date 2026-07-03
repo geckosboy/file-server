@@ -48,6 +48,12 @@ describe('텔레메트리 API e2e', () => {
 					ok: true,
 					service: 'telemetry-api',
 					storage: { kind: 'memory', connected: true },
+					kafka: {
+						enabled: false,
+						connected: false,
+						consumerLag: null,
+						topic: 'file.image.events.v1',
+					},
 				});
 			});
 	});

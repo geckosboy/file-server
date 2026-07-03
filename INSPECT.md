@@ -3,7 +3,7 @@
 ## 전체 플로우
 
 업로드/삭제:
-내 백엔드 → storage → 로컬 파일 저장/삭제 → Kafka 이벤트 발행
+내 백엔드 → storage → 로컬 파일 저장/삭제 → Kafka 이벤트 발행 → telemetry-api consumer → PostgreSQL 저장
 
 원본 조회:
 내 백엔드 → storage → 로컬 파일 반환
@@ -17,6 +17,8 @@
 └─ cache miss → resize → storage → 결과 캐싱 → 반환
 
 3단계부터 `storage`, `resize`, `cache`의 `/image` 라우트는 모두 `x-client-api-key`가 필요합니다. API key는 PostgreSQL 서비스 레지스트리에 저장된 key만 통과하고, 세 앱과 `telemetry-api`는 같은 `CLIENT_API_KEY_PEPPER`를 써야 합니다. 요청 ID는 `x-request-id`를 주면 그대로 쓰고, 없으면 guard가 자동 생성해서 telemetry event에 넣습니다.
+
+4단계부터 `telemetry-api`가 Kafka `file.image.events.v1` topic을 직접 consume해서 `TelemetryEvent` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
 
 ## 0. PostgreSQL / API key 준비
 
@@ -36,10 +38,16 @@ PORT=3100
 DATABASE_URL=postgresql://file_server:file_server@127.0.0.1:5432/file_server
 TELEMETRY_ADMIN_TOKEN=dev-admin-token
 CLIENT_API_KEY_PEPPER=dev-local-pepper
+KAFKA_CLIENT_BROKERS=localhost:9094
+TELEMETRY_KAFKA_GROUP_ID=file-telemetry-api
 EOF_ENV
 ```
 
-터미널 하나에서 telemetry-api를 먼저 켭니다.
+Kafka를 먼저 켠 뒤 터미널 하나에서 telemetry-api를 켭니다. Kafka 없이 먼저 켜면 consumer 연결이 실패하므로 Kafka를 켠 뒤 telemetry-api를 재시작하세요.
+
+```bash
+docker compose -f docker/docker-compose.dev.yml --profile ui up -d
+```
 
 ```bash
 set -a
@@ -214,13 +222,13 @@ curl -i http://127.0.0.1:3032/image/demo/sample.png \
   -H "x-request-id: inspect-after-delete-$STAMP"
 ```
 
-핵심 점검 포인트는 storage 직접 조회, resize가 storage를 타는지, cache 두 번째 요청에서 hit가 나는지, Kafka UI의 standard telemetry event에 `clientServiceId`, `clientServiceSlug`, `requestId`가 들어가는지입니다.
+핵심 점검 포인트는 storage 직접 조회, resize가 storage를 타는지, cache 두 번째 요청에서 hit가 나는지, Kafka UI의 standard telemetry event에 `clientServiceId`, `clientServiceSlug`, `requestId`가 들어가는지, 그리고 telemetry-api/admin-web에서 같은 이벤트가 DB 조회되는지입니다.
 
 ---
 
 ## 10. telemetry-api / admin-web 점검
 
-주의: 현재 `telemetry-api`는 Kafka topic을 직접 consume하지 않습니다. storage/resize/cache가 Kafka에 발행한 이벤트가 자동으로 들어오는 구조가 아니라, `POST /api/ingestion/events`로 직접 넣은 이벤트를 PostgreSQL에 저장하고 admin API로 조회하는 구조입니다. 테스트 모드(`NODE_ENV=test`)나 `TELEMETRY_STORAGE_DRIVER=memory`를 명시한 경우에만 메모리 저장소를 씁니다.
+4단계부터 `telemetry-api`는 Kafka `file.image.events.v1` topic을 직접 consume합니다. storage/resize/cache가 Kafka에 발행한 표준 이벤트는 기존 `IngestionService`를 거쳐 PostgreSQL `TelemetryEvent` 테이블에 자동 저장됩니다. `POST /api/ingestion/events`는 Kafka 없이 수동으로 이벤트를 넣어보는 보조 점검용으로 계속 사용할 수 있습니다. 테스트 모드(`NODE_ENV=test`)나 `TELEMETRY_STORAGE_DRIVER=memory`를 명시한 경우에만 메모리 저장소를 씁니다.
 
 ### 10-0. PostgreSQL 실행 및 Prisma migration
 
@@ -263,6 +271,8 @@ PORT=3100
 DATABASE_URL=postgresql://file_server:file_server@127.0.0.1:5432/file_server
 TELEMETRY_ADMIN_TOKEN=dev-admin-token
 CLIENT_API_KEY_PEPPER=dev-local-pepper
+KAFKA_CLIENT_BROKERS=localhost:9094
+TELEMETRY_KAFKA_GROUP_ID=file-telemetry-api
 EOF_ENV
 ```
 
@@ -275,9 +285,10 @@ set +a
 pnpm file:telemetry-api start:dev
 ```
 
-기동 로그에 아래처럼 나오면 정상입니다.
+Kafka가 먼저 떠 있으면 consumer 연결 로그와 HTTP 기동 로그가 함께 나오면 정상입니다.
 
 ```txt
+Kafka telemetry consumer connected: file.image.events.v1 group=file-telemetry-api
 Nest on: 127.0.0.1:3100
 ```
 
@@ -327,6 +338,13 @@ curl -s http://127.0.0.1:3100/api/admin/health \
 	"storage": {
 		"kind": "postgresql",
 		"connected": true
+	},
+	"kafka": {
+		"enabled": true,
+		"connected": true,
+		"consumerLag": null,
+		"topic": "file.image.events.v1",
+		"groupId": "file-telemetry-api"
 	}
 }
 ```
@@ -337,9 +355,21 @@ curl -s http://127.0.0.1:3100/api/admin/health \
 curl -i http://127.0.0.1:3100/api/admin/health
 ```
 
-### 10-4. 테스트 이벤트 넣기
+### 10-4. Kafka 자동 수집 확인
 
-대시보드에 실제 데이터가 보이도록 이벤트를 몇 개 넣습니다.
+5~8단계에서 업로드/조회/리사이즈/캐시 요청을 수행했다면 이벤트는 Kafka를 거쳐 자동으로 DB에 들어옵니다. 아래 조회에서 `inspect-*` requestId나 방금 등록한 `clientServiceSlug`가 보이면 정상입니다.
+
+```bash
+curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limit=20" \
+  -H 'x-admin-token: dev-admin-token' \
+  | python3 -m json.tool
+```
+
+이벤트가 없다면 Kafka UI에서 `file.image.events.v1` topic에 메시지가 있는지, telemetry-api 헬스체크의 `kafka.connected`가 `true`인지 확인하세요. Kafka를 telemetry-api보다 나중에 켰다면 telemetry-api를 재시작하세요.
+
+### 10-5. 수동 테스트 이벤트 넣기
+
+Kafka 없이 대시보드에 실제 데이터가 보이도록 이벤트를 직접 넣을 수도 있습니다.
 
 먼저 이 이벤트를 어느 서비스가 사용한 것인지 구분할 수 있게 client service를 등록합니다. 위 0단계에서 이미 등록했다면 기존 `SERVICE_ID`, `SERVICE_SLUG`, `CLIENT_API_KEY`를 재사용해도 됩니다.
 
@@ -451,7 +481,7 @@ EOF_EVENT
 
 같은 `eventId`를 다시 넣으면 `inserted: false`가 나올 수 있는데, 중복 방지 동작이라 정상입니다.
 
-### 10-5. admin API 직접 조회
+### 10-6. admin API 직접 조회
 
 요약:
 
@@ -517,7 +547,7 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   | python3 -m json.tool
 ```
 
-### 10-6. admin-web 화면 점검 포인트
+### 10-7. admin-web 화면 점검 포인트
 
 - `/dashboard`
   - 총 이벤트 수가 0이 아니어야 합니다.
@@ -526,7 +556,7 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - 캐시 hit/miss, resize/upload 차트가 표시되어야 합니다.
   - fixture fallback 경고 문구가 없어야 합니다.
 - `/events`
-  - `manual-upload-*`, `manual-cache-miss-*`, `manual-resize-*` 이벤트가 보여야 합니다.
+  - 자동 수집을 봤다면 `inspect-*`, 수동 이벤트를 넣었다면 `manual-*` 이벤트가 보여야 합니다.
   - source app이 각각 `storage`, `cache`, `resize`로 보여야 합니다.
   - service 컬럼에 등록한 `clientServiceSlug`가 보여야 합니다.
   - `client service` 필터로 서비스별 이벤트를 좁힐 수 있어야 합니다.
@@ -540,7 +570,7 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - 발급된 key 목록에는 prefix만 보이고 hash나 원문은 노출되지 않아야 합니다.
   - key 폐기 버튼으로 key 상태를 폐기 처리할 수 있어야 합니다.
 
-### 10-7. 자동 테스트 명령
+### 10-8. 자동 테스트 명령
 
 ```bash
 pnpm file:telemetry-api test
@@ -556,12 +586,13 @@ pnpm file:admin-web typecheck
 pnpm all:build
 pnpm all:lint
 pnpm all:test
+pnpm all:test:e2e
 ```
 
-### 10-8. 자주 헷갈리는 점
+### 10-9. 자주 헷갈리는 점
 
 - `telemetry-api`는 기본적으로 PostgreSQL 저장소를 사용합니다. DB 없이 잠깐만 확인하려면 `TELEMETRY_STORAGE_DRIVER=memory`를 명시하세요.
-- `storage/resize/cache → Kafka` 이벤트에는 client service와 requestId가 들어가지만, 현재 `telemetry-api`로 자동 유입되지는 않습니다.
+- `storage/resize/cache → Kafka` 이벤트가 DB에 안 보이면 `telemetry-api`를 Kafka보다 먼저 켠 상태일 수 있습니다. Kafka를 켠 뒤 telemetry-api를 재시작하세요.
 - admin-web이 API를 못 불러오면 에러로 죽지 않고 fixture를 보여줍니다. 실제 연동 확인 시 fallback 경고 문구가 없는지 꼭 보세요.
 - admin API는 `x-admin-token` 헤더가 필요합니다.
 - admin-web은 기본 API 주소가 `http://localhost:3001/api/admin`이라, 로컬 telemetry-api 포트 `3100`을 쓰려면 `apps/admin-web/.env.local`의 `TELEMETRY_API_BASE_URL` 설정이 필요합니다.

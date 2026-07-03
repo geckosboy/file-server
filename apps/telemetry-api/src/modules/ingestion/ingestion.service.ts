@@ -74,6 +74,15 @@ export class IngestionService {
 		}
 	}
 
+	async rejectInvalidPayload(reason: string): Promise<IngestionResult> {
+		await this.repository.recordValidationFailure();
+		return {
+			accepted: false,
+			inserted: false,
+			reason,
+		};
+	}
+
 	async ingestLegacyUploadResult(
 		payload: unknown,
 		receivedAt: Date = new Date(),

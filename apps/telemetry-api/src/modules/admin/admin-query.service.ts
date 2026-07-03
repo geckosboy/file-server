@@ -3,6 +3,7 @@ import {
 	Inject,
 	Injectable,
 	NotFoundException,
+	Optional,
 } from '@nestjs/common';
 import {
 	average,
@@ -10,6 +11,7 @@ import {
 	projectAssetSummaries,
 	TelemetryRepository,
 } from '../telemetry/telemetry.repository';
+import { TelemetryKafkaConsumerStatusService } from '../kafka-ingestion/kafka-ingestion.status';
 import { TELEMETRY_REPOSITORY } from '../telemetry/telemetry-repository.provider';
 import {
 	EventFilter,
@@ -90,6 +92,8 @@ export class AdminQueryService {
 	constructor(
 		@Inject(TELEMETRY_REPOSITORY)
 		private readonly repository: TelemetryRepository,
+		@Optional()
+		private readonly kafkaStatusService?: TelemetryKafkaConsumerStatusService,
 	) {}
 
 	async getHealth() {
@@ -101,9 +105,17 @@ export class AdminQueryService {
 				kind: this.repository.getStorageKind(),
 				connected: await this.repository.isConnected(),
 			},
-			kafka: {
+			kafka: this.kafkaStatusService?.getHealth() ?? {
+				enabled: false,
 				connected: false,
 				consumerLag: null,
+				brokers: [],
+				clientId: 'telemetry-api',
+				groupId: 'file-telemetry-api',
+				topic: 'file.image.events.v1',
+				lastConsumedAt: null,
+				lastError: null,
+				disabledReason: 'Kafka consumer status provider가 없습니다.',
 			},
 			metrics: await this.repository.getMetrics(),
 		};
