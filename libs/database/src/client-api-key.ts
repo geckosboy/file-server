@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 
 const KEY_PREFIX_BYTES = 6;
+const KEY_PREFIX_CHARS = 8;
 const KEY_SECRET_BYTES = 32;
 const KEY_VERSION_PREFIX = 'fs';
 
@@ -23,13 +24,23 @@ export const generateClientApiKey = (): GeneratedClientApiKey => {
 
 export const hashClientApiKey = (apiKey: string): string =>
 	createHash('sha256')
-		.update(process.env.CLIENT_API_KEY_PEPPER ?? '')
+		.update(readClientApiKeyPepper())
 		.update(apiKey)
 		.digest('hex');
 
 export const extractClientApiKeyPrefix = (apiKey: string): string | null => {
-	const [, keyPrefix] = apiKey.split('_');
-	return keyPrefix || null;
+	const prefixStart = `${KEY_VERSION_PREFIX}_`;
+	if (!apiKey.startsWith(prefixStart)) {
+		return null;
+	}
+	const keyPrefix = apiKey.slice(
+		prefixStart.length,
+		prefixStart.length + KEY_PREFIX_CHARS,
+	);
+	const delimiter = apiKey[prefixStart.length + KEY_PREFIX_CHARS];
+	return keyPrefix.length === KEY_PREFIX_CHARS && delimiter === '_'
+		? keyPrefix
+		: null;
 };
 
 export const isSameClientApiKeyHash = (
@@ -40,3 +51,14 @@ export const isSameClientApiKeyHash = (
 	const right = Buffer.from(rightHash, 'hex');
 	return left.length === right.length && timingSafeEqual(left, right);
 };
+
+function readClientApiKeyPepper(): string {
+	const pepper = process.env.CLIENT_API_KEY_PEPPER;
+	if (pepper) {
+		return pepper;
+	}
+	if (process.env.NODE_ENV === 'test') {
+		return 'test-client-api-key-pepper';
+	}
+	throw new Error('CLIENT_API_KEY_PEPPER 환경변수가 필요합니다.');
+}

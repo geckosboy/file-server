@@ -8,11 +8,27 @@ import {
 	buildEventsUrl,
 	buildImagesUrl,
 	fetchTelemetryJson,
+	getTelemetryAdminToken,
 	toMetricDisplay,
 } from './telemetry-api';
 
 describe('텔레메트리 API 클라이언트', () => {
+	const originalTelemetryAdminToken = process.env.TELEMETRY_ADMIN_TOKEN;
+	const originalPublicTelemetryAdminToken =
+		process.env.NEXT_PUBLIC_TELEMETRY_ADMIN_TOKEN;
+
 	afterEach(() => {
+		if (originalTelemetryAdminToken === undefined) {
+			delete process.env.TELEMETRY_ADMIN_TOKEN;
+		} else {
+			process.env.TELEMETRY_ADMIN_TOKEN = originalTelemetryAdminToken;
+		}
+		if (originalPublicTelemetryAdminToken === undefined) {
+			delete process.env.NEXT_PUBLIC_TELEMETRY_ADMIN_TOKEN;
+		} else {
+			process.env.NEXT_PUBLIC_TELEMETRY_ADMIN_TOKEN =
+				originalPublicTelemetryAdminToken;
+		}
 		jest.restoreAllMocks();
 	});
 
@@ -117,5 +133,13 @@ describe('텔레메트리 API 클라이언트', () => {
 		expect(toMetricDisplay(12.345, { suffix: 'ms', fractionDigits: 1 })).toBe(
 			'12.3ms',
 		);
+	});
+
+	it('관리자 토큰은 서버 전용 env에서만 읽는다', () => {
+		process.env.NEXT_PUBLIC_TELEMETRY_ADMIN_TOKEN = 'public-token';
+		expect(getTelemetryAdminToken()).toBeUndefined();
+
+		process.env.TELEMETRY_ADMIN_TOKEN = 'server-token';
+		expect(getTelemetryAdminToken()).toBe('server-token');
 	});
 });

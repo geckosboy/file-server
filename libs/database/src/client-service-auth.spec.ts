@@ -9,7 +9,10 @@ import {
 	createClientServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 } from './client-service-auth';
-import { generateClientApiKey } from './client-api-key';
+import {
+	extractClientApiKeyPrefix,
+	generateClientApiKey,
+} from './client-api-key';
 import { PrismaService } from './prisma.service';
 
 type PrismaMock = {
@@ -156,6 +159,12 @@ describe('클라이언트 서비스 API 키 인증 서비스', () => {
 		prisma.clientServiceKey.findUnique.mockResolvedValue(record);
 		await expect(service.authenticate(generated.apiKey)).resolves.toBeNull();
 		expect(prisma.clientServiceKey.update).not.toHaveBeenCalled();
+	});
+
+	it('API key prefix 안에 구분자 문자가 있어도 고정 길이 prefix를 추출한다', () => {
+		expect(extractClientApiKeyPrefix('fs_ab_cd123_secret_value')).toBe(
+			'ab_cd123',
+		);
 	});
 });
 

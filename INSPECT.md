@@ -18,45 +18,52 @@
 
 3단계부터 `storage`, `resize`, `cache`의 `/image` 라우트는 모두 `x-client-api-key`가 필요합니다. API key는 PostgreSQL 서비스 레지스트리에 저장된 key만 통과하고, 세 앱과 `telemetry-api`는 같은 `CLIENT_API_KEY_PEPPER`를 써야 합니다. 요청 ID는 `x-request-id`를 주면 그대로 쓰고, 없으면 guard가 자동 생성해서 telemetry event에 넣습니다.
 
-4단계부터 `telemetry-api`가 Kafka `file.image.events.v1` topic을 직접 consume해서 `TelemetryEvent` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
+4단계부터 `telemetry-api`가 Kafka `file.image.events.v1` topic을 직접 consume해서 Prisma `TelemetryEvent` 모델/DB `telemetry_events` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
 
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
-## 0. PostgreSQL / API key 준비
+## 0. 앱별 env / PostgreSQL 준비
+
+이 repo는 런타임 env를 중앙에서 한 파일로 관리하지 않습니다. 각 앱이 자기 파일을 읽습니다.
+
+```bash
+cp .env.example .env
+cp apps/storage/.env.local.example apps/storage/.env.local
+cp apps/resize/.env.local.example apps/resize/.env.local
+cp apps/cache/.env.local.example apps/cache/.env.local
+cp apps/telemetry-api/.env.local.example apps/telemetry-api/.env.local
+cp apps/admin-web/.env.local.example apps/admin-web/.env.local
+```
+
+이미 설치된 PostgreSQL을 쓸 때는 아래 파일들의 `DATABASE_URL`을 같은 값으로 맞춥니다. `P1000 Authentication failed`는 코드 문제가 아니라 URL의 사용자/비밀번호/DB 이름이 실제 DB와 다르다는 뜻입니다.
+
+```txt
+.env                                  # Prisma CLI 전용
+apps/storage/.env.local
+apps/resize/.env.local
+apps/cache/.env.local
+apps/telemetry-api/.env.local
+```
+
+`CLIENT_API_KEY_PEPPER`는 API key hash에 쓰는 서버 쪽 pepper입니다. API key를 발급하는 `telemetry-api`와 API key를 검증하는 `storage`, `resize`, `cache`가 모두 같은 값을 써야 합니다.
+
+repo의 Docker PostgreSQL을 쓴다면 기본값 그대로 실행하면 됩니다.
 
 ```bash
 docker compose -f docker/docker-compose.postgres.yml up -d
-
-DATABASE_URL="postgresql://file_server:file_server@127.0.0.1:5432/file_server" \
-  pnpm db:migrate:deploy
+pnpm db:migrate:deploy
 ```
 
-위 `DATABASE_URL`은 이 repo의 Docker PostgreSQL 기본값입니다. 이미 설치된 PostgreSQL을 쓸 때는 사용자/비밀번호/DB 이름을 본인 환경에 맞게 바꿔서 모든 앱에 같은 값으로 넣으세요. `P1000 Authentication failed`는 코드 문제가 아니라 URL의 인증 정보가 실제 DB와 다르다는 뜻입니다.
-
-`apps/telemetry-api/.env.local`을 만듭니다.
+이미 5432 포트를 쓰고 있으면 포트를 바꿔 띄우고, `.env`와 앱별 `.env.local`의 `DATABASE_URL` 포트도 같이 바꿉니다.
 
 ```bash
-cat > apps/telemetry-api/.env.local <<'EOF_ENV'
-HOST=127.0.0.1
-PORT=3100
-DATABASE_URL=postgresql://file_server:file_server@127.0.0.1:5432/file_server
-TELEMETRY_ADMIN_TOKEN=dev-admin-token
-CLIENT_API_KEY_PEPPER=dev-local-pepper
-KAFKA_CLIENT_BROKERS=localhost:9094
-TELEMETRY_KAFKA_GROUP_ID=file-telemetry-api
-EOF_ENV
+POSTGRES_HOST_PORT=55432 docker compose -f docker/docker-compose.postgres.yml up -d
 ```
 
-Kafka를 먼저 켠 뒤 터미널 하나에서 telemetry-api를 켭니다. Kafka 없이 먼저 켜면 consumer 연결이 실패하므로 Kafka를 켠 뒤 telemetry-api를 재시작하세요.
+Kafka를 먼저 켠 뒤 telemetry-api를 시작합니다. telemetry-api는 이제 `apps/telemetry-api/.env.local`을 자동 로드하므로 `source`가 필요 없습니다.
 
 ```bash
 docker compose -f docker/docker-compose.dev.yml --profile ui up -d
-```
-
-```bash
-set -a
-source apps/telemetry-api/.env.local
-set +a
 pnpm file:telemetry-api start:dev
 ```
 
@@ -99,47 +106,22 @@ Kafka UI는 필요하면:
 http://localhost:8080
 ```
 
-## 2. 앱 3개 각각 실행
+## 2. 앱 3개 실행
 
-터미널 3개를 열고 실행하세요. `DATABASE_URL`과 `CLIENT_API_KEY_PEPPER`는 0단계와 같아야 합니다.
+각 앱은 자기 `.env.local`을 자동으로 읽습니다. Turbo로 실행하면 libs build 캐시를 같이 사용합니다.
 
-### Storage
+한 번에 실행:
 
 ```bash
-NODE_ENV=development \
-PORT=3032 \
-ORIGIN_LIST_STR=http://localhost:3000,http://127.0.0.1:3000 \
-KAFKA_CLIENT_BROKERS=localhost:9094 \
-DATABASE_URL=postgresql://file_server:file_server@127.0.0.1:5432/file_server \
-CLIENT_API_KEY_PEPPER=dev-local-pepper \
-CACHE_SERVER=http://127.0.0.1:3030 \
-pnpm file:storage start:dev
+pnpm dev:apps
 ```
 
-### Resize
+따로 보고 싶으면 터미널 3개에서 실행:
 
 ```bash
-NODE_ENV=development \
-PORT=3031 \
-ORIGIN_LIST_STR=http://localhost:3000,http://127.0.0.1:3000 \
-KAFKA_CLIENT_BROKERS=localhost:9094 \
-DATABASE_URL=postgresql://file_server:file_server@127.0.0.1:5432/file_server \
-CLIENT_API_KEY_PEPPER=dev-local-pepper \
-STORAGE_SERVER=http://127.0.0.1:3032 \
-pnpm file:resize start:dev
-```
-
-### Cache
-
-```bash
-NODE_ENV=development \
-PORT=3030 \
-ORIGIN_LIST_STR=http://localhost:3000,http://127.0.0.1:3000 \
-KAFKA_CLIENT_BROKERS=localhost:9094 \
-DATABASE_URL=postgresql://file_server:file_server@127.0.0.1:5432/file_server \
-CLIENT_API_KEY_PEPPER=dev-local-pepper \
-RESIZING_SERVER=http://127.0.0.1:3031 \
-pnpm file:cache start:dev
+pnpm dev:storage
+pnpm dev:resize
+pnpm dev:cache
 ```
 
 ## 3. 헬스체크
@@ -232,60 +214,30 @@ curl -i http://127.0.0.1:3032/image/demo/sample.png \
 
 ## 10. telemetry-api / admin-web 점검
 
-4단계부터 `telemetry-api`는 Kafka `file.image.events.v1` topic을 직접 consume합니다. storage/resize/cache가 Kafka에 발행한 표준 이벤트는 기존 `IngestionService`를 거쳐 PostgreSQL `TelemetryEvent` 테이블에 자동 저장됩니다. `POST /api/ingestion/events`는 Kafka 없이 수동으로 이벤트를 넣어보는 보조 점검용으로 계속 사용할 수 있습니다. 테스트 모드(`NODE_ENV=test`)나 `TELEMETRY_STORAGE_DRIVER=memory`를 명시한 경우에만 메모리 저장소를 씁니다.
+4단계부터 `telemetry-api`는 Kafka `file.image.events.v1` topic을 직접 consume합니다. storage/resize/cache가 Kafka에 발행한 표준 이벤트는 기존 `IngestionService`를 거쳐 PostgreSQL의 Prisma `TelemetryEvent` 모델, 실제 `telemetry_events` 테이블에 자동 저장됩니다. `POST /api/ingestion/events`는 Kafka 없이 수동으로 이벤트를 넣어보는 보조 점검용으로 계속 사용할 수 있습니다. 테스트 모드(`NODE_ENV=test`)나 `TELEMETRY_STORAGE_DRIVER=memory`를 명시한 경우에만 메모리 저장소를 씁니다.
 
 ### 10-0. PostgreSQL 실행 및 Prisma migration
 
-위 0단계에서 이미 실행했다면 이 절은 건너뛰어도 됩니다.
-
-로컬 PostgreSQL을 Docker로 띄웁니다.
+위 0단계에서 만든 `.env`의 `DATABASE_URL` 기준으로 migration을 적용합니다. 앱별 `.env.local`에도 같은 DB URL을 넣어야 런타임 앱이 같은 DB를 봅니다.
 
 ```bash
 docker compose -f docker/docker-compose.postgres.yml up -d
-```
-
-이미 5432 포트를 쓰고 있다면 포트를 바꿔 실행합니다.
-
-```bash
-POSTGRES_HOST_PORT=55432 docker compose -f docker/docker-compose.postgres.yml up -d
-```
-
-migration 적용:
-
-```bash
-DATABASE_URL="postgresql://file_server:file_server@127.0.0.1:5432/file_server" \
 pnpm db:migrate:deploy
 ```
 
-55432 포트를 사용했다면 `DATABASE_URL`도 맞춥니다.
+이미 설치된 PostgreSQL을 쓰면 Docker는 건너뛰고 `.env` / 앱별 `.env.local`의 `DATABASE_URL`만 본인 DB 계정으로 맞춥니다.
+
+### 10-1. telemetry-api 환경 파일 확인
+
+처음 한 번만 예시 파일을 복사합니다.
 
 ```bash
-DATABASE_URL="postgresql://file_server:file_server@127.0.0.1:55432/file_server" \
-pnpm db:migrate:deploy
+cp apps/telemetry-api/.env.local.example apps/telemetry-api/.env.local
 ```
 
-### 10-1. telemetry-api 환경 파일 만들기
-
-`apps/telemetry-api/.env.local`을 만듭니다.
+`apps/telemetry-api/.env.local`에서 `DATABASE_URL`, `TELEMETRY_ADMIN_TOKEN`, `CLIENT_API_KEY_PEPPER`, `KAFKA_CLIENT_BROKERS`를 확인한 뒤 실행합니다. 별도 `source`는 필요 없습니다.
 
 ```bash
-cat > apps/telemetry-api/.env.local <<'EOF_ENV'
-HOST=127.0.0.1
-PORT=3100
-DATABASE_URL=postgresql://file_server:file_server@127.0.0.1:5432/file_server
-TELEMETRY_ADMIN_TOKEN=dev-admin-token
-CLIENT_API_KEY_PEPPER=dev-local-pepper
-KAFKA_CLIENT_BROKERS=localhost:9094
-TELEMETRY_KAFKA_GROUP_ID=file-telemetry-api
-EOF_ENV
-```
-
-현재 telemetry-api는 `.env.local`을 자동 로드하지 않으므로 실행할 때 `source`로 주입합니다.
-
-```bash
-set -a
-source apps/telemetry-api/.env.local
-set +a
 pnpm file:telemetry-api start:dev
 ```
 
@@ -296,18 +248,15 @@ Kafka telemetry consumer connected: file.image.events.v1 group=file-telemetry-ap
 Nest on: 127.0.0.1:3100
 ```
 
-### 10-2. admin-web 환경 파일 만들기
+### 10-2. admin-web 환경 파일 확인
 
-`apps/admin-web/.env.local`을 만듭니다.
+처음 한 번만 예시 파일을 복사합니다.
 
 ```bash
-cat > apps/admin-web/.env.local <<'EOF_ENV'
-TELEMETRY_API_BASE_URL=http://127.0.0.1:3100/api/admin
-TELEMETRY_ADMIN_TOKEN=dev-admin-token
-EOF_ENV
+cp apps/admin-web/.env.local.example apps/admin-web/.env.local
 ```
 
-admin-web 실행:
+`apps/admin-web/.env.local`의 `TELEMETRY_API_BASE_URL`과 `TELEMETRY_ADMIN_TOKEN`을 telemetry-api와 맞춘 뒤 실행합니다. 관리자 토큰은 `NEXT_PUBLIC_`으로 노출하지 않습니다.
 
 ```bash
 pnpm file:admin-web dev
@@ -322,8 +271,6 @@ http://127.0.0.1:3000/events
 http://127.0.0.1:3000/images
 http://127.0.0.1:3000/services
 ```
-
-API 연결 실패 시 admin-web은 fixture 데이터로 fallback합니다. 화면에 `텔레메트리 API를 불러오지 못해 fixture 데이터로 표시합니다.`가 보이면 telemetry-api 주소, 포트, token을 다시 확인하세요.
 
 ### 10-3. telemetry-api 헬스체크
 

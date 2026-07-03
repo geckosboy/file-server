@@ -34,6 +34,12 @@ export class AppConfig {
 	@IsString()
 	STORAGE_SERVER!: string;
 
+	@IsString()
+	DATABASE_URL!: string;
+
+	@IsString()
+	CLIENT_API_KEY_PEPPER!: string;
+
 	@IsBoolean()
 	get isDevelopment() {
 		return this.NODE_ENV === Environment.Development;

@@ -72,6 +72,20 @@ $ docker compose -f docker/docker-compose.kafka.yml exec kafka-broker-1 \
 
 주의: 이 compose는 한 서버 안에 6개 Kafka 프로세스를 띄우는 형태라 프로세스 장애와 롤링 재시작에는 유리하지만, 서버 자체 장애까지 버티려면 controller/broker를 여러 서버로 나눠야 합니다.
 
+## Environment files
+
+Runtime apps do not share one central root env file. Each app reads its own local env file:
+
+```bash
+cp apps/storage/.env.local.example apps/storage/.env.local
+cp apps/resize/.env.local.example apps/resize/.env.local
+cp apps/cache/.env.local.example apps/cache/.env.local
+cp apps/telemetry-api/.env.local.example apps/telemetry-api/.env.local
+cp apps/admin-web/.env.local.example apps/admin-web/.env.local
+```
+
+Root `.env` is for Prisma CLI commands only. Keep `DATABASE_URL` identical in root `.env` and every backend app env that talks to PostgreSQL. Keep `CLIENT_API_KEY_PEPPER` identical in `telemetry-api`, `storage`, `resize`, and `cache`; it is used to hash and verify client service API keys.
+
 ## Running
 
 ```bash
@@ -83,6 +97,9 @@ $ pnpm file:resize {command}
 
 # Cache server
 $ pnpm file:cache {command}
+
+# Run storage/resize/cache through Turborepo
+$ pnpm dev:apps
 
 # Docker Dev Server
 $ docker compose -f docker/apps/docker-compose.dev.yml up -d

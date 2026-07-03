@@ -193,9 +193,7 @@ export const getTelemetryApiBaseUrl = () =>
 	process.env.TELEMETRY_API_BASE_URL ||
 	DEFAULT_ADMIN_API_BASE_URL;
 
-export const getTelemetryAdminToken = () =>
-	process.env.TELEMETRY_ADMIN_TOKEN ||
-	process.env.NEXT_PUBLIC_TELEMETRY_ADMIN_TOKEN;
+export const getTelemetryAdminToken = () => process.env.TELEMETRY_ADMIN_TOKEN;
 
 const createAdminUrl = (baseUrl: string, path: string) =>
 	new URL(`${baseUrl.replace(/\/$/, '')}${path}`);
