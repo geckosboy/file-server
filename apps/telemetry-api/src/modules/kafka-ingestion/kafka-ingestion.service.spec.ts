@@ -7,10 +7,8 @@ import {
 	TelemetryKafkaConsumer,
 	TelemetryKafkaConsumerFactory,
 } from './kafka-ingestion.consumer-factory';
-import {
-	parseKafkaMessageValue,
-	TelemetryKafkaConsumerService,
-} from './kafka-ingestion.service';
+import { TelemetryKafkaConsumerService } from './kafka-ingestion.service';
+import { parseKafkaMessageValue } from '../kafka/kafka-message.parser';
 import { TelemetryKafkaConsumerStatusService } from './kafka-ingestion.status';
 
 const uploadEvent: ImageTelemetryEvent = {

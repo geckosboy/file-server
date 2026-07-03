@@ -17,6 +17,12 @@
 			],
 			"@file/nest-common": [
 				"../../libs/nest-common/src"
+			],
+			"@file/telemetry-contracts": [
+				"../../libs/telemetry-contracts/src"
+			],
+			"@file/telemetry-contracts/*": [
+				"../../libs/telemetry-contracts/src/*"
 			]
 		}
 	}

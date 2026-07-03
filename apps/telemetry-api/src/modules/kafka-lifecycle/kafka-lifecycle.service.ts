@@ -6,39 +6,37 @@ import {
 	OnApplicationShutdown,
 } from '@nestjs/common';
 import { EachMessagePayload } from 'kafkajs';
-import {
-	IngestionResult,
-	IngestionService,
-} from '../ingestion/ingestion.service';
-import { readTelemetryKafkaConsumerConfig } from './kafka-ingestion.config';
-import {
-	TELEMETRY_KAFKA_CONSUMER_FACTORY,
-	TelemetryKafkaConsumer,
-	TelemetryKafkaConsumerFactory,
-} from './kafka-ingestion.consumer-factory';
-import { TelemetryKafkaConsumerStatusService } from './kafka-ingestion.status';
+import { IngestionResult } from '../ingestion/ingestion.service';
+import { LifecycleIngestionService } from '../lifecycle/lifecycle-ingestion.service';
 import { parseKafkaMessageValue } from '../kafka/kafka-message.parser';
+import { readLifecycleKafkaConsumerConfig } from './kafka-lifecycle.config';
+import {
+	LIFECYCLE_KAFKA_CONSUMER_FACTORY,
+	LifecycleKafkaConsumer,
+	LifecycleKafkaConsumerFactory,
+} from './kafka-lifecycle.consumer-factory';
+import { LifecycleKafkaConsumerStatusService } from './kafka-lifecycle.status';
 
 @Injectable()
-export class TelemetryKafkaConsumerService
+export class LifecycleKafkaConsumerService
 	implements OnApplicationBootstrap, OnApplicationShutdown
 {
-	private readonly logger = new Logger(TelemetryKafkaConsumerService.name);
-	private consumer?: TelemetryKafkaConsumer;
+	private readonly logger = new Logger(LifecycleKafkaConsumerService.name);
+	private consumer?: LifecycleKafkaConsumer;
 
 	constructor(
-		private readonly ingestionService: IngestionService,
-		private readonly statusService: TelemetryKafkaConsumerStatusService,
-		@Inject(TELEMETRY_KAFKA_CONSUMER_FACTORY)
-		private readonly consumerFactory: TelemetryKafkaConsumerFactory,
+		private readonly ingestionService: LifecycleIngestionService,
+		private readonly statusService: LifecycleKafkaConsumerStatusService,
+		@Inject(LIFECYCLE_KAFKA_CONSUMER_FACTORY)
+		private readonly consumerFactory: LifecycleKafkaConsumerFactory,
 	) {}
 
 	async onApplicationBootstrap() {
-		const config = readTelemetryKafkaConsumerConfig();
+		const config = readLifecycleKafkaConsumerConfig();
 		this.statusService.configure(config);
 		if (!config.enabled) {
 			this.logger.log(
-				`Kafka telemetry consumer disabled: ${config.disabledReason}`,
+				`Kafka lifecycle consumer disabled: ${config.disabledReason}`,
 			);
 			return;
 		}
@@ -55,12 +53,12 @@ export class TelemetryKafkaConsumerService
 			});
 			this.statusService.markConnected();
 			this.logger.log(
-				`Kafka telemetry consumer connected: ${config.topic} group=${config.groupId}`,
+				`Kafka lifecycle consumer connected: ${config.topic} group=${config.groupId}`,
 			);
 		} catch (error) {
 			this.statusService.markDisconnected(error);
 			this.logger.error(
-				`Kafka telemetry consumer 연결 실패: ${errorToMessage(error)}`,
+				`Kafka lifecycle consumer 연결 실패: ${errorToMessage(error)}`,
 			);
 		}
 	}
@@ -82,7 +80,7 @@ export class TelemetryKafkaConsumerService
 		this.statusService.markConsumed();
 		if (!result.accepted) {
 			this.logger.warn(
-				`Kafka telemetry event 거부: ${result.reason ?? 'unknown reason'}`,
+				`Kafka lifecycle event 거부: ${result.reason ?? 'unknown reason'}`,
 			);
 		}
 	}

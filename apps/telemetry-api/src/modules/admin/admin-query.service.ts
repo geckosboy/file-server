@@ -12,6 +12,13 @@ import {
 	TelemetryRepository,
 } from '../telemetry/telemetry.repository';
 import { TelemetryKafkaConsumerStatusService } from '../kafka-ingestion/kafka-ingestion.status';
+import { LifecycleKafkaConsumerStatusService } from '../kafka-lifecycle/kafka-lifecycle.status';
+import { LIFECYCLE_REPOSITORY } from '../lifecycle/lifecycle-repository.provider';
+import { LifecycleRepository } from '../lifecycle/lifecycle.repository';
+import {
+	ImageLifecycleEvent,
+	LifecycleEventFilter,
+} from '../lifecycle/lifecycle.types';
 import { TELEMETRY_REPOSITORY } from '../telemetry/telemetry-repository.provider';
 import {
 	EventFilter,
@@ -87,13 +94,22 @@ export interface ImageListResponse {
 	nextCursor?: string;
 }
 
+export interface LifecycleEventListResponse {
+	items: ImageLifecycleEvent[];
+	nextCursor?: string;
+}
+
 @Injectable()
 export class AdminQueryService {
 	constructor(
 		@Inject(TELEMETRY_REPOSITORY)
 		private readonly repository: TelemetryRepository,
+		@Inject(LIFECYCLE_REPOSITORY)
+		private readonly lifecycleRepository: LifecycleRepository,
 		@Optional()
 		private readonly kafkaStatusService?: TelemetryKafkaConsumerStatusService,
+		@Optional()
+		private readonly lifecycleKafkaStatusService?: LifecycleKafkaConsumerStatusService,
 	) {}
 
 	async getHealth() {
@@ -117,7 +133,20 @@ export class AdminQueryService {
 				lastError: null,
 				disabledReason: 'Kafka consumer status provider가 없습니다.',
 			},
+			lifecycleKafka: this.lifecycleKafkaStatusService?.getHealth() ?? {
+				enabled: false,
+				connected: false,
+				consumerLag: null,
+				brokers: [],
+				clientId: 'telemetry-api-lifecycle',
+				groupId: 'file-telemetry-api-lifecycle',
+				topic: 'file.image.lifecycle.v1',
+				lastConsumedAt: null,
+				lastError: null,
+				disabledReason: 'Kafka lifecycle consumer status provider가 없습니다.',
+			},
 			metrics: await this.repository.getMetrics(),
+			lifecycleMetrics: await this.lifecycleRepository.getMetrics(),
 		};
 	}
 
@@ -211,6 +240,28 @@ export class AdminQueryService {
 		return { items, nextCursor };
 	}
 
+	async listLifecycleEvents(
+		query: LifecycleEventFilter,
+	): Promise<LifecycleEventListResponse> {
+		const limit = parseLimit(query.limit);
+		const cursor = parseCursor(query.cursor);
+		const filtered = (await this.lifecycleEventsForQuery(query)).sort(
+			compareLifecycleEventsDesc,
+		);
+
+		const items = filtered.slice(cursor, cursor + limit);
+		const nextCursor =
+			cursor + limit < filtered.length ? String(cursor + limit) : undefined;
+		return { items, nextCursor };
+	}
+
+	async listImageLifecycleEvents(
+		imageKey: string,
+		query: LifecycleEventFilter,
+	): Promise<LifecycleEventListResponse> {
+		return this.listLifecycleEvents({ ...query, imageKey });
+	}
+
 	async listImages(query: ImageFilter): Promise<ImageListResponse> {
 		const limit = parseLimit(query.limit);
 		const cursor = parseCursor(query.cursor);
@@ -267,6 +318,32 @@ export class AdminQueryService {
 			)
 			.filter(
 				(event) => !query.sourceApp || event.sourceApp === query.sourceApp,
+			)
+			.filter((event) => !query.status || event.status === query.status)
+			.filter(
+				(event) =>
+					!query.clientServiceId ||
+					event.clientServiceId === query.clientServiceId,
+			)
+			.filter(
+				(event) =>
+					!query.clientServiceSlug ||
+					event.clientServiceSlug === query.clientServiceSlug,
+			)
+			.filter((event) => !query.path || event.path.includes(query.path))
+			.filter((event) => !query.name || event.name.includes(query.name))
+			.filter((event) => !query.imageKey || event.imageKey === query.imageKey)
+			.filter(
+				(event) => !query.requestId || event.requestId === query.requestId,
+			);
+	}
+
+	private async lifecycleEventsForQuery(query: Partial<LifecycleEventFilter>) {
+		const range = parseRange(query, true);
+		return (await this.lifecycleRepository.listEvents())
+			.filter((event) => matchesOptionalRange(event.occurredAt, range))
+			.filter(
+				(event) => !query.eventType || event.eventType === query.eventType,
 			)
 			.filter((event) => !query.status || event.status === query.status)
 			.filter(
@@ -447,6 +524,15 @@ function addInterval(date: Date, interval: BucketInterval): Date {
 function compareEventsDesc(
 	left: ImageTelemetryEvent,
 	right: ImageTelemetryEvent,
+): number {
+	const timeDiff =
+		new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime();
+	return timeDiff === 0 ? right.eventId.localeCompare(left.eventId) : timeDiff;
+}
+
+function compareLifecycleEventsDesc(
+	left: ImageLifecycleEvent,
+	right: ImageLifecycleEvent,
 ): number {
 	const timeDiff =
 		new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime();

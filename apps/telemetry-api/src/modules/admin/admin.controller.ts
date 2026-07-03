@@ -1,6 +1,7 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { AdminAuthGuard } from './admin-auth.guard';
 import { AdminQueryService } from './admin-query.service';
+import { LifecycleEventFilter } from '../lifecycle/lifecycle.types';
 import {
 	EventFilter,
 	ImageFilter,
@@ -32,6 +33,13 @@ export class AdminController {
 		return this.queryService.listEvents(normalizeEventQuery(query));
 	}
 
+	@Get('lifecycle-events')
+	listLifecycleEvents(@Query() query: LifecycleEventFilter) {
+		return this.queryService.listLifecycleEvents(
+			normalizeLifecycleEventQuery(query),
+		);
+	}
+
 	@Get('images')
 	listImages(@Query() query: ImageFilter) {
 		return this.queryService.listImages(normalizeImageQuery(query));
@@ -53,6 +61,17 @@ export class AdminController {
 		);
 	}
 
+	@Get('images/:imageKey/lifecycle-events')
+	listImageLifecycleEvents(
+		@Param('imageKey') imageKey: string,
+		@Query() query: LifecycleEventFilter,
+	) {
+		return this.queryService.listImageLifecycleEvents(
+			imageKey,
+			normalizeLifecycleEventQuery(query),
+		);
+	}
+
 	@Get('images/:imageKey/variants')
 	listImageVariants(@Param('imageKey') imageKey: string) {
 		return this.queryService.listImageVariants(imageKey);
@@ -60,6 +79,15 @@ export class AdminController {
 }
 
 function normalizeEventQuery(query: EventFilter): EventFilter {
+	return {
+		...query,
+		limit: normalizeNumber(query.limit),
+	};
+}
+
+function normalizeLifecycleEventQuery(
+	query: LifecycleEventFilter,
+): LifecycleEventFilter {
 	return {
 		...query,
 		limit: normalizeNumber(query.limit),

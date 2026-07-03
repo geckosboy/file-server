@@ -1,5 +1,7 @@
 import { AdminQueryService } from './admin-query.service';
 import { IngestionService } from '../ingestion/ingestion.service';
+import { LifecycleIngestionService } from '../lifecycle/lifecycle-ingestion.service';
+import { InMemoryLifecycleRepository } from '../lifecycle/lifecycle.repository';
 import { InMemoryTelemetryRepository } from '../telemetry/telemetry.repository';
 
 const baseEvent = {
@@ -16,12 +18,17 @@ const baseEvent = {
 
 describe('관리자 조회 서비스', () => {
 	let ingestionService: IngestionService;
+	let lifecycleIngestionService: LifecycleIngestionService;
 	let queryService: AdminQueryService;
 
 	beforeEach(async () => {
 		const repository = new InMemoryTelemetryRepository();
+		const lifecycleRepository = new InMemoryLifecycleRepository();
 		ingestionService = new IngestionService(repository);
-		queryService = new AdminQueryService(repository);
+		lifecycleIngestionService = new LifecycleIngestionService(
+			lifecycleRepository,
+		);
+		queryService = new AdminQueryService(repository, lifecycleRepository);
 		await seedFixture();
 	});
 
@@ -109,6 +116,86 @@ describe('관리자 조회 서비스', () => {
 		});
 
 		expect(response.items.map((item) => item.eventId)).toEqual(['evt-hit-1']);
+	});
+
+	it('lifecycle 이벤트 목록은 telemetry 이벤트와 별도로 필터링한다', async () => {
+		await lifecycleIngestionService.ingest({
+			...baseEvent,
+			eventId: 'life-upload-completed-1',
+			eventType: 'image.upload.completed',
+			clientServiceId: 'service-life-a',
+			clientServiceSlug: 'service-life-a',
+			requestId: 'req-life-completed',
+			imageId: 300,
+			inputBytes: 200,
+			outputBytes: 150,
+			durationMs: 9,
+		});
+		await lifecycleIngestionService.ingest({
+			...baseEvent,
+			eventId: 'life-upload-failed-1',
+			eventType: 'image.upload.failed',
+			occurredAt: '2026-07-01T00:30:00.000Z',
+			clientServiceId: 'service-life-b',
+			clientServiceSlug: 'service-life-b',
+			requestId: 'req-life-failed',
+			imageId: 301,
+			name: 'broken.txt',
+			imageKey: 'products/image/broken.txt',
+			format: 'unknown',
+			inputBytes: 9,
+			status: 'failed',
+			errorCode: 'BadRequestException',
+			errorMessage: 'bad image',
+		});
+
+		const response = await queryService.listLifecycleEvents({
+			eventType: 'image.upload.failed',
+			status: 'failed',
+			clientServiceSlug: 'service-life-b',
+			requestId: 'req-life-failed',
+			limit: 10,
+		});
+
+		expect(response.items).toEqual([
+			expect.objectContaining({
+				eventId: 'life-upload-failed-1',
+				eventType: 'image.upload.failed',
+				clientServiceSlug: 'service-life-b',
+			}),
+		]);
+	});
+
+	it('이미지별 lifecycle 이벤트 목록을 조회한다', async () => {
+		await lifecycleIngestionService.ingest({
+			...baseEvent,
+			eventId: 'life-image-upload-1',
+			eventType: 'image.upload.completed',
+			imageId: 302,
+			inputBytes: 200,
+			outputBytes: 150,
+			durationMs: 9,
+		});
+		await lifecycleIngestionService.ingest({
+			...baseEvent,
+			eventId: 'life-other-upload-1',
+			eventType: 'image.upload.completed',
+			imageId: 303,
+			imageKey: 'products/image/other.png',
+			name: 'other.png',
+			inputBytes: 200,
+			outputBytes: 150,
+			durationMs: 9,
+		});
+
+		const response = await queryService.listImageLifecycleEvents(
+			'products/image/sample.png',
+			{ limit: 10 },
+		);
+
+		expect(response.items.map((item) => item.eventId)).toEqual([
+			'life-image-upload-1',
+		]);
 	});
 
 	it('이미지 목록은 totalReads 기준으로 정렬한다', async () => {

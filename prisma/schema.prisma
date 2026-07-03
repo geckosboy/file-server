@@ -16,7 +16,8 @@ model ClientService {
 
   keys     ClientServiceKey[]
   policies ClientServicePolicy[]
-  events   TelemetryEvent[]
+  events          TelemetryEvent[]
+  lifecycleEvents ImageLifecycleEvent[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -111,6 +112,58 @@ model TelemetryEvent {
   @@index([requestId], map: "telemetry_events_request_id_idx")
   @@index([traceId], map: "telemetry_events_trace_id_idx")
   @@map("telemetry_events")
+}
+
+model ImageLifecycleEvent {
+  id          String @id(map: "image_lifecycle_events_pkey") @default(cuid())
+  eventId     String @unique(map: "image_lifecycle_events_event_id_key") @map("event_id")
+  eventType   String @map("event_type")
+  sourceApp   String @map("source_app")
+  environment String
+  status      String
+
+  occurredAt DateTime @map("occurred_at")
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  clientServiceId   String?        @map("client_service_id")
+  clientServiceSlug String?        @map("client_service_slug")
+  clientService     ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull, map: "image_lifecycle_events_client_service_id_fkey")
+
+  requestId String? @map("request_id")
+  traceId   String? @map("trace_id")
+
+  imageId  Int?   @map("image_id")
+  path     String
+  name     String
+  imageKey String @map("image_key")
+
+  format      String?
+  inputBytes  Int?   @map("input_bytes")
+  outputBytes Int?   @map("output_bytes")
+  durationMs  Float? @map("duration_ms")
+
+  errorCode    String? @map("error_code")
+  errorMessage String? @map("error_message")
+  rawPayload   Json    @map("raw_payload")
+
+  @@index([clientServiceId, occurredAt], map: "image_lifecycle_events_client_service_id_occurred_at_idx")
+  @@index([clientServiceSlug, occurredAt], map: "image_lifecycle_events_client_service_slug_occurred_at_idx")
+  @@index([eventType, occurredAt], map: "image_lifecycle_events_event_type_occurred_at_idx")
+  @@index([status, occurredAt], map: "image_lifecycle_events_status_occurred_at_idx")
+  @@index([imageKey, occurredAt], map: "image_lifecycle_events_image_key_occurred_at_idx")
+  @@index([requestId], map: "image_lifecycle_events_request_id_idx")
+  @@index([traceId], map: "image_lifecycle_events_trace_id_idx")
+  @@map("image_lifecycle_events")
+}
+
+model ImageLifecycleIngestionMetric {
+  id                     String    @id(map: "image_lifecycle_ingestion_metrics_pkey")
+  validationFailureCount Int       @default(0) @map("validation_failure_count")
+  insertFailureCount     Int       @default(0) @map("insert_failure_count")
+  lastConsumedEventAt    DateTime? @map("last_consumed_event_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  @@map("image_lifecycle_ingestion_metrics")
 }
 
 model TelemetryIngestionMetric {

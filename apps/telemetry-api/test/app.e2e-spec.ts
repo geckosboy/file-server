@@ -2,8 +2,10 @@ import { INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { LifecycleIngestionService } from '../src/modules/lifecycle/lifecycle-ingestion.service';
 
 const adminToken = 'test-admin-token';
+
 const uploadEvent = {
 	schemaVersion: 1,
 	eventId: 'evt-e2e-upload-1',
@@ -20,6 +22,48 @@ const uploadEvent = {
 	outputBytes: 800,
 	durationMs: 15,
 	status: 'success',
+};
+
+const lifecycleCompletedEvent = {
+	schemaVersion: 1,
+	eventId: 'life-e2e-upload-1',
+	eventType: 'image.upload.completed',
+	occurredAt: '2026-07-01T00:05:00.000Z',
+	sourceApp: 'storage',
+	environment: 'test',
+	clientServiceId: 'service-e2e',
+	clientServiceSlug: 'catalog-api',
+	requestId: 'req-life-e2e-1',
+	imageId: 101,
+	path: 'products/image',
+	name: 'sample.png',
+	imageKey: 'products/image/sample.png',
+	format: 'png',
+	inputBytes: 1000,
+	outputBytes: 800,
+	durationMs: 15,
+	status: 'success',
+};
+
+const lifecycleFailedEvent = {
+	schemaVersion: 1,
+	eventId: 'life-e2e-upload-failed-1',
+	eventType: 'image.upload.failed',
+	occurredAt: '2026-07-01T00:06:00.000Z',
+	sourceApp: 'storage',
+	environment: 'test',
+	clientServiceId: 'service-e2e',
+	clientServiceSlug: 'catalog-api',
+	requestId: 'req-life-e2e-failed-1',
+	imageId: 102,
+	path: 'products/image',
+	name: 'broken.txt',
+	imageKey: 'products/image/broken.txt',
+	format: 'unknown',
+	inputBytes: 9,
+	status: 'failed',
+	errorCode: 'BadRequestException',
+	errorMessage: 'bad image',
 };
 
 describe('텔레메트리 API e2e', () => {
@@ -53,6 +97,12 @@ describe('텔레메트리 API e2e', () => {
 						connected: false,
 						consumerLag: null,
 						topic: 'file.image.events.v1',
+					},
+					lifecycleKafka: {
+						enabled: false,
+						connected: false,
+						consumerLag: null,
+						topic: 'file.image.lifecycle.v1',
 					},
 				});
 			});
@@ -174,6 +224,40 @@ describe('텔레메트리 API e2e', () => {
 			});
 	});
 
+	it('lifecycle 이벤트 목록 요청에 upload completed/failed 이벤트를 반환한다', async () => {
+		await seedLifecycleEvents(app);
+
+		await request(app.getHttpServer())
+			.get('/api/admin/lifecycle-events')
+			.set('x-admin-token', adminToken)
+			.query({ eventType: 'image.upload.failed', status: 'failed', limit: 10 })
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body.items).toHaveLength(1);
+				expect(body.items[0]).toMatchObject({
+					eventId: 'life-e2e-upload-failed-1',
+					eventType: 'image.upload.failed',
+					clientServiceSlug: 'catalog-api',
+					errorCode: 'BadRequestException',
+				});
+			});
+	});
+
+	it('이미지별 lifecycle 이벤트 요청에 해당 이미지 이벤트만 반환한다', async () => {
+		await seedLifecycleEvents(app);
+
+		const encodedImageKey = encodeURIComponent('products/image/sample.png');
+		await request(app.getHttpServer())
+			.get(`/api/admin/images/${encodedImageKey}/lifecycle-events`)
+			.set('x-admin-token', adminToken)
+			.expect(200)
+			.expect(({ body }) => {
+				expect(
+					body.items.map((item: { eventId: string }) => item.eventId),
+				).toEqual(['life-e2e-upload-1']);
+			});
+	});
+
 	it('잘못된 기간 쿼리는 400을 반환한다', async () => {
 		await request(app.getHttpServer())
 			.get('/api/admin/events')
@@ -281,6 +365,12 @@ async function seedEvents(app: INestApplication) {
 			durationMs: 6,
 		})
 		.expect(202);
+}
+
+async function seedLifecycleEvents(app: INestApplication) {
+	const lifecycleIngestionService = app.get(LifecycleIngestionService);
+	await lifecycleIngestionService.ingest(lifecycleCompletedEvent);
+	await lifecycleIngestionService.ingest(lifecycleFailedEvent);
 }
 
 function testRange() {

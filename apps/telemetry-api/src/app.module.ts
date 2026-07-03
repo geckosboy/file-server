@@ -3,6 +3,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { ClientServicesModule } from './modules/client-services/client-services.module';
 import { IngestionModule } from './modules/ingestion/ingestion.module';
 import { KafkaIngestionModule } from './modules/kafka-ingestion/kafka-ingestion.module';
+import { KafkaLifecycleModule } from './modules/kafka-lifecycle/kafka-lifecycle.module';
 
 @Module({
 	imports: [
@@ -10,6 +11,7 @@ import { KafkaIngestionModule } from './modules/kafka-ingestion/kafka-ingestion.
 		IngestionModule,
 		ClientServicesModule,
 		KafkaIngestionModule,
+		KafkaLifecycleModule,
 	],
 })
 export class AppModule {}

@@ -10,6 +10,11 @@ import {
 } from 'class-validator';
 
 import {
+	ImageLifecycleEvent,
+	ImageLifecycleEventType,
+	ImageLifecycleStatus,
+} from './lifecycle';
+import {
 	ImageTelemetryEvent,
 	ImageTelemetryEventBase,
 	ImageTelemetryEventType,
@@ -94,6 +99,59 @@ export class EventsListQueryDto {
 	@IsOptional()
 	@IsIn(Object.values(ImageTelemetryStatus))
 	status?: ImageTelemetryStatus;
+
+	@IsOptional()
+	@IsString()
+	path?: string;
+
+	@IsOptional()
+	@IsString()
+	name?: string;
+
+	@IsOptional()
+	@IsString()
+	imageKey?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceId?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceSlug?: string;
+
+	@IsOptional()
+	@IsString()
+	requestId?: string;
+
+	@IsOptional()
+	@IsString()
+	cursor?: string;
+
+	@Type(() => Number)
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	@Max(100)
+	limit?: number;
+}
+
+export class LifecycleEventsListQueryDto {
+	@IsOptional()
+	@IsISO8601()
+	from?: string;
+
+	@IsOptional()
+	@IsISO8601()
+	to?: string;
+
+	@IsOptional()
+	@IsIn(Object.values(ImageLifecycleEventType))
+	eventType?: ImageLifecycleEventType;
+
+	@IsOptional()
+	@IsIn(Object.values(ImageLifecycleStatus))
+	status?: ImageLifecycleStatus;
 
 	@IsOptional()
 	@IsString()
@@ -243,6 +301,44 @@ export type ImageTelemetryEventListItem = Pick<
 
 export type EventsListResponse = {
 	items: ImageTelemetryEventListItem[];
+	nextCursor?: string;
+};
+
+export type ImageLifecycleEventListItem = Pick<
+	ImageLifecycleEvent,
+	| 'eventId'
+	| 'eventType'
+	| 'occurredAt'
+	| 'sourceApp'
+	| 'environment'
+	| 'status'
+	| 'clientServiceId'
+	| 'clientServiceSlug'
+	| 'requestId'
+	| 'traceId'
+	| 'imageId'
+	| 'imageKey'
+	| 'path'
+	| 'name'
+	| 'format'
+	| 'inputBytes'
+	| 'outputBytes'
+	| 'durationMs'
+	| 'errorCode'
+	| 'errorMessage'
+> & {
+	receivedAt: string;
+	rawPayload?: ImageLifecycleEvent;
+};
+
+export type LifecycleEventsListResponse = {
+	items: ImageLifecycleEventListItem[];
+	nextCursor?: string;
+};
+
+export type ImageLifecycleEventsResponse = {
+	imageKey: string;
+	items: ImageLifecycleEventListItem[];
 	nextCursor?: string;
 };
 
