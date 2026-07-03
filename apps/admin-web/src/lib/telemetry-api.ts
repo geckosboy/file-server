@@ -1,5 +1,7 @@
 export type SourceApp = 'storage' | 'resize' | 'cache';
 export type EventStatus = 'success' | 'failed';
+export type LifecycleEventType =
+	'image.upload.completed' | 'image.upload.failed';
 export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
 
 export interface TimeRange {
@@ -68,6 +70,36 @@ export interface EventListItem {
 
 export interface EventListResponse {
 	items: EventListItem[];
+	nextCursor?: string;
+}
+
+export interface LifecycleEventListItem {
+	eventId: string;
+	eventType: LifecycleEventType;
+	occurredAt: string;
+	receivedAt?: string;
+	sourceApp: 'storage';
+	environment?: string;
+	status: EventStatus;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
+	requestId?: string;
+	traceId?: string;
+	imageId?: number;
+	path: string;
+	name: string;
+	imageKey: string;
+	format?: string;
+	durationMs?: number;
+	inputBytes?: number;
+	outputBytes?: number;
+	errorCode?: string;
+	errorMessage?: string;
+	rawPayload: Record<string, unknown>;
+}
+
+export interface LifecycleEventListResponse {
+	items: LifecycleEventListItem[];
 	nextCursor?: string;
 }
 
@@ -167,6 +199,15 @@ export interface EventsQuery extends ServiceScopedQuery {
 	limit?: number;
 }
 
+export interface LifecycleEventsQuery extends ServiceScopedQuery {
+	eventType?: LifecycleEventType;
+	status?: EventStatus;
+	imageKey?: string;
+	requestId?: string;
+	cursor?: string;
+	limit?: number;
+}
+
 export interface ImagesQuery extends ServiceScopedQuery {
 	q?: string;
 	sort?: 'reads' | 'resizes' | 'cacheMisses' | 'failures' | 'lastSeenAt';
@@ -246,6 +287,20 @@ export const buildEventsUrl = (
 		status: query.status,
 		path: query.path,
 		name: query.name,
+		imageKey: query.imageKey,
+		requestId: query.requestId,
+		cursor: query.cursor,
+		limit: query.limit,
+	}).toString();
+
+export const buildLifecycleEventsUrl = (
+	query: LifecycleEventsQuery = {},
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	appendDefinedParams(createAdminUrl(baseUrl, '/lifecycle-events'), {
+		...serviceScopedParams(query),
+		eventType: query.eventType,
+		status: query.status,
 		imageKey: query.imageKey,
 		requestId: query.requestId,
 		cursor: query.cursor,
@@ -339,6 +394,11 @@ export const fetchDashboardTimeseries = (query: DashboardQuery = {}) =>
 
 export const fetchEvents = (query: EventsQuery = {}) =>
 	fetchTelemetryJson<EventListResponse>(buildEventsUrl(query));
+
+export const fetchLifecycleEvents = (query: LifecycleEventsQuery = {}) =>
+	fetchTelemetryJson<LifecycleEventListResponse>(
+		buildLifecycleEventsUrl(query),
+	);
 
 export const fetchImages = (query: ImagesQuery = {}) =>
 	fetchTelemetryJson<ImageListResponse>(buildImagesUrl(query));

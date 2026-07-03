@@ -7,6 +7,7 @@ import {
 	buildDashboardSummaryUrl,
 	buildEventsUrl,
 	buildImagesUrl,
+	buildLifecycleEventsUrl,
 	fetchTelemetryJson,
 	getTelemetryAdminToken,
 	toMetricDisplay,
@@ -71,6 +72,30 @@ describe('텔레메트리 API 클라이언트', () => {
 		expect(url.searchParams.get('status')).toBe('success');
 		expect(url.searchParams.get('clientServiceId')).toBe('svc-catalog');
 		expect(url.searchParams.get('cursor')).toBe('cursor-1');
+		expect(url.searchParams.get('limit')).toBe('50');
+	});
+
+	it('lifecycle 이벤트 목록 API URL에 업무 이벤트 필터를 포함한다', () => {
+		const url = new URL(
+			buildLifecycleEventsUrl(
+				{
+					eventType: 'image.upload.failed',
+					status: 'failed',
+					imageKey: 'products/main/broken.png',
+					clientServiceId: 'svc-catalog',
+					cursor: 'life-cursor-1',
+					limit: 50,
+				},
+				'https://telemetry.test/api/admin',
+			),
+		);
+
+		expect(url.pathname).toBe('/api/admin/lifecycle-events');
+		expect(url.searchParams.get('eventType')).toBe('image.upload.failed');
+		expect(url.searchParams.get('status')).toBe('failed');
+		expect(url.searchParams.get('imageKey')).toBe('products/main/broken.png');
+		expect(url.searchParams.get('clientServiceId')).toBe('svc-catalog');
+		expect(url.searchParams.get('cursor')).toBe('life-cursor-1');
 		expect(url.searchParams.get('limit')).toBe('50');
 	});
 

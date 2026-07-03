@@ -16,6 +16,10 @@ export default function HomePage() {
 					<h2>Events</h2>
 					<p>표준 이미지 telemetry 원본 이벤트를 검색합니다.</p>
 				</a>
+				<a className="panel" href="/lifecycle-events">
+					<h2>Lifecycle Events</h2>
+					<p>서비스 소비용 upload completed/failed 이벤트를 검색합니다.</p>
+				</a>
 				<a className="panel" href="/images">
 					<h2>Images</h2>
 					<p>요청량과 cache miss가 높은 이미지를 찾습니다.</p>
