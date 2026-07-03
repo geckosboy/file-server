@@ -27,6 +27,21 @@ storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.im
 
 DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
 
+## 신규 Client Service 추가 시 재시작 기준
+
+새 서비스를 추가하는 일반 절차는 **telemetry-api admin API로 `client_services` / `client_service_keys` / `client_service_lifecycle_subscriptions`에 등록**하는 것입니다. 이 경우 기존에 떠 있는 앱들을 재시작하지 않아도 됩니다.
+
+| 대상 | 신규 서비스 등록 후 재시작 | 근거 | 재시작이 필요한 경우 |
+| --- | --- | --- | --- |
+| `storage` | 불필요 | `ClientServiceAuthService.authenticate()`가 요청마다 `client_service_keys.key_prefix`를 DB에서 다시 조회하고 서비스 상태/키 만료/폐기 여부를 검사합니다. 앱 메모리에 service allowlist를 들고 있지 않습니다. | `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, Kafka broker, 파일 저장 경로, 코드가 바뀐 경우 |
+| `resize` | 불필요 | `resize`의 `/image` guard도 같은 `ClientServiceAuthModule`을 사용하고, storage 호출 때 인증된 API key/request id를 그대로 forward합니다. | `STORAGE_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우 |
+| `cache` | 불필요 | `cache`의 `/image` guard도 같은 DB 조회 기반 인증을 쓰고, miss 시 resize 호출에 인증 header를 forward합니다. | `RESIZING_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우 |
+| `telemetry-api` | 불필요 | client service/API key/subscription 생성·수정은 admin API가 DB에 쓰고, 목록/상세 조회도 매 요청 DB에서 읽습니다. | `.env.local`의 DB/Admin token/Kafka consumer 설정, Prisma schema migration, 코드가 바뀐 경우 |
+| `admin-web` | 불필요 | telemetry-api를 `cache: 'no-store'`로 호출하고, server action 후 `/services`를 revalidate합니다. | `TELEMETRY_API_BASE_URL`, `TELEMETRY_ADMIN_TOKEN`, 코드가 바뀐 경우 |
+| Kafka | 불필요 | 서비스별 topic을 만들지 않습니다. 모든 서비스가 공통 `file.image.lifecycle.v1` topic을 각자 consumer group으로 소비합니다. | topic 자체를 처음 만들 때, broker 주소/보안 설정/ACL 정책을 바꿀 때 |
+
+즉 **새 Client Service 추가만으로는 DB 등록 + API key 발급 + lifecycle subscription 등록**이면 충분합니다. 단, API key hash 검증에 쓰는 `CLIENT_API_KEY_PEPPER`는 `telemetry-api`, `storage`, `resize`, `cache`에서 반드시 같은 값이어야 하며, 이 값을 바꾸면 기존 key를 다시 발급하거나 앱을 재시작해야 합니다.
+
 ## 0. 앱별 env / PostgreSQL 준비
 
 이 repo는 런타임 env를 중앙에서 한 파일로 관리하지 않습니다. 각 앱이 자기 파일을 읽습니다.
@@ -72,11 +87,12 @@ docker compose -f docker/docker-compose.dev.yml --profile ui up -d
 pnpm file:telemetry-api start:dev
 ```
 
-다른 터미널에서 점검용 client service와 API key를 발급합니다.
+다른 터미널에서 점검용 client service, API key, lifecycle subscription을 발급합니다. 이 작업은 실행 중인 `storage`/`resize`/`cache`를 재시작하지 않고 바로 반영되는지 확인하는 기준 절차입니다.
 
 ```bash
 STAMP="$(date +%s)"
 SERVICE_SLUG="local-demo-$STAMP"
+CONSUMER_GROUP="$SERVICE_SLUG-image-lifecycle"
 SERVICE_ID="$(
   curl -s -X POST http://127.0.0.1:3100/api/admin/client-services \
     -H 'content-type: application/json' \
@@ -91,13 +107,24 @@ CLIENT_API_KEY="$(
     -d '{"name":"local inspect key","scopes":{"image":"read-write"}}' \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["apiKey"])'
 )"
+curl -s -X POST "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID/lifecycle-subscriptions" \
+  -H 'content-type: application/json' \
+  -H 'x-admin-token: dev-admin-token' \
+  -d "{\"eventType\":\"image.upload.completed\",\"consumerGroup\":\"$CONSUMER_GROUP\",\"description\":\"로컬 점검용 업로드 완료 소비\"}" \
+  | python3 -m json.tool
+curl -s -X POST "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID/lifecycle-subscriptions" \
+  -H 'content-type: application/json' \
+  -H 'x-admin-token: dev-admin-token' \
+  -d "{\"eventType\":\"image.upload.failed\",\"consumerGroup\":\"$CONSUMER_GROUP\",\"description\":\"로컬 점검용 업로드 실패 소비\"}" \
+  | python3 -m json.tool
 
 echo "SERVICE_ID=$SERVICE_ID"
 echo "SERVICE_SLUG=$SERVICE_SLUG"
 echo "CLIENT_API_KEY=$CLIENT_API_KEY"
+echo "CONSUMER_GROUP=$CONSUMER_GROUP"
 ```
 
-`CLIENT_API_KEY` 원문은 최초 1회만 보입니다. 새 터미널에서 curl을 실행한다면 위 값을 다시 export하세요.
+`CLIENT_API_KEY` 원문은 최초 1회만 보입니다. 새 터미널에서 curl을 실행한다면 위 값을 다시 export하세요. 이 직후 앱을 재시작하지 않고 5~8단계 요청이 성공하면 DB 등록만으로 접근 권한이 반영된 것입니다.
 
 ## 1. Kafka 실행
 
@@ -354,11 +381,11 @@ curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limi
 pnpm kafka:topics:dev
 ```
 
-새 터미널에서 예시 consumer를 켭니다. `CLIENT_SERVICE_SLUG`를 넣으면 해당 서비스 이벤트만 출력합니다. 과거 메시지까지 다시 보려면 매번 다른 `KAFKA_LIFECYCLE_GROUP_ID`를 쓰면 됩니다.
+새 터미널에서 예시 consumer를 켭니다. `CLIENT_SERVICE_SLUG`를 넣으면 해당 서비스 이벤트만 출력합니다. 신규 서비스 점검은 위에서 등록한 `CONSUMER_GROUP`을 그대로 쓰면 됩니다. 과거 메시지까지 다시 보려면 임시 점검용 group을 새로 쓰세요. 현재 단계에서는 DB subscription이 운영 관리 기준이고 실제 Kafka ACL 강제는 아직 붙이지 않았습니다.
 
 ```bash
 KAFKA_CLIENT_BROKERS=localhost:9094 \
-KAFKA_LIFECYCLE_GROUP_ID="local-demo-lifecycle-$SERVICE_SLUG-$(date +%s)" \
+KAFKA_LIFECYCLE_GROUP_ID="$CONSUMER_GROUP" \
 CLIENT_SERVICE_SLUG="$SERVICE_SLUG" \
 pnpm kafka:lifecycle:consume
 ```

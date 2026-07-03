@@ -166,6 +166,46 @@ describe('클라이언트 서비스 API 키 인증 서비스', () => {
 			'ab_cd123',
 		);
 	});
+
+	it('같은 앱 인스턴스에서도 DB에 새로 등록된 서비스 키를 즉시 다시 조회한다', async () => {
+		const { generated, record } = createKeyRecord({
+			id: 'key-dynamic',
+			clientServiceId: 'service-dynamic',
+			clientService: {
+				...createKeyRecord().record.clientService,
+				id: 'service-dynamic',
+				slug: 'dynamic-demo',
+				name: 'Dynamic Demo',
+			},
+		});
+		const recordsByPrefix = new Map<string, unknown>();
+		prisma.clientServiceKey.findUnique.mockImplementation(({ where }) =>
+			Promise.resolve(recordsByPrefix.get(where.keyPrefix) ?? null),
+		);
+
+		await expect(service.authenticate(generated.apiKey)).resolves.toBeNull();
+
+		recordsByPrefix.set(generated.keyPrefix, record);
+
+		await expect(service.authenticate(generated.apiKey)).resolves.toEqual({
+			clientService: {
+				id: 'service-dynamic',
+				slug: 'dynamic-demo',
+				name: 'Dynamic Demo',
+				status: 'ACTIVE',
+			},
+			key: {
+				id: 'key-dynamic',
+				keyPrefix: generated.keyPrefix,
+				expiresAt: undefined,
+			},
+		});
+		expect(prisma.clientServiceKey.findUnique).toHaveBeenCalledTimes(2);
+		expect(prisma.clientServiceKey.update).toHaveBeenCalledWith({
+			where: { id: 'key-dynamic' },
+			data: { lastUsedAt: expect.any(Date) },
+		});
+	});
 });
 
 describe('클라이언트 서비스 API 키 가드', () => {
