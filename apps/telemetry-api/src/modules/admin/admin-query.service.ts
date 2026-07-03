@@ -1,13 +1,16 @@
 import {
 	BadRequestException,
+	Inject,
 	Injectable,
 	NotFoundException,
 } from '@nestjs/common';
 import {
 	average,
-	InMemoryTelemetryRepository,
 	percentile,
+	projectAssetSummaries,
+	TelemetryRepository,
 } from '../telemetry/telemetry.repository';
+import { TELEMETRY_REPOSITORY } from '../telemetry/telemetry-repository.provider';
 import {
 	EventFilter,
 	ImageAssetSummary,
@@ -84,28 +87,31 @@ export interface ImageListResponse {
 
 @Injectable()
 export class AdminQueryService {
-	constructor(private readonly repository: InMemoryTelemetryRepository) {}
+	constructor(
+		@Inject(TELEMETRY_REPOSITORY)
+		private readonly repository: TelemetryRepository,
+	) {}
 
-	getHealth() {
+	async getHealth() {
 		return {
 			ok: true,
 			service: 'telemetry-api',
 			checkedAt: new Date().toISOString(),
 			storage: {
-				kind: 'memory',
-				connected: true,
+				kind: this.repository.getStorageKind(),
+				connected: await this.repository.isConnected(),
 			},
 			kafka: {
 				connected: false,
 				consumerLag: null,
 			},
-			metrics: this.repository.getMetrics(),
+			metrics: await this.repository.getMetrics(),
 		};
 	}
 
-	getSummary(query: Partial<TelemetryRange>): DashboardSummary {
+	async getSummary(query: Partial<EventFilter>): Promise<DashboardSummary> {
 		const range = parseRange(query);
-		const events = this.eventsInRange(range);
+		const events = await this.eventsForQuery({ ...query, ...range });
 		const cacheHits = countByType(events, 'image.cache.hit');
 		const cacheMisses = countByType(events, 'image.cache.miss');
 		const cacheTotal = cacheHits + cacheMisses;
@@ -130,7 +136,7 @@ export class AdminQueryService {
 		};
 	}
 
-	getTimeseries(query: TimeseriesQuery): TimeseriesResponse {
+	async getTimeseries(query: TimeseriesQuery): Promise<TimeseriesResponse> {
 		const interval = query.interval ?? 'hour';
 		if (!['minute', 'hour', 'day'].includes(interval)) {
 			throw new BadRequestException('interval must be minute, hour, or day');
@@ -144,7 +150,7 @@ export class AdminQueryService {
 			to: query.to ?? now.toISOString(),
 		});
 		const buckets = createBuckets(range, interval);
-		const events = this.eventsInRange(range);
+		const events = await this.eventsForQuery({ ...query, ...range });
 		for (const event of events) {
 			const bucketStart = floorDate(
 				new Date(event.occurredAt),
@@ -182,27 +188,10 @@ export class AdminQueryService {
 		};
 	}
 
-	listEvents(query: EventFilter): EventListResponse {
-		const range = parseRange(query, true);
+	async listEvents(query: EventFilter): Promise<EventListResponse> {
 		const limit = parseLimit(query.limit);
 		const cursor = parseCursor(query.cursor);
-		const filtered = this.repository
-			.listEvents()
-			.filter((event) => matchesOptionalRange(event.occurredAt, range))
-			.filter(
-				(event) => !query.eventType || event.eventType === query.eventType,
-			)
-			.filter(
-				(event) => !query.sourceApp || event.sourceApp === query.sourceApp,
-			)
-			.filter((event) => !query.status || event.status === query.status)
-			.filter((event) => !query.path || event.path.includes(query.path))
-			.filter((event) => !query.name || event.name.includes(query.name))
-			.filter((event) => !query.imageKey || event.imageKey === query.imageKey)
-			.filter(
-				(event) => !query.requestId || event.requestId === query.requestId,
-			)
-			.sort(compareEventsDesc);
+		const filtered = (await this.eventsForQuery(query)).sort(compareEventsDesc);
 
 		const items = filtered.slice(cursor, cursor + limit);
 		const nextCursor =
@@ -210,16 +199,19 @@ export class AdminQueryService {
 		return { items, nextCursor };
 	}
 
-	listImages(query: ImageFilter): ImageListResponse {
-		const range = parseRange(query, true);
+	async listImages(query: ImageFilter): Promise<ImageListResponse> {
 		const limit = parseLimit(query.limit);
 		const cursor = parseCursor(query.cursor);
 		const order = query.order ?? 'desc';
 		const sort = query.sort ?? 'lastSeenAt';
-		const imageDurations = this.durationsByImageKey(range);
-		const filtered = this.repository
-			.listAssets()
-			.filter((asset) => matchesOptionalRange(asset.lastSeenAt, range))
+		const events = await this.eventsForQuery({
+			from: query.from,
+			to: query.to,
+			clientServiceId: query.clientServiceId,
+			clientServiceSlug: query.clientServiceSlug,
+		});
+		const imageDurations = this.durationsByImageKey(events);
+		const filtered = (await projectAssetSummaries(events))
 			.filter((asset) => matchesImageQuery(asset, query.q))
 			.map((asset) =>
 				toImageListItem(asset, imageDurations.get(asset.imageKey) ?? []),
@@ -232,10 +224,10 @@ export class AdminQueryService {
 		return { items, nextCursor };
 	}
 
-	getImage(imageKey: string): ImageListItem {
-		const image = this.listImages({ q: imageKey, limit: MAX_LIMIT }).items.find(
-			(item) => item.imageKey === imageKey,
-		);
+	async getImage(imageKey: string): Promise<ImageListItem> {
+		const image = (
+			await this.listImages({ q: imageKey, limit: MAX_LIMIT })
+		).items.find((item) => item.imageKey === imageKey);
 		if (!image) {
 			throw new NotFoundException('image not found');
 		}
@@ -243,29 +235,52 @@ export class AdminQueryService {
 		return image;
 	}
 
-	listImageEvents(imageKey: string, query: EventFilter): EventListResponse {
+	async listImageEvents(
+		imageKey: string,
+		query: EventFilter,
+	): Promise<EventListResponse> {
 		return this.listEvents({ ...query, imageKey });
 	}
 
-	listImageVariants(imageKey: string) {
-		return { items: this.repository.listVariants(imageKey) };
+	async listImageVariants(imageKey: string) {
+		return { items: await this.repository.listVariants(imageKey) };
 	}
 
-	private eventsInRange(range: TelemetryRange): ImageTelemetryEvent[] {
-		return this.repository
-			.listEvents()
-			.filter((event) => isWithinRange(event.occurredAt, range));
+	private async eventsForQuery(query: Partial<EventFilter>) {
+		const range = parseRange(query, true);
+		return (await this.repository.listEvents())
+			.filter((event) => matchesOptionalRange(event.occurredAt, range))
+			.filter(
+				(event) => !query.eventType || event.eventType === query.eventType,
+			)
+			.filter(
+				(event) => !query.sourceApp || event.sourceApp === query.sourceApp,
+			)
+			.filter((event) => !query.status || event.status === query.status)
+			.filter(
+				(event) =>
+					!query.clientServiceId ||
+					event.clientServiceId === query.clientServiceId,
+			)
+			.filter(
+				(event) =>
+					!query.clientServiceSlug ||
+					event.clientServiceSlug === query.clientServiceSlug,
+			)
+			.filter((event) => !query.path || event.path.includes(query.path))
+			.filter((event) => !query.name || event.name.includes(query.name))
+			.filter((event) => !query.imageKey || event.imageKey === query.imageKey)
+			.filter(
+				(event) => !query.requestId || event.requestId === query.requestId,
+			);
 	}
 
 	private durationsByImageKey(
-		range: Partial<TelemetryRange>,
+		events: ImageTelemetryEvent[],
 	): Map<string, number[]> {
 		const durations = new Map<string, number[]>();
-		for (const event of this.repository.listEvents()) {
-			if (
-				!matchesOptionalRange(event.occurredAt, range) ||
-				event.durationMs === undefined
-			) {
+		for (const event of events) {
+			if (event.durationMs === undefined) {
 				continue;
 			}
 
@@ -346,10 +361,6 @@ function matchesOptionalRange(
 			new Date(date).getTime() >= new Date(range.from).getTime()) &&
 		(!range.to || new Date(date).getTime() <= new Date(range.to).getTime())
 	);
-}
-
-function isWithinRange(date: string, range: TelemetryRange): boolean {
-	return matchesOptionalRange(date, range);
 }
 
 function countByType(events: ImageTelemetryEvent[], eventType: string): number {

@@ -1,0 +1,118 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model ClientService {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  name        String
+  description String?
+  owner       String?
+  status      String   @default("ACTIVE")
+
+  keys     ClientServiceKey[]
+  policies ClientServicePolicy[]
+  events   TelemetryEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
+model ClientServiceKey {
+  id              String        @id @default(cuid())
+  clientServiceId String
+  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade)
+
+  name       String?
+  keyPrefix  String   @unique
+  keyHash    String   @unique
+  scopes     Json?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([clientServiceId])
+  @@index([revokedAt])
+  @@index([expiresAt])
+}
+
+model ClientServicePolicy {
+  id              String        @id @default(cuid())
+  clientServiceId String
+  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Cascade)
+
+  pathPattern     String
+  canRead         Boolean @default(true)
+  canUpload       Boolean @default(false)
+  canDelete       Boolean @default(false)
+  maxUploadBytes  Int?
+  rateLimitPerMin Int?
+  metadata        Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clientServiceId])
+  @@index([pathPattern])
+}
+
+model TelemetryEvent {
+  id          String @id @default(cuid())
+  eventId     String @unique
+  eventType   String
+  sourceApp   String
+  environment String
+  status      String
+
+  occurredAt DateTime
+  receivedAt DateTime @default(now())
+
+  clientServiceId   String?
+  clientServiceSlug String?
+  clientService     ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull)
+
+  requestId String?
+  traceId   String?
+
+  imageId  Int?
+  path     String
+  name     String
+  imageKey String
+  cacheKey String?
+
+  width      Int?
+  height     Int?
+  format     String?
+  inputBytes Int?
+  outputBytes Int?
+  durationMs Float?
+
+  errorCode    String?
+  errorMessage String?
+  rawPayload   Json
+
+  @@index([clientServiceId, occurredAt])
+  @@index([clientServiceSlug, occurredAt])
+  @@index([eventType, occurredAt])
+  @@index([sourceApp, occurredAt])
+  @@index([status, occurredAt])
+  @@index([imageKey, occurredAt])
+  @@index([requestId])
+  @@index([traceId])
+}
+
+model TelemetryIngestionMetric {
+  id                     String    @id
+  validationFailureCount Int       @default(0)
+  insertFailureCount     Int       @default(0)
+  lastConsumedEventAt    DateTime?
+  updatedAt              DateTime  @updatedAt
+}

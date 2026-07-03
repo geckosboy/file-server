@@ -187,6 +187,59 @@ describe('텔레메트리 API e2e', () => {
 	it('관리자 인증이 없으면 401을 반환한다', async () => {
 		await request(app.getHttpServer()).get('/api/admin/health').expect(401);
 	});
+
+	it('관리자 API로 클라이언트 서비스를 등록하고 API key를 발급/폐기한다', async () => {
+		const created = await request(app.getHttpServer())
+			.post('/api/admin/client-services')
+			.set('x-admin-token', adminToken)
+			.send({
+				slug: 'catalog-api',
+				name: 'Catalog API',
+				owner: 'commerce-team',
+			})
+			.expect(201)
+			.then(({ body }) => body);
+
+		expect(created).toMatchObject({
+			slug: 'catalog-api',
+			name: 'Catalog API',
+			status: 'ACTIVE',
+			keyCount: 0,
+		});
+
+		const keyResult = await request(app.getHttpServer())
+			.post(`/api/admin/client-services/${created.id}/keys`)
+			.set('x-admin-token', adminToken)
+			.send({ name: 'local backend key', scopes: { upload: true } })
+			.expect(201)
+			.then(({ body }) => body);
+
+		expect(keyResult.apiKey).toMatch(/^fs_/);
+		expect(keyResult.key).toMatchObject({
+			clientServiceId: created.id,
+			keyPrefix: expect.any(String),
+		});
+		expect(keyResult.key).not.toHaveProperty('keyHash');
+
+		await request(app.getHttpServer())
+			.post(
+				`/api/admin/client-services/${created.id}/keys/${keyResult.key.id}/revoke`,
+			)
+			.set('x-admin-token', adminToken)
+			.expect(201)
+			.expect(({ body }) => {
+				expect(body.revokedAt).toEqual(expect.any(String));
+			});
+
+		await request(app.getHttpServer())
+			.get(`/api/admin/client-services/${created.id}`)
+			.set('x-admin-token', adminToken)
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body.keyCount).toBe(1);
+				expect(body.activeKeyCount).toBe(0);
+			});
+	});
 });
 
 async function seedEvents(app: INestApplication) {

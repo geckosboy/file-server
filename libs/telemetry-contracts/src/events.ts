@@ -56,6 +56,8 @@ export type ImageTelemetryEventBase = {
 	receivedAt?: string;
 	sourceApp: ImageTelemetrySourceApp;
 	environment: ImageTelemetryEnvironment;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
 	requestId?: string;
 	traceId?: string;
 	imageId?: number;

@@ -1,0 +1,23 @@
+{
+	"name": "@file/database",
+	"version": "0.0.1",
+	"private": true,
+	"description": "Shared Prisma database module for file-server services",
+	"author": "",
+	"license": "MIT",
+	"scripts": {
+		"build": "pnpm exec tsc -p tsconfig.build.json",
+		"lint": "pnpm exec eslint \"src/**/*.ts\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" --fix",
+		"test": "pnpm exec jest --passWithNoTests"
+	},
+	"dependencies": {
+		"@nestjs/common": "^11.1.27",
+		"@prisma/adapter-pg": "^7.8.0",
+		"@prisma/client": "^7.8.0",
+		"pg": "^8.16.3"
+	},
+	"devDependencies": {
+		"@file/tsconfig": "workspace:*"
+	}
+}

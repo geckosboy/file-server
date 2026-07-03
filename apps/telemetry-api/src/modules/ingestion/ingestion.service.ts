@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { InMemoryTelemetryRepository } from '../telemetry/telemetry.repository';
+import { Inject } from '@nestjs/common';
+import { TelemetryRepository } from '../telemetry/telemetry.repository';
+import { TELEMETRY_REPOSITORY } from '../telemetry/telemetry-repository.provider';
 import {
 	ImageFormats,
 	ImageTelemetryEvent,
@@ -35,12 +37,18 @@ type ParseResult = ParsedEventResult | InvalidEventResult;
 
 @Injectable()
 export class IngestionService {
-	constructor(private readonly repository: InMemoryTelemetryRepository) {}
+	constructor(
+		@Inject(TELEMETRY_REPOSITORY)
+		private readonly repository: TelemetryRepository,
+	) {}
 
-	ingest(payload: unknown, receivedAt: Date = new Date()): IngestionResult {
+	async ingest(
+		payload: unknown,
+		receivedAt: Date = new Date(),
+	): Promise<IngestionResult> {
 		const parsed = this.parseStandardEvent(payload, receivedAt);
 		if (!parsed.ok) {
-			this.repository.recordValidationFailure();
+			await this.repository.recordValidationFailure();
 			return {
 				accepted: false,
 				inserted: false,
@@ -49,14 +57,14 @@ export class IngestionService {
 		}
 
 		try {
-			const { inserted } = this.repository.insertEvent(parsed.event);
+			const { inserted } = await this.repository.insertEvent(parsed.event);
 			return {
 				accepted: true,
 				inserted,
 				eventId: parsed.event.eventId,
 			};
 		} catch {
-			this.repository.recordInsertFailure();
+			await this.repository.recordInsertFailure();
 			return {
 				accepted: false,
 				inserted: false,
@@ -66,13 +74,13 @@ export class IngestionService {
 		}
 	}
 
-	ingestLegacyUploadResult(
+	async ingestLegacyUploadResult(
 		payload: unknown,
 		receivedAt: Date = new Date(),
-	): IngestionResult {
+	): Promise<IngestionResult> {
 		const legacyPayload = asRecord(payload);
 		if (!legacyPayload) {
-			this.repository.recordValidationFailure();
+			await this.repository.recordValidationFailure();
 			return {
 				accepted: false,
 				inserted: false,
@@ -85,7 +93,7 @@ export class IngestionService {
 		const size = readOptionalNumber(legacyPayload, 'size');
 		const exeTime = readOptionalNumber(legacyPayload, 'exeTime');
 		if (id === undefined) {
-			this.repository.recordValidationFailure();
+			await this.repository.recordValidationFailure();
 			return {
 				accepted: false,
 				inserted: false,
@@ -99,7 +107,7 @@ export class IngestionService {
 			`legacy-${id}.${format === 'unknown' ? 'bin' : format}`;
 		const imageKey =
 			readOptionalString(legacyPayload, 'imageKey') ?? `${path}/${name}`;
-		return this.ingest(
+		return await this.ingest(
 			{
 				schemaVersion: 1,
 				eventId:
@@ -113,6 +121,13 @@ export class IngestionService {
 					readOptionalString(legacyPayload, 'environment') ??
 					process.env.NODE_ENV ??
 					'development',
+				clientServiceId: readOptionalString(legacyPayload, 'clientServiceId'),
+				clientServiceSlug: readOptionalString(
+					legacyPayload,
+					'clientServiceSlug',
+				),
+				requestId: readOptionalString(legacyPayload, 'requestId'),
+				traceId: readOptionalString(legacyPayload, 'traceId'),
 				imageId: id,
 				path,
 				name,
@@ -203,6 +218,8 @@ export class IngestionService {
 					receivedAt.toISOString(),
 				sourceApp,
 				environment,
+				clientServiceId: readOptionalString(record, 'clientServiceId'),
+				clientServiceSlug: readOptionalString(record, 'clientServiceSlug'),
 				requestId: readOptionalString(record, 'requestId'),
 				traceId: readOptionalString(record, 'traceId'),
 				imageId: readOptionalNumber(record, 'imageId'),

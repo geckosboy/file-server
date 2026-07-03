@@ -1,0 +1,28 @@
+name: ${POSTGRES_COMPOSE_PROJECT_NAME:-file-server-postgres}
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-18}
+    container_name: ${POSTGRES_CONTAINER_NAME:-file-server-postgres}
+    restart: unless-stopped
+    ports:
+      - '${POSTGRES_HOST_PORT:-5432}:5432'
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-file_server}
+      POSTGRES_USER: ${POSTGRES_USER:-file_server}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-file_server}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'pg_isready -U ${POSTGRES_USER:-file_server} -d ${POSTGRES_DB:-file_server}',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  postgres_data:

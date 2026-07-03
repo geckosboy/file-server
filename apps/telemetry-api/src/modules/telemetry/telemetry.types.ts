@@ -41,6 +41,8 @@ export interface ImageTelemetryEvent {
 	receivedAt: string;
 	sourceApp: SourceApp;
 	environment: RuntimeEnvironment;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
 	requestId?: string;
 	traceId?: string;
 	imageId?: number;
@@ -108,6 +110,8 @@ export interface EventFilter extends Partial<TelemetryRange> {
 	eventType?: string;
 	sourceApp?: string;
 	status?: string;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
 	path?: string;
 	name?: string;
 	imageKey?: string;
@@ -118,6 +122,8 @@ export interface EventFilter extends Partial<TelemetryRange> {
 
 export interface ImageFilter extends Partial<TelemetryRange> {
 	q?: string;
+	clientServiceId?: string;
+	clientServiceSlug?: string;
 	sort?: 'reads' | 'resizes' | 'cacheMisses' | 'failures' | 'lastSeenAt';
 	order?: 'asc' | 'desc';
 	cursor?: string;
@@ -126,4 +132,6 @@ export interface ImageFilter extends Partial<TelemetryRange> {
 
 export interface TimeseriesQuery extends Partial<TelemetryRange> {
 	interval?: 'minute' | 'hour' | 'day';
+	clientServiceId?: string;
+	clientServiceSlug?: string;
 }

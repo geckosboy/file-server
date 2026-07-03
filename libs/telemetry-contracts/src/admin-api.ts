@@ -101,6 +101,14 @@ export class EventsListQueryDto {
 
 	@IsOptional()
 	@IsString()
+	clientServiceId?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceSlug?: string;
+
+	@IsOptional()
+	@IsString()
 	requestId?: string;
 
 	@IsOptional()
@@ -127,6 +135,14 @@ export class ImagesListQueryDto {
 	@IsOptional()
 	@IsString()
 	q?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceId?: string;
+
+	@IsOptional()
+	@IsString()
+	clientServiceSlug?: string;
 
 	@IsOptional()
 	@IsIn(Object.values(ImageListSortField))
@@ -196,6 +212,8 @@ export type ImageTelemetryEventListItem = Pick<
 	| 'sourceApp'
 	| 'environment'
 	| 'status'
+	| 'clientServiceId'
+	| 'clientServiceSlug'
 	| 'requestId'
 	| 'traceId'
 	| 'imageId'
@@ -270,4 +288,37 @@ export type ImageVariantListItem = {
 export type ImageVariantsResponse = {
 	imageKey: string;
 	items: ImageVariantListItem[];
+};
+
+export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
+
+export type ClientServiceKeyItem = {
+	id: string;
+	clientServiceId: string;
+	name?: string;
+	keyPrefix: string;
+	scopes?: Record<string, unknown>;
+	expiresAt?: string;
+	revokedAt?: string;
+	lastUsedAt?: string;
+	createdAt: string;
+};
+
+export type ClientServiceItem = {
+	id: string;
+	slug: string;
+	name: string;
+	description?: string;
+	owner?: string;
+	status: ClientServiceStatus;
+	createdAt: string;
+	updatedAt: string;
+	keyCount: number;
+	activeKeyCount: number;
+	keys?: ClientServiceKeyItem[];
+};
+
+export type CreateClientServiceKeyResponse = {
+	apiKey: string;
+	key: ClientServiceKeyItem;
 };

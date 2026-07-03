@@ -7,6 +7,19 @@ import {
 	TelemetryMetrics,
 } from './telemetry.types';
 
+export interface TelemetryRepository {
+	insertEvent(event: ImageTelemetryEvent): Promise<{ inserted: boolean }>;
+	recordValidationFailure(): Promise<void>;
+	recordInsertFailure(): Promise<void>;
+	getMetrics(): Promise<TelemetryMetrics>;
+	listEvents(): Promise<ImageTelemetryEvent[]>;
+	listAssets(): Promise<ImageAssetSummary[]>;
+	listVariants(imageKey?: string): Promise<ImageVariantSummary[]>;
+	clear(): Promise<void>;
+	getStorageKind(): 'memory' | 'postgresql';
+	isConnected(): Promise<boolean>;
+}
+
 interface MutableImageAssetSummary extends ImageAssetSummary {
 	durations: number[];
 }
@@ -16,7 +29,7 @@ interface MutableImageVariantSummary extends ImageVariantSummary {
 }
 
 @Injectable()
-export class InMemoryTelemetryRepository {
+export class InMemoryTelemetryRepository implements TelemetryRepository {
 	private readonly eventsById = new Map<string, ImageTelemetryEvent>();
 	private readonly assetsByKey = new Map<string, MutableImageAssetSummary>();
 	private readonly variantsByKey = new Map<
@@ -29,7 +42,9 @@ export class InMemoryTelemetryRepository {
 		lastConsumedEventAt: null,
 	};
 
-	insertEvent(event: ImageTelemetryEvent): { inserted: boolean } {
+	async insertEvent(
+		event: ImageTelemetryEvent,
+	): Promise<{ inserted: boolean }> {
 		if (this.eventsById.has(event.eventId)) {
 			return { inserted: false };
 		}
@@ -45,29 +60,29 @@ export class InMemoryTelemetryRepository {
 		return { inserted: true };
 	}
 
-	recordValidationFailure(): void {
+	async recordValidationFailure(): Promise<void> {
 		this.metrics = {
 			...this.metrics,
 			validationFailureCount: this.metrics.validationFailureCount + 1,
 		};
 	}
 
-	recordInsertFailure(): void {
+	async recordInsertFailure(): Promise<void> {
 		this.metrics = {
 			...this.metrics,
 			insertFailureCount: this.metrics.insertFailureCount + 1,
 		};
 	}
 
-	getMetrics(): TelemetryMetrics {
+	async getMetrics(): Promise<TelemetryMetrics> {
 		return { ...this.metrics };
 	}
 
-	listEvents(): ImageTelemetryEvent[] {
+	async listEvents(): Promise<ImageTelemetryEvent[]> {
 		return [...this.eventsById.values()];
 	}
 
-	listAssets(): ImageAssetSummary[] {
+	async listAssets(): Promise<ImageAssetSummary[]> {
 		return [...this.assetsByKey.values()].map(
 			({ durations: _durations, ...asset }) => ({
 				...asset,
@@ -75,7 +90,7 @@ export class InMemoryTelemetryRepository {
 		);
 	}
 
-	listVariants(imageKey?: string): ImageVariantSummary[] {
+	async listVariants(imageKey?: string): Promise<ImageVariantSummary[]> {
 		return [...this.variantsByKey.values()]
 			.filter((variant) => !imageKey || variant.imageKey === imageKey)
 			.map(({ durations: _durations, ...variant }) => ({
@@ -83,7 +98,7 @@ export class InMemoryTelemetryRepository {
 			}));
 	}
 
-	clear(): void {
+	async clear(): Promise<void> {
 		this.eventsById.clear();
 		this.assetsByKey.clear();
 		this.variantsByKey.clear();
@@ -92,6 +107,14 @@ export class InMemoryTelemetryRepository {
 			insertFailureCount: 0,
 			lastConsumedEventAt: null,
 		};
+	}
+
+	getStorageKind(): 'memory' {
+		return 'memory';
+	}
+
+	async isConnected(): Promise<boolean> {
+		return true;
 	}
 
 	private updateAsset(event: ImageTelemetryEvent): void {
@@ -186,6 +209,27 @@ export class InMemoryTelemetryRepository {
 			durations,
 		});
 	}
+}
+
+export async function projectAssetSummaries(
+	events: ImageTelemetryEvent[],
+): Promise<ImageAssetSummary[]> {
+	const repository = new InMemoryTelemetryRepository();
+	for (const event of events) {
+		await repository.insertEvent(event);
+	}
+	return repository.listAssets();
+}
+
+export async function projectVariantSummaries(
+	events: ImageTelemetryEvent[],
+	imageKey?: string,
+): Promise<ImageVariantSummary[]> {
+	const repository = new InMemoryTelemetryRepository();
+	for (const event of events) {
+		await repository.insertEvent(event);
+	}
+	return repository.listVariants(imageKey);
 }
 
 export function average(values: number[]): number | null {

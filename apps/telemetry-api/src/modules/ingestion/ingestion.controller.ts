@@ -7,13 +7,13 @@ export class IngestionController {
 
 	@Post('events')
 	@HttpCode(202)
-	ingestEvent(@Body() body: unknown): IngestionResult {
+	ingestEvent(@Body() body: unknown): Promise<IngestionResult> {
 		return this.ingestionService.ingest(body);
 	}
 
 	@Post('legacy/upload-result')
 	@HttpCode(202)
-	ingestLegacyUploadResult(@Body() body: unknown): IngestionResult {
+	ingestLegacyUploadResult(@Body() body: unknown): Promise<IngestionResult> {
 		return this.ingestionService.ingestLegacyUploadResult(body);
 	}
 }

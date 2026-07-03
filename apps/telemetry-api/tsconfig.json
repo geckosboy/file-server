@@ -10,6 +10,11 @@
 	"compilerOptions": {
 		"declaration": false,
 		"outDir": "./dist",
-		"baseUrl": "./"
+		"baseUrl": "./",
+		"paths": {
+			"@file/database": [
+				"../../libs/database/src"
+			]
+		}
 	}
 }

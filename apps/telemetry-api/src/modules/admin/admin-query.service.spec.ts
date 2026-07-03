@@ -18,22 +18,22 @@ describe('관리자 조회 서비스', () => {
 	let ingestionService: IngestionService;
 	let queryService: AdminQueryService;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		const repository = new InMemoryTelemetryRepository();
 		ingestionService = new IngestionService(repository);
 		queryService = new AdminQueryService(repository);
-		seedFixture();
+		await seedFixture();
 	});
 
-	it('대시보드 요약에서 캐시 hit율을 계산한다', () => {
-		const summary = queryService.getSummary(testRange());
+	it('대시보드 요약에서 캐시 hit율을 계산한다', async () => {
+		const summary = await queryService.getSummary(testRange());
 
 		expect(summary.cacheHitRate).toBe(0.5);
 		expect(summary.cacheMissRate).toBe(0.5);
 	});
 
-	it('캐시 이벤트가 없으면 hit율을 null로 반환한다', () => {
-		const summary = queryService.getSummary({
+	it('캐시 이벤트가 없으면 hit율을 null로 반환한다', async () => {
+		const summary = await queryService.getSummary({
 			from: '2026-07-01T02:00:00.000Z',
 			to: '2026-07-01T02:59:59.999Z',
 		});
@@ -42,27 +42,27 @@ describe('관리자 조회 서비스', () => {
 		expect(summary.cacheMissRate).toBeNull();
 	});
 
-	it('실패율을 전체 이벤트 대비 실패 이벤트 비율로 계산한다', () => {
-		const summary = queryService.getSummary(testRange());
+	it('실패율을 전체 이벤트 대비 실패 이벤트 비율로 계산한다', async () => {
+		const summary = await queryService.getSummary(testRange());
 
 		expect(summary.totalEvents).toBe(5);
 		expect(summary.failureRate).toBe(0.2);
 	});
 
-	it('평균 처리 시간은 durationMs가 있는 이벤트만 기준으로 계산한다', () => {
-		const summary = queryService.getSummary(testRange());
+	it('평균 처리 시간은 durationMs가 있는 이벤트만 기준으로 계산한다', async () => {
+		const summary = await queryService.getSummary(testRange());
 
 		expect(summary.avgDurationMs).toBe(30);
 	});
 
-	it('처리 시간 p95를 fixture 기준으로 계산한다', () => {
-		const summary = queryService.getSummary(testRange());
+	it('처리 시간 p95를 fixture 기준으로 계산한다', async () => {
+		const summary = await queryService.getSummary(testRange());
 
 		expect(summary.p95DurationMs).toBe(50);
 	});
 
-	it('시간대별 집계는 비어 있는 bucket을 0으로 채운다', () => {
-		const timeseries = queryService.getTimeseries({
+	it('시간대별 집계는 비어 있는 bucket을 0으로 채운다', async () => {
+		const timeseries = await queryService.getTimeseries({
 			from: '2026-07-01T00:00:00.000Z',
 			to: '2026-07-01T02:00:00.000Z',
 			interval: 'hour',
@@ -78,9 +78,9 @@ describe('관리자 조회 서비스', () => {
 		});
 	});
 
-	it('이벤트 목록은 occurredAt 내림차순으로 페이지네이션한다', () => {
-		const firstPage = queryService.listEvents({ limit: 2 });
-		const secondPage = queryService.listEvents({
+	it('이벤트 목록은 occurredAt 내림차순으로 페이지네이션한다', async () => {
+		const firstPage = await queryService.listEvents({ limit: 2 });
+		const secondPage = await queryService.listEvents({
 			limit: 2,
 			cursor: firstPage.nextCursor,
 		});
@@ -96,8 +96,8 @@ describe('관리자 조회 서비스', () => {
 		]);
 	});
 
-	it('이벤트 목록은 필터 조건을 적용한다', () => {
-		const response = queryService.listEvents({
+	it('이벤트 목록은 필터 조건을 적용한다', async () => {
+		const response = await queryService.listEvents({
 			eventType: 'image.cache.hit',
 			sourceApp: 'cache',
 			status: 'success',
@@ -111,8 +111,11 @@ describe('관리자 조회 서비스', () => {
 		expect(response.items.map((item) => item.eventId)).toEqual(['evt-hit-1']);
 	});
 
-	it('이미지 목록은 totalReads 기준으로 정렬한다', () => {
-		const response = queryService.listImages({ sort: 'reads', order: 'desc' });
+	it('이미지 목록은 totalReads 기준으로 정렬한다', async () => {
+		const response = await queryService.listImages({
+			sort: 'reads',
+			order: 'desc',
+		});
 
 		expect(response.items[0]).toMatchObject({
 			imageKey: 'products/image/sample.png',
@@ -120,8 +123,8 @@ describe('관리자 조회 서비스', () => {
 		});
 	});
 
-	it('이미지 목록은 cacheMisses 기준으로 정렬한다', () => {
-		ingestionService.ingest({
+	it('이미지 목록은 cacheMisses 기준으로 정렬한다', async () => {
+		await ingestionService.ingest({
 			...baseEvent,
 			eventId: 'evt-other-miss-1',
 			eventType: 'image.cache.miss',
@@ -132,7 +135,7 @@ describe('관리자 조회 서비스', () => {
 			cacheKey: 'other',
 			durationMs: 5,
 		});
-		ingestionService.ingest({
+		await ingestionService.ingest({
 			...baseEvent,
 			eventId: 'evt-other-miss-2',
 			eventType: 'image.cache.miss',
@@ -144,7 +147,7 @@ describe('관리자 조회 서비스', () => {
 			durationMs: 6,
 		});
 
-		const response = queryService.listImages({
+		const response = await queryService.listImages({
 			sort: 'cacheMisses',
 			order: 'desc',
 		});
@@ -155,8 +158,49 @@ describe('관리자 조회 서비스', () => {
 		});
 	});
 
-	function seedFixture() {
-		ingestionService.ingest({
+	it('이미지 목록은 client service 필터를 적용한다', async () => {
+		await ingestionService.ingest({
+			...baseEvent,
+			eventId: 'evt-service-a-upload',
+			eventType: 'image.upload.completed',
+			clientServiceId: 'service-a',
+			clientServiceSlug: 'service-a',
+			imageKey: 'service-a/image/a.png',
+			path: 'service-a/image',
+			name: 'a.png',
+			durationMs: 7,
+		});
+		await ingestionService.ingest({
+			...baseEvent,
+			eventId: 'evt-service-b-upload',
+			eventType: 'image.upload.completed',
+			clientServiceId: 'service-b',
+			clientServiceSlug: 'service-b',
+			imageKey: 'service-b/image/b.png',
+			path: 'service-b/image',
+			name: 'b.png',
+			durationMs: 11,
+		});
+
+		const byId = await queryService.listImages({
+			clientServiceId: 'service-a',
+			limit: 10,
+		});
+		const bySlug = await queryService.listImages({
+			clientServiceSlug: 'service-b',
+			limit: 10,
+		});
+
+		expect(byId.items.map((item) => item.imageKey)).toEqual([
+			'service-a/image/a.png',
+		]);
+		expect(bySlug.items.map((item) => item.imageKey)).toEqual([
+			'service-b/image/b.png',
+		]);
+	});
+
+	async function seedFixture() {
+		await ingestionService.ingest({
 			...baseEvent,
 			eventId: 'evt-upload-1',
 			eventType: 'image.upload.completed',
@@ -165,7 +209,7 @@ describe('관리자 조회 서비스', () => {
 			outputBytes: 80,
 			durationMs: 10,
 		});
-		ingestionService.ingest({
+		await ingestionService.ingest({
 			...baseEvent,
 			eventId: 'evt-hit-1',
 			eventType: 'image.cache.hit',
@@ -175,7 +219,7 @@ describe('관리자 조회 서비스', () => {
 			cacheKey: 'sample-hit',
 			durationMs: 20,
 		});
-		ingestionService.ingest({
+		await ingestionService.ingest({
 			...baseEvent,
 			eventId: 'evt-miss-1',
 			eventType: 'image.cache.miss',
@@ -184,7 +228,7 @@ describe('관리자 조회 서비스', () => {
 			cacheKey: 'sample-miss',
 			durationMs: 30,
 		});
-		ingestionService.ingest({
+		await ingestionService.ingest({
 			...baseEvent,
 			eventId: 'evt-resize-1',
 			eventType: 'image.resize.completed',
@@ -195,7 +239,7 @@ describe('관리자 조회 서비스', () => {
 			outputBytes: 40,
 			durationMs: 40,
 		});
-		ingestionService.ingest({
+		await ingestionService.ingest({
 			...baseEvent,
 			eventId: 'evt-failed-1',
 			eventType: 'image.read.failed',
