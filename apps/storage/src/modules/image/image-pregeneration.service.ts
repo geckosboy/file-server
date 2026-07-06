@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '@file/database';
 import { performance } from 'perf_hooks';
 import {
+	createPreGeneratedVariantName,
 	ImageManager,
 	type PreGeneratedImageFormat,
 } from './strategies/manager';
@@ -25,6 +26,23 @@ export interface ImagePregenerationResult {
 	durationMs: number;
 	status: 'success' | 'failed';
 	error?: unknown;
+}
+
+export interface PreGeneratedVariantLookupInfo {
+	clientServiceId?: string;
+	path: string;
+	name: string;
+	width?: number;
+	height?: number;
+	format?: PreGeneratedImageFormat;
+}
+
+export interface PreGeneratedVariantLookupResult {
+	image: Buffer;
+	name: string;
+	width?: number;
+	height?: number;
+	format: PreGeneratedImageFormat;
 }
 
 @Injectable()
@@ -89,6 +107,60 @@ export class ImagePregenerationService {
 		}
 
 		return results;
+	}
+
+	async findPreGeneratedVariantForRequest(
+		info: PreGeneratedVariantLookupInfo,
+	): Promise<PreGeneratedVariantLookupResult | null> {
+		if (
+			!info.clientServiceId ||
+			!info.format ||
+			(info.width === undefined && info.height === undefined)
+		) {
+			return null;
+		}
+
+		const policy = await this.loadActivePreGeneratePolicy(info.clientServiceId);
+		const variant = policy?.variants
+			.map(normalizeVariant)
+			.find(
+				(item) =>
+					item &&
+					item.width === info.width &&
+					item.height === info.height &&
+					item.format === info.format,
+			);
+		if (!variant) {
+			return null;
+		}
+
+		const variantName = createPreGeneratedVariantName({
+			name: info.name,
+			width: variant.width,
+			height: variant.height,
+			format: variant.format,
+		});
+
+		try {
+			const result = await this.imageManager.getBufferImage({
+				path: info.path,
+				name: variantName,
+			});
+			return {
+				image: result.image,
+				name: result.name,
+				width: variant.width,
+				height: variant.height,
+				format: variant.format,
+			};
+		} catch (error) {
+			this.logger.warn(
+				`사전 리사이징 파일 조회 실패, 기존 조회 흐름으로 fallback합니다: ${info.path}/${variantName} ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+			return null;
+		}
 	}
 
 	private async loadActivePreGeneratePolicy(clientServiceId: string) {

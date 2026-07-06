@@ -102,7 +102,7 @@ describe('캐시 이미지 서비스', () => {
 				sourceApp: 'cache',
 				path: 'public',
 				name: 'sample.png',
-				cacheKey: 'public|100|x|sample.png',
+				cacheKey: 'public|100|x|png|sample.png',
 				width: 100,
 				format: 'png',
 				outputBytes: cachedImage.imageBuffer.byteLength,
@@ -142,7 +142,7 @@ describe('캐시 이미지 서비스', () => {
 		expect(result.contentType).toBe('image/webp');
 		expect(result.imageBuffer.equals(resized)).toBe(true);
 		expect(cacheService.cacheImage).toHaveBeenCalledWith(
-			'public|100|x|sample.webp',
+			'public|100|x|webp|sample.webp',
 			{
 				imageBuffer: resized,
 				contentType: 'image/webp',
@@ -151,7 +151,7 @@ describe('캐시 이미지 서비스', () => {
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheMiss,
-				cacheKey: 'public|100|x|sample.webp',
+				cacheKey: 'public|100|x|webp|sample.webp',
 				status: 'success',
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',
@@ -159,12 +159,55 @@ describe('캐시 이미지 서비스', () => {
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheStored,
-				cacheKey: 'public|100|x|sample.webp',
+				cacheKey: 'public|100|x|webp|sample.webp',
 				outputBytes: resized.byteLength,
 				status: 'success',
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',
 				requestId: 'req-cache-1',
+			}),
+		]);
+	});
+
+	it('format 쿼리를 리사이즈 앱으로 전달하고 캐시 키에도 포함한다', async () => {
+		const resized = Buffer.from('pre-generated-webp');
+		cacheService.getCachedImage.mockReturnValue(undefined);
+		fetchSpy.mockResolvedValue(
+			createFetchResponse(resized, { contentType: 'image/webp' }),
+		);
+
+		await service.getCacheImage(
+			{
+				path: 'public',
+				name: 'sample.png',
+				width: 100,
+				height: 50,
+				format: 'webp',
+			},
+			clientServiceContext,
+		);
+
+		expect(fetchSpy).toHaveBeenCalledWith(
+			'http://resize.test/image/public/sample.png?width=100&height=50&format=webp',
+			expect.any(Object),
+		);
+		expect(cacheService.cacheImage).toHaveBeenCalledWith(
+			'public|100|50|webp|sample.png',
+			expect.objectContaining({
+				imageBuffer: resized,
+				contentType: 'image/webp',
+			}),
+		);
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheMiss,
+				cacheKey: 'public|100|50|webp|sample.png',
+				format: 'webp',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.CacheStored,
+				cacheKey: 'public|100|50|webp|sample.png',
+				format: 'webp',
 			}),
 		]);
 	});

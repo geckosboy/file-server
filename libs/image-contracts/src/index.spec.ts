@@ -7,11 +7,23 @@ describe('이미지 계약 DTO', () => {
 		const dto = plainToInstance(ImageQueryDto, {
 			width: '320',
 			height: '240',
+			format: 'webp',
 		});
 
 		await expect(validate(dto)).resolves.toEqual([]);
 		expect(dto.width).toBe(320);
 		expect(dto.height).toBe(240);
+		expect(dto.format).toBe('webp');
+	});
+
+	it('이미지 format 쿼리는 지원하는 출력 포맷만 허용한다', async () => {
+		const dto = plainToInstance(ImageQueryDto, {
+			format: 'gif',
+		});
+
+		const errors = await validate(dto);
+
+		expect(errors).toHaveLength(1);
 	});
 
 	it('스토리지 업로드 계약에서 이전 이미지 이름은 선택 값으로 허용한다', async () => {

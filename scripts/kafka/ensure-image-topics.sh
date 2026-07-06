@@ -10,7 +10,6 @@ Usage:
 Creates the image service Kafka topics if they do not exist, then describes them.
 
 Default topics:
-  image-topic
   file.image.events.v1
   file.image.lifecycle.v1
 
@@ -61,7 +60,6 @@ esac
 topics=("$@")
 if [[ ${#topics[@]} -eq 0 ]]; then
   topics=(
-    image-topic
     file.image.events.v1
     file.image.lifecycle.v1
   )

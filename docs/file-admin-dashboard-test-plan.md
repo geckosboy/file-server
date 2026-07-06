@@ -88,7 +88,6 @@ apps/telemetry-api/src/modules/ingestion/ingestion.service.spec.ts
 - `신규 이미지 이벤트를 원본 이벤트 테이블에 저장한다`
 - `같은 eventId가 다시 들어오면 중복 저장하지 않는다`
 - `잘못된 이벤트는 저장하지 않고 validation 실패 카운트를 증가시킨다`
-- `legacy uploadResult-json payload를 업로드 완료 이벤트로 변환한다`
 - `업로드 완료 이벤트가 들어오면 image_assets 요약을 갱신한다`
 - `캐시 hit 이벤트가 들어오면 image_assets의 total_cache_hits를 증가시킨다`
 - `캐시 miss 이벤트가 들어오면 image_assets의 total_cache_misses를 증가시킨다`

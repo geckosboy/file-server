@@ -56,7 +56,7 @@ KAFKA_CLIENT_BROKERS=kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
 KAFKA_CLIENT_BROKERS=실서버_DNS_또는_IP:19092,실서버_DNS_또는_IP:19093,실서버_DNS_또는_IP:19094
 ```
 
-운영용 compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값이므로 topic을 먼저 만들어야 합니다. 아래 스크립트는 기존 호환용 `image-topic`, telemetry 저장용 `file.image.events.v1`, Client Service lifecycle 소비용 `file.image.lifecycle.v1`을 생성하고 describe까지 출력합니다.
+운영용 compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값이므로 topic을 먼저 만들어야 합니다. 아래 스크립트는 telemetry 저장용 `file.image.events.v1`, Client Service lifecycle 소비용 `file.image.lifecycle.v1`을 생성하고 describe까지 출력합니다. 더 이상 legacy `image-topic`은 생성하지 않습니다.
 
 ```bash
 # 로컬 단일 브로커 compose

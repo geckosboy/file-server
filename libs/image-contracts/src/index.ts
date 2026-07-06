@@ -2,6 +2,7 @@ import { PickType } from '@nestjs/mapped-types';
 import { Type } from 'class-transformer';
 import {
 	IsInt,
+	IsIn,
 	IsNotEmpty,
 	IsNumber,
 	IsOptional,
@@ -36,10 +37,19 @@ export class ImageEntity {
 	@IsString()
 	@IsNotEmpty()
 	name!: string;
+
+	@IsString()
+	@IsIn(['png', 'jpeg', 'webp'])
+	@IsOptional()
+	format?: 'png' | 'jpeg' | 'webp';
 }
 
 export class ImageParamDto extends PickType(ImageEntity, ['name', 'path']) {}
-export class ImageQueryDto extends PickType(ImageEntity, ['height', 'width']) {}
+export class ImageQueryDto extends PickType(ImageEntity, [
+	'height',
+	'width',
+	'format',
+]) {}
 
 class StorageImageDto {
 	@IsString()

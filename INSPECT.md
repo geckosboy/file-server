@@ -5,8 +5,7 @@
 업로드/삭제:
 내 백엔드 → storage → 로컬 파일 저장/삭제 → Kafka 이벤트 발행
 ├─ `file.image.events.v1` → telemetry-api consumer → PostgreSQL 저장
-├─ `file.image.lifecycle.v1` → Client Service consumer가 업로드 완료/실패 후속 처리
-└─ `image-topic` → 기존 호환용 legacy consumer
+└─ `file.image.lifecycle.v1` → Client Service consumer가 업로드 완료/실패 후속 처리
 
 원본 조회:
 내 백엔드 → storage → 로컬 파일 반환
@@ -23,7 +22,7 @@
 
 4단계부터 `telemetry-api`가 Kafka `file.image.events.v1` topic을 직접 consume해서 Prisma `TelemetryEvent` 모델/DB `telemetry_events` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
 
-storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.image.lifecycle.v1`에도 발행됩니다. Client Service는 이 topic을 자기 consumer group으로 소비해서 이미지 업로드 완료 후속 처리나 실패 알림을 붙일 수 있습니다. 기존 `image-topic`은 호환용으로 계속 발행됩니다.
+storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.image.lifecycle.v1`에도 발행됩니다. Client Service는 이 topic을 자기 consumer group으로 소비해서 이미지 업로드 완료 후속 처리나 실패 알림을 붙일 수 있습니다. 기존 legacy `image-topic` 발행은 제거했고, 이미지 저장 완료 전달은 lifecycle topic이 담당합니다.
 
 7단계부터 lifecycle 발행은 storage의 outbox를 거칩니다. 업로드 성공/실패 이벤트는 먼저 PostgreSQL `image_lifecycle_outbox`에 저장되고, Kafka 발행 성공 시 `PUBLISHED`로 표시됩니다. Kafka가 잠깐 죽어 발행에 실패하면 row가 `FAILED`로 남고 `LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS` 주기로 재시도합니다. 전달 보장은 at-least-once이며, 같은 이벤트가 중복 발행될 수 있으므로 Client Service consumer는 `eventId`를 idempotency key로 저장/무시해야 합니다.
 
@@ -138,7 +137,7 @@ echo "CONSUMER_GROUP=$CONSUMER_GROUP"
 docker compose -f docker/docker-compose.dev.yml --profile ui up -d
 ```
 
-로컬 Compose는 개발 편의를 위해 topic auto-create가 켜져 있지만, 실제 운영과 같은 조건으로 보려면 topic을 명시 생성합니다. 이 스크립트는 `image-topic`, `file.image.events.v1`, `file.image.lifecycle.v1`을 만들고 describe까지 출력합니다.
+로컬 Compose는 개발 편의를 위해 topic auto-create가 켜져 있지만, 실제 운영과 같은 조건으로 보려면 topic을 명시 생성합니다. 이 스크립트는 `file.image.events.v1`, `file.image.lifecycle.v1`을 만들고 describe까지 출력합니다.
 
 ```bash
 pnpm kafka:topics:dev
@@ -214,7 +213,7 @@ curl -i -X POST http://127.0.0.1:3032/image \
 
 성공하면 `201 Created`.
 
-서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<원본이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 `sample.png`에 `400x400 webp` variant를 두면 storage 내부에는 `sample__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다.
+서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<원본이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 `sample.png`에 `400x400 webp` variant를 두면 storage 내부에는 `sample__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다. 이후 `storage`/`resize`/`cache` 조회에서 `?width=400&height=400&format=webp`를 요청하면 해당 variant 파일이 먼저 반환되고, 파일이 없으면 기존 on-demand 흐름으로 fallback합니다.
 
 ## 6. 원본 조회 확인
 
@@ -707,5 +706,6 @@ pnpm all:test:e2e
 4. 업로드 성공/실패 lifecycle event가 `file.image.lifecycle.v1` consumer와 `/lifecycle-events` 양쪽에서 같은 `eventId`로 확인됩니다.
 5. `storage`/`resize`/`cache` telemetry event가 `file.image.events.v1`을 거쳐 `/events`, `/dashboard`, `/images`에 반영됩니다.
 6. `/services`에서 Client Service의 리사이징 정책을 `PRE_GENERATE`로 바꾸고 variant를 추가하면 다음 업로드 때 사전 생성 파일과 `image.resize.completed` telemetry가 남습니다.
-7. on-demand resize 사용량이 쌓이면 `/resize-recommendations`에서 추천 사이즈가 보이고, `정책에 반영` 버튼으로 같은 서비스의 active pre-generate variant가 생성됩니다.
-8. 구조 다이어그램과 책임 관계는 `docs/architecture.html`을 기준으로 확인합니다.
+7. 같은 width/height/format으로 조회하면 storage/resize/cache가 사전 생성 variant를 우선 반환하고, variant 파일이 없으면 기존 on-demand resize 흐름을 유지합니다.
+8. on-demand resize 사용량이 쌓이면 `/resize-recommendations`에서 추천 사이즈가 보이고, `정책에 반영` 버튼으로 같은 서비스의 active pre-generate variant가 생성됩니다.
+9. 구조 다이어그램과 책임 관계는 `docs/architecture.html`을 기준으로 확인합니다.

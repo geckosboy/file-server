@@ -28,6 +28,7 @@ import imageMulterOptions from './storages/diskStorage';
 import {
 	DeleteImageDto,
 	GetImageDto,
+	ImageQueryDto,
 	UploadImageDto,
 } from '@file/image-contracts';
 
@@ -39,16 +40,28 @@ export class ImageController {
 	@Get(':path/:name')
 	async getFile(
 		@Param() imageDto: GetImageDto,
+		@Query() imageQuery: ImageQueryDto,
 		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Res() res: Response,
 	) {
-		const { image, name } = await this.imageService.getImage(
-			imageDto,
-			clientServiceContext,
-		);
+		const { image, name, preGeneratedVariant } =
+			await this.imageService.getImage(
+				{
+					...imageDto,
+					...imageQuery,
+				},
+				clientServiceContext,
+			);
 		res.set({
 			'Content-Type': lookup(name) || 'application/octet-stream',
 		});
+		if (preGeneratedVariant) {
+			res.set({
+				'x-file-server-pregenerated-variant': 'true',
+				'x-file-server-variant-format': preGeneratedVariant.format,
+				'x-file-server-variant-name': name,
+			});
+		}
 
 		res.send(image);
 	}

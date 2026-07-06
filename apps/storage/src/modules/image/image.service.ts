@@ -13,9 +13,12 @@ import {
 } from '@file/database';
 import { extension } from 'mime-types';
 import { performance } from 'perf_hooks';
-import { lastValueFrom } from 'rxjs';
 
-import { GetImageDto, UploadImageDto } from '@file/image-contracts';
+import {
+	GetImageDto,
+	ImageEntity,
+	UploadImageDto,
+} from '@file/image-contracts';
 import {
 	createFailedTelemetryFields,
 	createImageTelemetryEvent,
@@ -124,6 +127,17 @@ export class ImageService {
 		result: Pick<ImagePregenerationResult, 'width' | 'height' | 'format'>,
 	) {
 		return `${imageKey}:${result.width ?? 'auto'}x${result.height ?? 'auto'}:${result.format}`;
+	}
+
+	private resolveRequestedVariantFormat(
+		name: string,
+		requestedFormat?: ImageEntity['format'],
+	) {
+		const format = requestedFormat ?? normalizeImageFormat(name);
+		if (format === 'png' || format === 'jpeg' || format === 'webp') {
+			return format;
+		}
+		return undefined;
 	}
 
 	private async publishPregenerationTelemetryEvents({
@@ -279,18 +293,31 @@ export class ImageService {
 
 	/** Buffer형식의 이미지 데이터 가져오기 */
 	async getImage(
-		imageInfo: GetImageDto,
+		imageInfo: GetImageDto &
+			Partial<Pick<ImageEntity, 'width' | 'height' | 'format'>>,
 		clientServiceContext?: ClientServiceAuthContext,
 	) {
-		const { path, name } = imageInfo;
+		const { format: requestedFormat, height, name, path, width } = imageInfo;
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
+		const mainPath = `${path}/image`;
+		const variant =
+			await this.imagePregenerationService.findPreGeneratedVariantForRequest({
+				clientServiceId: clientServiceContext?.clientServiceId,
+				path: mainPath,
+				name,
+				width,
+				height,
+				format: this.resolveRequestedVariantFormat(name, requestedFormat),
+			});
 
 		try {
-			const result = await this.imageManager.getBufferImage({
-				path: `${path}/image`,
-				name,
-			});
+			const result =
+				variant ??
+				(await this.imageManager.getBufferImage({
+					path: mainPath,
+					name,
+				}));
 
 			await this.publishTelemetryEvent(
 				createImageTelemetryEvent({
@@ -305,7 +332,16 @@ export class ImageService {
 				}),
 			);
 
-			return result;
+			return {
+				...result,
+				preGeneratedVariant: variant
+					? {
+							width: variant.width,
+							height: variant.height,
+							format: variant.format,
+						}
+					: undefined,
+			};
 		} catch (error) {
 			await this.publishTelemetryEvent(
 				createImageTelemetryEvent({
@@ -342,18 +378,6 @@ export class ImageService {
 				file,
 				apiInfo: { id, path },
 			});
-			/** 이미지 업로드 결과를 Message Queue에 전달 */
-			await lastValueFrom(
-				this.imageClient.emit('image-topic', {
-					key: 'uploadResult-json',
-					value: JSON.stringify({
-						id,
-						format,
-						size,
-						exeTime,
-					}),
-				}),
-			);
 
 			await this.publishLifecycleEvent(
 				createImageLifecycleEvent({

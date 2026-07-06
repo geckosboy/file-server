@@ -31,8 +31,14 @@ type KafkaEmitPayload = { key: string; value: string };
 const parseKafkaPayload = (payload: KafkaEmitPayload) =>
 	JSON.parse(payload.value) as Record<string, unknown>;
 
-const createFetchResponse = (body: Buffer, status = 200) =>
-	new Response(new Uint8Array(body), { status });
+const createFetchResponse = (
+	body: Buffer,
+	options: { status?: number; headers?: HeadersInit } = {},
+) =>
+	new Response(new Uint8Array(body), {
+		status: options.status ?? 200,
+		headers: options.headers,
+	});
 
 const createAuthService = () => ({
 	authenticate: jest.fn((apiKey: string) =>
@@ -190,9 +196,60 @@ describe('리사이즈 앱 e2e', () => {
 		]);
 	});
 
+	it('스토리지의 pre-generated variant hit이면 리사이징 없이 반환한다', async () => {
+		const variantImage = await sharp({
+			create: {
+				width: 6,
+				height: 3,
+				channels: 3,
+				background: '#00aa55',
+			},
+		})
+			.webp()
+			.toBuffer();
+		fetchSpy.mockResolvedValue(
+			createFetchResponse(variantImage, {
+				headers: {
+					'content-type': 'image/webp',
+					'x-file-server-pregenerated-variant': 'true',
+				},
+			}),
+		);
+
+		const response = await authorized(
+			request(app.getHttpServer()).get('/image/public/sample.png'),
+		)
+			.query({ width: 6, height: 3, format: 'webp' })
+			.expect(200)
+			.expect('content-type', /image\/webp/);
+		const metadata = await sharp(Buffer.from(response.body)).metadata();
+
+		expect(metadata.format).toBe('webp');
+		expect(metadata.width).toBe(6);
+		expect(metadata.height).toBe(3);
+		expect(fetchSpy).toHaveBeenCalledWith(
+			'http://storage.test/image/public/sample.png?width=6&height=3&format=webp',
+			expect.any(Object),
+		);
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeRequested,
+				format: 'webp',
+				width: 6,
+				height: 3,
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeCompleted,
+				cacheKey: 'public/sample.png:6x3:webp',
+				format: 'webp',
+				status: 'success',
+			}),
+		]);
+	});
+
 	it('스토리지 앱에서 원본 이미지를 찾지 못하면 404를 반환한다', () => {
 		fetchSpy.mockResolvedValue(
-			createFetchResponse(Buffer.from('missing'), 404),
+			createFetchResponse(Buffer.from('missing'), { status: 404 }),
 		);
 
 		return authorized(

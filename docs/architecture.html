@@ -245,8 +245,8 @@
 					<code>storage</code>, <code>resize</code>, <code>cache</code>의 이미지
 					라우트는 모두 <code>x-client-api-key</code>를 DB에서 검증합니다. 표준
 					telemetry는 <code>file.image.events.v1</code>로, Client Service 후속
-					업무용 lifecycle은 <code>file.image.lifecycle.v1</code>로 나뉘며, 기존
-					<code>image-topic</code>은 호환용으로 유지됩니다.
+					업무용 lifecycle은 <code>file.image.lifecycle.v1</code>로 나뉩니다.
+					기존 legacy <code>image-topic</code> 발행은 제거했고 이미지 저장 완료 전달은 lifecycle topic이 담당합니다.
 				</p>
 				<div class="diagram">
 					<pre class="mermaid">
@@ -269,7 +269,6 @@ flowchart TB
 		Database["PostgreSQL<br/>Prisma"]
 		EventsTopic["Kafka topic<br/>file.image.events.v1"]
 		LifecycleTopic["Kafka topic<br/>file.image.lifecycle.v1"]
-		LegacyTopic["Kafka topic<br/>image-topic"]
 		Volume["Docker volume<br/>file_dump_volume"]
 	end
 
@@ -283,7 +282,6 @@ flowchart TB
 	Resize -->|"telemetry"| EventsTopic
 	Cache -->|"telemetry"| EventsTopic
 	Storage -->|"upload lifecycle outbox publish"| LifecycleTopic
-	Storage -->|"legacy publish"| LegacyTopic
 	Telemetry -->|"consume telemetry"| EventsTopic
 	Telemetry -->|"consume lifecycle"| LifecycleTopic
 	Telemetry -->|"DB read/write"| Database
@@ -302,7 +300,7 @@ flowchart TB
 				<div class="grid">
 					<div class="info">
 						<strong>storage</strong>
-						원본 업로드/삭제/조회, legacy event 발행, telemetry 발행,
+						원본 업로드/삭제/조회, telemetry 발행,
 						lifecycle outbox 저장/재시도, pre-generate variant 생성을 담당합니다.
 					</div>
 					<div class="info">
@@ -398,7 +396,6 @@ sequenceDiagram
 	S->>S: save original to assets volume
 	S->>DB: insert image_lifecycle_outbox
 	S->>K: publish file.image.events.v1
-	S->>K: publish legacy image-topic
 	S-->>C: 201 Created
 	S->>DB: read pre-generate policy
 	alt mode is PRE_GENERATE
@@ -416,7 +413,8 @@ sequenceDiagram
 				<div class="note">
 					현재 pre-generate 파일명은 원본과 같은 directory에
 					<code>&lt;원본&gt;__w&lt;width|auto&gt;_h&lt;height|auto&gt;.&lt;format&gt;</code>
-					형태로 저장됩니다.
+					형태로 저장됩니다. 조회 요청에 같은 width/height/format이 들어오면
+					storage가 이 variant 파일을 먼저 반환하고, 없으면 resize가 기존 on-demand 흐름으로 fallback합니다.
 				</div>
 			</section>
 
@@ -622,6 +620,7 @@ docker run -d \
 					<li>Client Service consumer group으로 <code>file.image.lifecycle.v1</code> 이벤트를 소비합니다.</li>
 					<li>admin-web에서 dashboard/events/lifecycle/images/services/recommendations를 확인합니다.</li>
 					<li><code>PRE_GENERATE</code> 정책을 켠 서비스 업로드에서 variant 생성과 resize telemetry를 확인합니다.</li>
+					<li>같은 width/height/format 조회가 pre-generated variant를 우선 반환하는지 확인합니다.</li>
 				</ol>
 				<div class="note">
 					명령어 기반 상세 절차는 repository 루트의 <code>INSPECT.md</code>를 기준으로 점검합니다.

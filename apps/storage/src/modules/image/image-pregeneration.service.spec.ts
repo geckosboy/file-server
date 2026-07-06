@@ -17,7 +17,7 @@ const createPrismaMock = (): PrismaMock => ({
 describe('이미지 사전 리사이징 서비스', () => {
 	let prisma: PrismaMock;
 	let imageManager: jest.Mocked<
-		Pick<ImageManager, 'createPreGeneratedVariant'>
+		Pick<ImageManager, 'createPreGeneratedVariant' | 'getBufferImage'>
 	>;
 	let service: ImagePregenerationService;
 
@@ -31,6 +31,10 @@ describe('이미지 사전 리사이징 서비스', () => {
 				format: 'webp',
 				inputBytes: 128,
 				outputBytes: 42,
+			}),
+			getBufferImage: jest.fn().mockResolvedValue({
+				image: Buffer.from('variant-image'),
+				name: 'sample__w400_h400.webp',
 			}),
 		};
 		service = new ImagePregenerationService(
@@ -152,5 +156,76 @@ describe('이미지 사전 리사이징 서비스', () => {
 				error: expect.any(Error),
 			}),
 		]);
+	});
+
+	it('요청 width/height/format과 일치하는 pre-generated variant 파일을 찾는다', async () => {
+		prisma.clientServiceImageResizePolicy.findUnique.mockResolvedValue({
+			id: 'policy-1',
+			clientServiceId: 'service-1',
+			mode: 'PRE_GENERATE',
+			variants: [
+				{
+					id: 'variant-1',
+					width: 400,
+					height: 400,
+					format: 'webp',
+				},
+				{
+					id: 'variant-2',
+					width: 800,
+					height: 600,
+					format: 'jpeg',
+				},
+			],
+		});
+
+		const result = await service.findPreGeneratedVariantForRequest({
+			clientServiceId: 'service-1',
+			path: 'products/image',
+			name: 'sample.png',
+			width: 400,
+			height: 400,
+			format: 'webp',
+		});
+
+		expect(imageManager.getBufferImage).toHaveBeenCalledWith({
+			path: 'products/image',
+			name: 'sample__w400_h400.webp',
+		});
+		expect(result).toEqual({
+			image: Buffer.from('variant-image'),
+			name: 'sample__w400_h400.webp',
+			width: 400,
+			height: 400,
+			format: 'webp',
+		});
+	});
+
+	it('variant 정책은 있지만 파일이 없으면 기존 조회 흐름으로 fallback한다', async () => {
+		prisma.clientServiceImageResizePolicy.findUnique.mockResolvedValue({
+			id: 'policy-1',
+			clientServiceId: 'service-1',
+			mode: 'PRE_GENERATE',
+			variants: [
+				{
+					id: 'variant-1',
+					width: 400,
+					height: 400,
+					format: 'webp',
+				},
+			],
+		});
+		imageManager.getBufferImage.mockRejectedValue(new Error('missing'));
+
+		await expect(
+			service.findPreGeneratedVariantForRequest({
+				clientServiceId: 'service-1',
+				path: 'products/image',
+				name: 'sample.png',
+				width: 400,
+				height: 400,
+				format: 'webp',
+			}),
+		).resolves.toBeNull();
 	});
 });

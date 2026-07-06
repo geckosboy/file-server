@@ -72,7 +72,10 @@ describe('스토리지 이미지 서비스', () => {
 		Pick<ImageLifecycleOutboxService, 'enqueueAndPublish'>
 	>;
 	let imagePregenerationService: jest.Mocked<
-		Pick<ImagePregenerationService, 'preGenerateForUpload'>
+		Pick<
+			ImagePregenerationService,
+			'preGenerateForUpload' | 'findPreGeneratedVariantForRequest'
+		>
 	>;
 	let service: ImageService;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
@@ -115,6 +118,7 @@ describe('스토리지 이미지 서비스', () => {
 		};
 		imagePregenerationService = {
 			preGenerateForUpload: jest.fn().mockResolvedValue([]),
+			findPreGeneratedVariantForRequest: jest.fn().mockResolvedValue(null),
 		};
 		service = new ImageService(
 			new PngStrategy(),
@@ -157,7 +161,7 @@ describe('스토리지 이미지 서비스', () => {
 		);
 	});
 
-	it('파일 업로드 후 메타데이터를 발행하고 이전 이미지와 임시 파일을 정리한다', async () => {
+	it('파일 업로드 후 lifecycle/telemetry를 발행하고 이전 이미지와 임시 파일을 정리한다', async () => {
 		const file = createMulterFile();
 
 		await service.uploadFile({
@@ -169,10 +173,12 @@ describe('스토리지 이미지 서비스', () => {
 			},
 		});
 
-		expect(imageClient.emit).toHaveBeenCalledWith('image-topic', {
-			key: 'uploadResult-json',
-			value: expect.stringContaining('"id":10'),
-		});
+		expect(getEmittedMessage(IMAGE_LIFECYCLE_TOPIC).key).toContain(
+			ImageLifecycleEventType.UploadCompleted,
+		);
+		expect(getEmittedMessage(IMAGE_TELEMETRY_TOPIC).key).toContain(
+			ImageTelemetryEventType.UploadCompleted,
+		);
 		expect(imageManager.deleteMainImage).toHaveBeenCalledWith({
 			path: 'products/image',
 			name: 'previous.png',
@@ -389,9 +395,19 @@ describe('스토리지 이미지 서비스', () => {
 		expect(imageManager.deleteTempImage).toHaveBeenCalledWith(file.filename);
 	});
 
-	it('저장 후 Kafka 발행이 실패해도 임시 파일을 정리한다', async () => {
+	it('저장 후 telemetry Kafka 발행이 실패해도 업로드와 임시 파일 정리를 유지한다', async () => {
 		const file = createMulterFile();
-		imageClient.emit.mockReturnValue(throwError(() => new Error('kafka down')));
+		const warnSpy = jest.spyOn(
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			(service as any).logger,
+			'warn',
+		);
+		imageClient.emit.mockImplementation((topic) => {
+			if (topic === IMAGE_TELEMETRY_TOPIC) {
+				return throwError(() => new Error('kafka down'));
+			}
+			return of({ ok: true });
+		});
 
 		await expect(
 			service.uploadFile({
@@ -401,10 +417,11 @@ describe('스토리지 이미지 서비스', () => {
 					path: 'products/image',
 				},
 			}),
-		).rejects.toThrow('kafka down');
+		).resolves.toBeUndefined();
 
 		expect(imageManager.deleteTempImage).toHaveBeenCalledWith(file.filename);
 		expect(imageManager.deleteMainImage).not.toHaveBeenCalled();
+		expect(warnSpy).toHaveBeenCalled();
 	});
 
 	it('메인 이미지 디렉터리 규칙에 맞춰 이미지 버퍼를 가져온다', async () => {
@@ -424,6 +441,56 @@ describe('스토리지 이미지 서비스', () => {
 			name: 'sample.png',
 		});
 		expect(result.image).toBe(image);
+	});
+
+	it('PRE_GENERATE variant가 있으면 원본 대신 variant 버퍼를 반환한다', async () => {
+		const variantImage = Buffer.from('variant-image');
+		imagePregenerationService.findPreGeneratedVariantForRequest.mockResolvedValue(
+			{
+				image: variantImage,
+				name: 'sample__w400_h400.webp',
+				width: 400,
+				height: 400,
+				format: 'webp',
+			},
+		);
+
+		const result = await service.getImage(
+			{
+				path: 'products',
+				name: 'sample.png',
+				width: 400,
+				height: 400,
+				format: 'webp',
+			},
+			clientServiceContext,
+		);
+
+		expect(
+			imagePregenerationService.findPreGeneratedVariantForRequest,
+		).toHaveBeenCalledWith({
+			clientServiceId: 'service-1',
+			path: 'products/image',
+			name: 'sample.png',
+			width: 400,
+			height: 400,
+			format: 'webp',
+		});
+		expect(imageManager.getBufferImage).not.toHaveBeenCalled();
+		expect(result).toEqual(
+			expect.objectContaining({
+				image: variantImage,
+				name: 'sample__w400_h400.webp',
+				width: 400,
+				height: 400,
+				format: 'webp',
+				preGeneratedVariant: {
+					width: 400,
+					height: 400,
+					format: 'webp',
+				},
+			}),
+		);
 	});
 
 	it('메인 이미지 삭제 후 cache 앱의 리사이즈 캐시를 무효화한다', async () => {

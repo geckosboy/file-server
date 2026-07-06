@@ -85,7 +85,10 @@ describe('스토리지 앱 e2e', () => {
 		Pick<ImageLifecycleOutboxService, 'enqueueAndPublish'>
 	>;
 	let imagePregenerationService: jest.Mocked<
-		Pick<ImagePregenerationService, 'preGenerateForUpload'>
+		Pick<
+			ImagePregenerationService,
+			'preGenerateForUpload' | 'findPreGeneratedVariantForRequest'
+		>
 	>;
 	let authService: ReturnType<typeof createAuthService>;
 
@@ -116,6 +119,7 @@ describe('스토리지 앱 e2e', () => {
 		};
 		imagePregenerationService = {
 			preGenerateForUpload: jest.fn().mockResolvedValue([]),
+			findPreGeneratedVariantForRequest: jest.fn().mockResolvedValue(null),
 		};
 		authService = createAuthService();
 
@@ -195,10 +199,6 @@ describe('스토리지 앱 e2e', () => {
 			})
 			.expect(201);
 
-		expect(imageClient.emit).toHaveBeenCalledWith('image-topic', {
-			key: 'uploadResult-json',
-			value: expect.stringContaining('"id":100'),
-		});
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.UploadCompleted,
@@ -249,6 +249,48 @@ describe('스토리지 앱 e2e', () => {
 		await authorized(
 			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
 		).expect(404);
+	});
+
+	it('PRE_GENERATE variant 요청은 사전 생성 파일을 우선 반환한다', async () => {
+		const variant = await sharp({
+			create: {
+				width: 4,
+				height: 4,
+				channels: 3,
+				background: '#00ff00',
+			},
+		})
+			.webp()
+			.toBuffer();
+		imagePregenerationService.findPreGeneratedVariantForRequest.mockResolvedValue(
+			{
+				image: variant,
+				name: 'sample__w4_h4.webp',
+				width: 4,
+				height: 4,
+				format: 'webp',
+			},
+		);
+
+		const response = await authorized(
+			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
+		)
+			.query({ width: 4, height: 4, format: 'webp' })
+			.expect(200)
+			.expect('x-file-server-pregenerated-variant', 'true')
+			.expect('content-type', /image\/webp/);
+
+		expect(Buffer.from(response.body).equals(variant)).toBe(true);
+		expect(
+			imagePregenerationService.findPreGeneratedVariantForRequest,
+		).toHaveBeenCalledWith({
+			clientServiceId: 'service-1',
+			path: 'e2e-storage/image',
+			name: 'sample.png',
+			width: 4,
+			height: 4,
+			format: 'webp',
+		});
 	});
 
 	it('업로드 시 beforeName이 있으면 이전 이미지를 삭제한다', async () => {

@@ -10,7 +10,7 @@
 현재 파일서버는 `storage`, `resize`, `cache` 세 앱으로 이미지 저장/조회/리사이즈/캐싱 흐름을 구성한다.
 
 - `storage` 앱은 업로드 파일을 압축 저장하고 처리 시간(`exeTime`)과 결과 크기(`size`)를 계산한다. 근거: `apps/storage/src/modules/image/image.service.ts:64-90`.
-- `storage` 앱은 업로드 완료 후 Kafka로 `{ id, format, size, exeTime }` payload를 `image-topic`에 발행한다. 근거: `apps/storage/src/modules/image/image.service.ts:133-144`.
+- `storage` 앱은 업로드 완료/실패를 표준 telemetry topic `file.image.events.v1`과 Client Service 소비용 lifecycle topic `file.image.lifecycle.v1`로 발행한다. legacy `image-topic` 발행은 제거되었다.
 - `storage` 앱 Kafka producer는 `IMAGE_MICROSERVICE`로 등록되어 있고 producer-only 모드다. 근거: `apps/storage/src/modules/image/image.module.ts:13-28`.
 - `cache` 앱은 cache key를 생성하고, 캐시 hit면 바로 반환하며 miss면 resize 서버에서 가져온 뒤 캐시에 저장한다. 근거: `apps/cache/src/modules/image/image.service.ts:29-83`.
 - `resize` 앱은 storage 서버에서 원본 이미지를 가져와 width/height 기준으로 리사이즈하고 처리 시간을 로그로 남긴다. 근거: `apps/resize/src/modules/image/image.service.ts:59-82`.
@@ -122,7 +122,7 @@ MVP에서는 Nest 앱 하나에 consumer와 REST API를 같이 둔다. 이벤트
 file.image.events.v1
 ```
 
-기존 topic `image-topic`과 key `uploadResult-json`은 legacy로 취급한다. 마이그레이션 중에는 telemetry-api가 legacy topic을 읽어 `image.upload.completed`로 변환할 수 있지만, 최종 목표는 모든 앱이 신규 topic을 직접 발행하는 것이다.
+legacy topic `image-topic`과 key `uploadResult-json` 경로는 제거되었다. 업로드 완료/실패를 다른 서비스에 전달해야 하는 경우 Client Service는 `file.image.lifecycle.v1`을 자기 consumer group으로 소비한다.
 
 ### 7.2 Event type
 

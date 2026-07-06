@@ -61,11 +61,18 @@ export class ImageService {
 	}
 
 	/** Name, path 등으로 CacheKey 생성 */
-	private convertToCacheKey({ name, path, height, width }: ImageEntity) {
+	private convertToCacheKey({
+		format,
+		name,
+		path,
+		height,
+		width,
+	}: ImageEntity) {
 		return [
 			encodeURIComponent(path),
 			width ?? 'x',
 			height ?? 'x',
+			format ?? normalizeImageFormat(name),
 			encodeURIComponent(name),
 		].join('|');
 	}
@@ -110,7 +117,8 @@ export class ImageService {
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
 		const startedAt = performance.now();
-		const { height, name, path, width } = params;
+		const { format: requestedFormat, height, name, path, width } = params;
+		const format = requestedFormat ?? normalizeImageFormat(name);
 
 		const cachedImage = this.cacheService.getCachedImage(cacheKey);
 		/** Caching된 이미지 있으면 그대로 반환 */
@@ -125,7 +133,7 @@ export class ImageService {
 					cacheKey,
 					width,
 					height,
-					format: normalizeImageFormat(name),
+					format,
 					outputBytes: cachedImage.imageBuffer.byteLength,
 					durationMs: performance.now() - startedAt,
 					status: 'success',
@@ -144,7 +152,7 @@ export class ImageService {
 				cacheKey,
 				width,
 				height,
-				format: normalizeImageFormat(name),
+				format,
 				durationMs: performance.now() - startedAt,
 				status: 'success',
 				...telemetryContext,
@@ -169,7 +177,7 @@ export class ImageService {
 					cacheKey,
 					width,
 					height,
-					format: normalizeImageFormat(name),
+					format,
 					outputBytes: imageBuffer.byteLength,
 					durationMs: performance.now() - startedAt,
 					status: 'success',
@@ -193,7 +201,7 @@ export class ImageService {
 					cacheKey,
 					width,
 					height,
-					format: normalizeImageFormat(name),
+					format,
 					durationMs: performance.now() - startedAt,
 					status: 'failed',
 					...telemetryContext,

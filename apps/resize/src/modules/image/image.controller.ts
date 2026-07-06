@@ -21,7 +21,7 @@ export class ImageController {
 		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Res() res: Response,
 	) {
-		let result: Buffer;
+		let result: { imageBuffer: Buffer; contentType: string };
 		/** height, width 둘 중 하나라도 있다면 리사이징 진행 */
 		if (imageQuery.height || imageQuery.width) {
 			result = await this.imageService.resizeImage(
@@ -32,15 +32,22 @@ export class ImageController {
 				clientServiceContext,
 			);
 		} else {
-			result = await this.imageService.getImageFromMain(
+			const fetchedImage = await this.imageService.getImageFromMain(
 				{ ...imageParam },
 				clientServiceContext,
 			);
+			result = {
+				imageBuffer: fetchedImage.imageBuffer,
+				contentType:
+					fetchedImage.contentType ||
+					lookup(imageParam.name) ||
+					'application/octet-stream',
+			};
 		}
 		res.set({
-			'Content-Type': lookup(imageParam.name) || 'application/octet-stream',
+			'Content-Type': result.contentType,
 		});
 
-		res.send(result);
+		res.send(result.imageBuffer);
 	}
 }

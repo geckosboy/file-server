@@ -11,6 +11,7 @@ import {
 	createClientServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 } from '@file/database';
+import { lookup } from 'mime-types';
 import { performance } from 'perf_hooks';
 
 import { ImageEntity } from '@file/image-contracts';
@@ -24,6 +25,13 @@ import {
 } from './image.telemetry';
 import { ImageManager } from './manager';
 import { envConfig } from 'src/config';
+
+interface StorageImageResult {
+	imageBuffer: Buffer;
+	contentType: string;
+	preGeneratedVariantHit: boolean;
+	variantName?: string;
+}
 
 @Injectable()
 export class ImageService {
@@ -43,21 +51,47 @@ export class ImageService {
 		});
 	}
 
-	private getImageUrl({ path, name }: { path: string; name: string }) {
+	private objectToQueryString(
+		params: Partial<Pick<ImageEntity, 'width' | 'height' | 'format'>>,
+	) {
+		const searchParams = new URLSearchParams();
+		if (params.width !== undefined) {
+			searchParams.set('width', String(params.width));
+		}
+		if (params.height !== undefined) {
+			searchParams.set('height', String(params.height));
+		}
+		if (params.format) {
+			searchParams.set('format', params.format);
+		}
+		return searchParams.toString();
+	}
+
+	private getImageUrl({
+		format,
+		height,
+		name,
+		path,
+		width,
+	}: Pick<ImageEntity, 'path' | 'name'> &
+		Partial<Pick<ImageEntity, 'width' | 'height' | 'format'>>) {
 		const encodedPath = encodeURIComponent(path);
 		const encodedName = encodeURIComponent(name);
-		return `${envConfig.STORAGE_SERVER}/image/${encodedPath}/${encodedName}`;
+		const queryString = this.objectToQueryString({ width, height, format });
+		const suffix = queryString ? `?${queryString}` : '';
+		return `${envConfig.STORAGE_SERVER}/image/${encodedPath}/${encodedName}${suffix}`;
 	}
 
 	/** 메인 서버로부터 이미지 데이터 가져오기. Buffer형태로 리턴 */
 	async getImageFromMain(
-		{ path, name }: { path: string; name: string },
+		imageInfo: Pick<ImageEntity, 'path' | 'name'> &
+			Partial<Pick<ImageEntity, 'width' | 'height' | 'format'>>,
 		clientServiceContext?: ClientServiceAuthContext,
-	) {
+	): Promise<StorageImageResult> {
 		let result: Response;
 		const headers = createClientServiceForwardHeaders(clientServiceContext);
 		try {
-			result = await fetch(this.getImageUrl({ path, name }), {
+			result = await fetch(this.getImageUrl(imageInfo), {
 				method: 'get',
 				...(Object.keys(headers).length > 0 ? { headers } : {}),
 			});
@@ -79,7 +113,17 @@ export class ImageService {
 			throw new NotFoundException('존재하지 않는 파일입니다.');
 		}
 
-		return Buffer.from(image);
+		return {
+			imageBuffer: Buffer.from(image),
+			contentType:
+				result.headers.get('content-type') ||
+				lookup(imageInfo.name) ||
+				'application/octet-stream',
+			preGeneratedVariantHit:
+				result.headers.get('x-file-server-pregenerated-variant') === 'true',
+			variantName:
+				result.headers.get('x-file-server-variant-name') ?? undefined,
+		};
 	}
 
 	/** Width, Height으로 리사이징 */
@@ -88,7 +132,7 @@ export class ImageService {
 		clientServiceContext?: ClientServiceAuthContext,
 	) {
 		const { path, name, ...size } = imageInfo;
-		const format = normalizeImageFormat(name);
+		const format = imageInfo.format ?? normalizeImageFormat(name);
 		const requestedAt = performance.now();
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
@@ -108,18 +152,50 @@ export class ImageService {
 		);
 
 		try {
-			const image = await this.getImageFromMain(
-				{ path, name },
+			const fetchedImage = await this.getImageFromMain(
+				{ path, name, ...size },
 				clientServiceContext,
 			);
+			if (fetchedImage.preGeneratedVariantHit) {
+				const durationMs = performance.now() - requestedAt;
+				this.logger.log(
+					`${path}/${name} - pre-generated ${format} ${size.width ?? '-'}/${size.height ?? '-'}px ${fetchedImage.imageBuffer.byteLength}byte +${Math.round(durationMs)}ms `,
+				);
+
+				await this.publishTelemetryEvent(
+					createImageTelemetryEvent({
+						eventType: ImageTelemetryEventType.ResizeCompleted,
+						sourceApp: 'resize',
+						path,
+						name,
+						cacheKey: `${path}/${name}:${size.width ?? 'auto'}x${size.height ?? 'auto'}:${format}`,
+						format,
+						width: size.width,
+						height: size.height,
+						inputBytes: fetchedImage.imageBuffer.byteLength,
+						outputBytes: fetchedImage.imageBuffer.byteLength,
+						durationMs,
+						status: 'success',
+						...telemetryContext,
+					}),
+				);
+
+				return {
+					imageBuffer: fetchedImage.imageBuffer,
+					contentType: fetchedImage.contentType,
+				};
+			}
 			const startTime = performance.now();
 
-			const result = await this.imageManager.resize(image, size);
+			const result = await this.imageManager.resize(
+				fetchedImage.imageBuffer,
+				size,
+			);
 
 			const exeTime = performance.now() - startTime;
 
 			this.logger.log(
-				`${path}/${name} - ${format} ${size.width ?? '-'}/${size.height ?? '-'}px ${image.byteLength}>>${result.byteLength}byte +${Math.round(exeTime)}ms `,
+				`${path}/${name} - ${format} ${size.width ?? '-'}/${size.height ?? '-'}px ${fetchedImage.imageBuffer.byteLength}>>${result.byteLength}byte +${Math.round(exeTime)}ms `,
 			);
 
 			await this.publishTelemetryEvent(
@@ -131,7 +207,7 @@ export class ImageService {
 					format,
 					width: size.width,
 					height: size.height,
-					inputBytes: image.byteLength,
+					inputBytes: fetchedImage.imageBuffer.byteLength,
 					outputBytes: result.byteLength,
 					durationMs: exeTime,
 					status: 'success',
@@ -139,7 +215,12 @@ export class ImageService {
 				}),
 			);
 
-			return result;
+			return {
+				imageBuffer: result,
+				contentType: imageInfo.format
+					? lookup(`image.${imageInfo.format}`) || fetchedImage.contentType
+					: fetchedImage.contentType,
+			};
 		} catch (error) {
 			this.logger.error(error);
 			await this.publishTelemetryEvent(

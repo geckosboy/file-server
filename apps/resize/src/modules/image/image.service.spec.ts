@@ -18,8 +18,14 @@ import {
 } from './image.telemetry';
 import { ImageService } from './image.service';
 
-const createFetchResponse = (body: Buffer, status = 200) =>
-	new Response(new Uint8Array(body), { status });
+const createFetchResponse = (
+	body: Buffer,
+	options: { status?: number; headers?: HeadersInit } = {},
+) =>
+	new Response(new Uint8Array(body), {
+		status: options.status ?? 200,
+		headers: options.headers,
+	});
 
 const clientServiceContext: ClientServiceAuthContext = {
 	clientServiceId: 'service-1',
@@ -87,12 +93,14 @@ describe('리사이즈 이미지 서비스', () => {
 				},
 			},
 		);
-		expect(result.equals(originalImage)).toBe(true);
+		expect(result.imageBuffer.equals(originalImage)).toBe(true);
+		expect(result.contentType).toBe('image/png');
+		expect(result.preGeneratedVariantHit).toBe(false);
 	});
 
 	it('스토리지 앱이 404를 반환하면 NotFoundException을 던진다', async () => {
 		fetchSpy.mockResolvedValue(
-			createFetchResponse(Buffer.from('missing'), 404),
+			createFetchResponse(Buffer.from('missing'), { status: 404 }),
 		);
 
 		await expect(
@@ -101,7 +109,9 @@ describe('리사이즈 이미지 서비스', () => {
 	});
 
 	it('스토리지 앱이 404가 아닌 오류를 반환하면 InternalServerErrorException을 던진다', async () => {
-		fetchSpy.mockResolvedValue(createFetchResponse(Buffer.from('error'), 500));
+		fetchSpy.mockResolvedValue(
+			createFetchResponse(Buffer.from('error'), { status: 500 }),
+		);
 
 		await expect(
 			service.getImageFromMain({ path: 'public', name: 'error.png' }),
@@ -119,7 +129,11 @@ describe('리사이즈 이미지 서비스', () => {
 	it('원본 이미지를 가져온 뒤 ImageManager에 리사이징을 위임한다', async () => {
 		const originalImage = Buffer.from('original-image');
 		const resizedImage = Buffer.from('resized-image');
-		jest.spyOn(service, 'getImageFromMain').mockResolvedValue(originalImage);
+		jest.spyOn(service, 'getImageFromMain').mockResolvedValue({
+			imageBuffer: originalImage,
+			contentType: 'image/png',
+			preGeneratedVariantHit: false,
+		});
 		imageManager.resize.mockResolvedValue(resizedImage);
 
 		const result = await service.resizeImage(
@@ -136,6 +150,8 @@ describe('리사이즈 이미지 서비스', () => {
 			{
 				path: 'public',
 				name: 'sample.png',
+				width: 100,
+				height: 50,
 			},
 			clientServiceContext,
 		);
@@ -143,7 +159,10 @@ describe('리사이즈 이미지 서비스', () => {
 			width: 100,
 			height: 50,
 		});
-		expect(result).toBe(resizedImage);
+		expect(result).toEqual({
+			imageBuffer: resizedImage,
+			contentType: 'image/png',
+		});
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.ResizeRequested,
@@ -165,6 +184,101 @@ describe('리사이즈 이미지 서비스', () => {
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',
 				requestId: 'req-resize-1',
+			}),
+		]);
+	});
+
+	it('사전 생성 variant가 없고 format이 있으면 on-demand 리사이징에서 포맷을 변환한다', async () => {
+		const originalImage = Buffer.from('original-image');
+		const resizedImage = Buffer.from('resized-webp-image');
+		jest.spyOn(service, 'getImageFromMain').mockResolvedValue({
+			imageBuffer: originalImage,
+			contentType: 'image/png',
+			preGeneratedVariantHit: false,
+		});
+		imageManager.resize.mockResolvedValue(resizedImage);
+
+		const result = await service.resizeImage(
+			{
+				path: 'public',
+				name: 'sample.png',
+				width: 100,
+				height: 50,
+				format: 'webp',
+			},
+			clientServiceContext,
+		);
+
+		expect(imageManager.resize).toHaveBeenCalledWith(originalImage, {
+			width: 100,
+			height: 50,
+			format: 'webp',
+		});
+		expect(result).toEqual({
+			imageBuffer: resizedImage,
+			contentType: 'image/webp',
+		});
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeRequested,
+				format: 'webp',
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeCompleted,
+				format: 'webp',
+				inputBytes: originalImage.byteLength,
+				outputBytes: resizedImage.byteLength,
+				status: 'success',
+			}),
+		]);
+	});
+
+	it('스토리지에서 pre-generated variant를 받으면 on-demand 리사이징을 건너뛴다', async () => {
+		const variantImage = Buffer.from('variant-image');
+		fetchSpy.mockResolvedValue(
+			createFetchResponse(variantImage, {
+				headers: {
+					'content-type': 'image/webp',
+					'x-file-server-pregenerated-variant': 'true',
+					'x-file-server-variant-name': 'sample__w100_h50.webp',
+				},
+			}),
+		);
+
+		const result = await service.resizeImage(
+			{
+				path: 'public',
+				name: 'sample.png',
+				width: 100,
+				height: 50,
+				format: 'webp',
+			},
+			clientServiceContext,
+		);
+
+		expect(fetchSpy).toHaveBeenCalledWith(
+			'http://storage.test/image/public/sample.png?width=100&height=50&format=webp',
+			expect.any(Object),
+		);
+		expect(imageManager.resize).not.toHaveBeenCalled();
+		expect(result).toEqual({
+			imageBuffer: variantImage,
+			contentType: 'image/webp',
+		});
+		expect(getTelemetryPayloads()).toEqual([
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeRequested,
+				format: 'webp',
+				width: 100,
+				height: 50,
+			}),
+			expect.objectContaining({
+				eventType: ImageTelemetryEventType.ResizeCompleted,
+				cacheKey: 'public/sample.png:100x50:webp',
+				format: 'webp',
+				inputBytes: variantImage.byteLength,
+				outputBytes: variantImage.byteLength,
+				status: 'success',
 			}),
 		]);
 	});
