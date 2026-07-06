@@ -147,6 +147,7 @@ function toCreateInput(
 function toLifecycleEvent(
 	row: Prisma.ImageLifecycleEventGetPayload<Record<string, never>>,
 ): ImageLifecycleEvent {
+	const rawPayload = toUnknownRecord(row.rawPayload);
 	return {
 		schemaVersion: 1,
 		eventId: row.eventId,
@@ -162,6 +163,7 @@ function toLifecycleEvent(
 		imageId: row.imageId ?? undefined,
 		path: row.path,
 		name: row.name,
+		originalName: readOptionalString(rawPayload, 'originalName'),
 		imageKey: row.imageKey,
 		format: row.format as ImageLifecycleEvent['format'],
 		inputBytes: row.inputBytes ?? undefined,
@@ -170,7 +172,7 @@ function toLifecycleEvent(
 		status: row.status as ImageLifecycleEvent['status'],
 		errorCode: row.errorCode ?? undefined,
 		errorMessage: row.errorMessage ?? undefined,
-		rawPayload: toUnknownRecord(row.rawPayload),
+		rawPayload,
 	} as ImageLifecycleEvent;
 }
 
@@ -178,6 +180,14 @@ function toUnknownRecord(value: Prisma.JsonValue): UnknownRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
 		? (value as UnknownRecord)
 		: {};
+}
+
+function readOptionalString(
+	record: UnknownRecord,
+	key: string,
+): string | undefined {
+	const value = record[key];
+	return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

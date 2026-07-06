@@ -36,14 +36,14 @@ DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니
 
 새 서비스를 추가하는 일반 절차는 **telemetry-api admin API로 `client_services` / `client_service_keys` / `client_service_lifecycle_subscriptions`에 등록**하는 것입니다. 이 경우 기존에 떠 있는 앱들을 재시작하지 않아도 됩니다.
 
-| 대상 | 신규 서비스 등록 후 재시작 | 근거 | 재시작이 필요한 경우 |
-| --- | --- | --- | --- |
-| `storage` | 불필요 | `ClientServiceAuthService.authenticate()`가 요청마다 `client_service_keys.key_prefix`를 DB에서 다시 조회하고 서비스 상태/키 만료/폐기 여부를 검사합니다. 앱 메모리에 service allowlist를 들고 있지 않습니다. | `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, Kafka broker, 파일 저장 경로, 코드가 바뀐 경우 |
-| `resize` | 불필요 | `resize`의 `/image` guard도 같은 `ClientServiceAuthModule`을 사용하고, storage 호출 때 인증된 API key/request id를 그대로 forward합니다. | `STORAGE_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우 |
-| `cache` | 불필요 | `cache`의 `/image` guard도 같은 DB 조회 기반 인증을 쓰고, miss 시 resize 호출에 인증 header를 forward합니다. | `RESIZING_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우 |
-| `telemetry-api` | 불필요 | client service/API key/subscription/리사이징 정책 생성·수정은 admin API가 DB에 쓰고, 목록/상세 조회도 매 요청 DB에서 읽습니다. | `.env.local`의 DB/Admin token/Kafka consumer 설정, Prisma schema migration, 코드가 바뀐 경우 |
-| `admin-web` | 불필요 | telemetry-api를 `cache: 'no-store'`로 호출하고, server action 후 `/services`를 revalidate합니다. | `TELEMETRY_API_BASE_URL`, `TELEMETRY_ADMIN_TOKEN`, 코드가 바뀐 경우 |
-| Kafka | 불필요 | 서비스별 topic을 만들지 않습니다. 모든 서비스가 공통 `file.image.lifecycle.v1` topic을 각자 consumer group으로 소비합니다. | topic 자체를 처음 만들 때, broker 주소/보안 설정/ACL 정책을 바꿀 때 |
+| 대상            | 신규 서비스 등록 후 재시작 | 근거                                                                                                                                                                                                         | 재시작이 필요한 경우                                                                         |
+| --------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `storage`       | 불필요                     | `ClientServiceAuthService.authenticate()`가 요청마다 `client_service_keys.key_prefix`를 DB에서 다시 조회하고 서비스 상태/키 만료/폐기 여부를 검사합니다. 앱 메모리에 service allowlist를 들고 있지 않습니다. | `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, Kafka broker, 파일 저장 경로, 코드가 바뀐 경우      |
+| `resize`        | 불필요                     | `resize`의 `/image` guard도 같은 `ClientServiceAuthModule`을 사용하고, storage 호출 때 인증된 API key/request id를 그대로 forward합니다.                                                                     | `STORAGE_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우                  |
+| `cache`         | 불필요                     | `cache`의 `/image` guard도 같은 DB 조회 기반 인증을 쓰고, miss 시 resize 호출에 인증 header를 forward합니다.                                                                                                 | `RESIZING_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우                 |
+| `telemetry-api` | 불필요                     | client service/API key/subscription/리사이징 정책 생성·수정은 admin API가 DB에 쓰고, 목록/상세 조회도 매 요청 DB에서 읽습니다.                                                                               | `.env.local`의 DB/Admin token/Kafka consumer 설정, Prisma schema migration, 코드가 바뀐 경우 |
+| `admin-web`     | 불필요                     | telemetry-api를 `cache: 'no-store'`로 호출하고, server action 후 `/services`를 revalidate합니다.                                                                                                             | `TELEMETRY_API_BASE_URL`, `TELEMETRY_ADMIN_TOKEN`, 코드가 바뀐 경우                          |
+| Kafka           | 불필요                     | 서비스별 topic을 만들지 않습니다. 모든 서비스가 공통 `file.image.lifecycle.v1` topic을 각자 consumer group으로 소비합니다.                                                                                   | topic 자체를 처음 만들 때, broker 주소/보안 설정/ACL 정책을 바꿀 때                          |
 
 즉 **새 Client Service 추가만으로는 DB 등록 + API key 발급 + lifecycle subscription 등록**이면 충분합니다. 단, API key hash 검증에 쓰는 `CLIENT_API_KEY_PEPPER`는 `telemetry-api`, `storage`, `resize`, `cache`에서 반드시 같은 값이어야 하며, 이 값을 바꾸면 기존 key를 다시 발급하거나 앱을 재시작해야 합니다.
 
@@ -201,26 +201,44 @@ pnpm --filter @file/storage exec node -e "require('sharp')({create:{width:80,hei
 ## 5. 업로드 확인
 
 주의: 업로드할 때 path는 내부 저장 경로라서 `demo/image`처럼 끝이 `/image`여야 합니다.
+클라이언트가 파일 id를 직접 넘기지 않습니다. 파일 서버가 `imageKey`와 저장 파일명을 생성해서 응답 JSON으로 돌려줍니다.
 
 ```bash
-curl -i -X POST http://127.0.0.1:3032/image \
+UPLOAD_JSON=$(curl -fsS -X POST http://127.0.0.1:3032/image \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-upload-$STAMP" \
-  -F 'id=1' \
   -F 'path=demo/image' \
-  -F 'file=@/tmp/file-server-sample.png;type=image/png;filename=sample.png'
+  -F 'file=@/tmp/file-server-sample.png;type=image/png;filename=sample.png')
+printf '%s\n' "$UPLOAD_JSON" | python3 -m json.tool
+
+IMAGE_NAME=$(printf '%s' "$UPLOAD_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')
+IMAGE_KEY=$(printf '%s' "$UPLOAD_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["imageKey"])')
+echo "$IMAGE_NAME"
+echo "$IMAGE_KEY"
 ```
 
-성공하면 `201 Created`.
+성공하면 `201 Created`와 함께 아래 필드가 JSON으로 내려옵니다. `sample.png`를 올려도 실제 저장 파일명은 `sample.<uuid>.png`처럼 생성되므로 같은 원본명 업로드가 기존 파일을 덮어쓰지 않습니다.
 
-서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<원본이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 `sample.png`에 `400x400 webp` variant를 두면 storage 내부에는 `sample__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다. 이후 `storage`/`resize`/`cache` 조회에서 `?width=400&height=400&format=webp`를 요청하면 해당 variant 파일이 먼저 반환되고, 파일이 없으면 기존 on-demand 흐름으로 fallback합니다.
+```json
+{
+	"imageKey": "demo/image/sample.00000000-0000-4000-8000-000000000000.png",
+	"path": "demo/image",
+	"name": "sample.00000000-0000-4000-8000-000000000000.png",
+	"originalName": "sample.png",
+	"format": "png",
+	"size": 1234,
+	"eventId": "00000000-0000-4000-8000-000000000001"
+}
+```
+
+서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<저장이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 응답 `name`이 `sample.<uuid>.png`이고 `400x400 webp` variant를 두면 storage 내부에는 `sample.<uuid>__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.<uuid>.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다. 이후 `storage`/`resize`/`cache` 조회에서 `?width=400&height=400&format=webp`를 요청하면 해당 variant 파일이 먼저 반환되고, 파일이 없으면 기존 on-demand 흐름으로 fallback합니다.
 
 ## 6. 원본 조회 확인
 
 조회 URL에서는 path가 `demo`입니다.
 
 ```bash
-curl -f http://127.0.0.1:3032/image/demo/sample.png \
+curl -f "http://127.0.0.1:3032/image/demo/$IMAGE_NAME" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-storage-read-$STAMP" \
   -o /tmp/storage-original.png
@@ -229,7 +247,7 @@ curl -f http://127.0.0.1:3032/image/demo/sample.png \
 ## 7. 리사이즈 확인
 
 ```bash
-curl -f 'http://127.0.0.1:3031/image/demo/sample.png?width=40&height=40' \
+curl -f "http://127.0.0.1:3031/image/demo/$IMAGE_NAME?width=40&height=40" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-resize-$STAMP" \
   -o /tmp/resized.png
@@ -240,11 +258,11 @@ curl -f 'http://127.0.0.1:3031/image/demo/sample.png?width=40&height=40' \
 첫 요청은 cache miss, 두 번째 요청은 cache hit 로그가 나와야 합니다.
 
 ```bash
-curl -f 'http://127.0.0.1:3030/image/demo/sample.png?width=40&height=40' \
+curl -f "http://127.0.0.1:3030/image/demo/$IMAGE_NAME?width=40&height=40" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-cache-1-$STAMP" \
   -o /tmp/cached-1.png
-curl -f 'http://127.0.0.1:3030/image/demo/sample.png?width=40&height=40' \
+curl -f "http://127.0.0.1:3030/image/demo/$IMAGE_NAME?width=40&height=40" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-cache-2-$STAMP" \
   -o /tmp/cached-2.png
@@ -252,10 +270,11 @@ curl -f 'http://127.0.0.1:3030/image/demo/sample.png?width=40&height=40' \
 
 ## 9. 삭제 확인
 
-삭제할 때도 path는 `demo/image`를 씁니다.
+삭제할 때는 업로드 응답의 `imageKey`를 그대로 쓰거나, `path=demo/image&name=$IMAGE_NAME` 조합을 씁니다.
 
 ```bash
-curl -i -X DELETE 'http://127.0.0.1:3032/image?id=1&path=demo/image&beforeName=sample.png' \
+curl -i -X DELETE -G 'http://127.0.0.1:3032/image' \
+  --data-urlencode "imageKey=$IMAGE_KEY" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-delete-$STAMP"
 ```
@@ -263,7 +282,7 @@ curl -i -X DELETE 'http://127.0.0.1:3032/image?id=1&path=demo/image&beforeName=s
 삭제 후 원본 조회가 404면 정상입니다.
 
 ```bash
-curl -i http://127.0.0.1:3032/image/demo/sample.png \
+curl -i "http://127.0.0.1:3032/image/demo/$IMAGE_NAME" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-after-delete-$STAMP"
 ```
@@ -409,7 +428,9 @@ pnpm kafka:lifecycle:consume
 	"status": "success",
 	"clientServiceSlug": "local-demo-...",
 	"requestId": "inspect-upload-...",
-	"imageKey": "inspect/image/file-server-sample.png"
+	"originalName": "sample.png",
+	"name": "sample.00000000-0000-4000-8000-000000000000.png",
+	"imageKey": "demo/image/sample.00000000-0000-4000-8000-000000000000.png"
 }
 ```
 
@@ -422,7 +443,6 @@ STAMP="$(date +%s)"
 curl -i -X POST http://127.0.0.1:3032/image \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-upload-failed-$STAMP" \
-  -F id=999 \
   -F path=inspect/image \
   -F 'file=@/tmp/file-server-not-image.txt;type=text/plain;filename=not-image.txt'
 ```
@@ -435,6 +455,8 @@ curl -i -X POST http://127.0.0.1:3032/image \
 	"status": "failed",
 	"clientServiceSlug": "local-demo-...",
 	"requestId": "inspect-upload-failed-...",
+	"originalName": "not-image.txt",
+	"name": "not-image.txt",
 	"imageKey": "inspect/image/not-image.txt",
 	"errorCode": "BadRequestException"
 }
@@ -474,8 +496,12 @@ curl -s -X POST "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID/key
 ```
 
 응답의 `apiKey`는 최초 1회만 보이므로 필요하면 따로 저장하세요. `key.keyHash`는 응답에 노출되지 않는 것이 정상입니다.
+수동 이벤트도 실제 업로드 흐름처럼 클라이언트 제공 id 대신 `imageKey`와 저장 파일명 기준으로 넣습니다.
 
 ```bash
+MANUAL_IMAGE_NAME="sample.00000000-0000-4000-8000-000000000000.png"
+MANUAL_IMAGE_KEY="demo/image/$MANUAL_IMAGE_NAME"
+
 curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   -H 'content-type: application/json' \
   -d @- <<EOF_EVENT
@@ -488,10 +514,10 @@ curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   "environment": "development",
   "clientServiceId": "$SERVICE_ID",
   "clientServiceSlug": "$SERVICE_SLUG",
-  "imageId": 1,
   "path": "demo/image",
-  "name": "sample.png",
-  "imageKey": "demo/image/sample.png",
+  "name": "$MANUAL_IMAGE_NAME",
+  "originalName": "sample.png",
+  "imageKey": "$MANUAL_IMAGE_KEY",
   "format": "png",
   "inputBytes": 1024,
   "outputBytes": 800,
@@ -513,9 +539,9 @@ curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   "clientServiceId": "$SERVICE_ID",
   "clientServiceSlug": "$SERVICE_SLUG",
   "path": "demo/image",
-  "name": "sample.png",
-  "imageKey": "demo/image/sample.png",
-  "cacheKey": "demo|40|40|sample.png",
+  "name": "$MANUAL_IMAGE_NAME",
+  "imageKey": "$MANUAL_IMAGE_KEY",
+  "cacheKey": "demo|40|40|$MANUAL_IMAGE_NAME",
   "width": 40,
   "height": 40,
   "format": "png",
@@ -537,8 +563,8 @@ curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   "clientServiceId": "$SERVICE_ID",
   "clientServiceSlug": "$SERVICE_SLUG",
   "path": "demo/image",
-  "name": "sample.png",
-  "imageKey": "demo/image/sample.png",
+  "name": "$MANUAL_IMAGE_NAME",
+  "imageKey": "$MANUAL_IMAGE_KEY",
   "width": 40,
   "height": 40,
   "format": "png",
@@ -619,15 +645,17 @@ curl -s "http://127.0.0.1:3100/api/admin/image-resize-recommendations?clientServ
 특정 이미지 상세는 `/`를 URL 인코딩해서 조회합니다.
 
 ```bash
-curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png' \
+ENCODED_IMAGE_KEY=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$MANUAL_IMAGE_KEY")
+
+curl -s "http://127.0.0.1:3100/api/admin/images/$ENCODED_IMAGE_KEY" \
   -H 'x-admin-token: dev-admin-token' \
   | python3 -m json.tool
 
-curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/events?limit=10' \
+curl -s "http://127.0.0.1:3100/api/admin/images/$ENCODED_IMAGE_KEY/events?limit=10" \
   -H 'x-admin-token: dev-admin-token' \
   | python3 -m json.tool
 
-curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/variants' \
+curl -s "http://127.0.0.1:3100/api/admin/images/$ENCODED_IMAGE_KEY/variants" \
   -H 'x-admin-token: dev-admin-token' \
   | python3 -m json.tool
 ```
@@ -650,7 +678,7 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - `file.image.lifecycle.v1` consumer가 본 이벤트와 같은 `eventId`, `requestId`, `clientServiceSlug`가 DB 조회에도 보여야 합니다.
   - event type, status, imageKey, 기간, client service 필터로 업로드 업무 이벤트를 좁힐 수 있어야 합니다.
 - `/images`
-  - `demo/image/sample.png`가 목록에 보여야 합니다.
+  - 업로드 응답의 `imageKey` 또는 수동 이벤트의 `$MANUAL_IMAGE_KEY`가 목록에 보여야 합니다.
   - 요청 수, 리사이즈 수, cache miss 수가 API 응답과 맞아야 합니다.
   - `client service` 필터로 서비스별 이미지 집계를 좁힐 수 있어야 합니다.
 - `/services`
@@ -660,7 +688,7 @@ curl -s 'http://127.0.0.1:3100/api/admin/images/demo%2Fimage%2Fsample.png/varian
   - key 폐기 버튼으로 key 상태를 폐기 처리할 수 있어야 합니다.
   - 리사이징 정책 영역에서 `ON_DEMAND` / `PRE_GENERATE` 모드를 저장할 수 있어야 합니다.
   - pre-generate variant의 width/height/format/활성화 여부/설명을 추가·수정·삭제할 수 있어야 합니다.
-  - `PRE_GENERATE` 서비스로 업로드한 뒤 `/events`에서 같은 원본 `imageKey`의 `image.resize.completed` 또는 `image.resize.failed` 이벤트가 보여야 합니다.
+  - `PRE_GENERATE` 서비스로 업로드한 뒤 `/events`에서 업로드 응답 `imageKey`의 `image.resize.completed` 또는 `image.resize.failed` 이벤트가 보여야 합니다.
 - `/resize-recommendations`
   - `client service`, 기간, 추천 임계값 필터가 보여야 합니다.
   - 자주 요청된 width/height/format별 요청 수, 이미지 수, 평균/p95 처리 시간, 예상 절감 시간이 보여야 합니다.

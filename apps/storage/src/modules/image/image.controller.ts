@@ -1,4 +1,5 @@
 import {
+	BadRequestException,
 	Body,
 	Controller,
 	Delete,
@@ -82,13 +83,13 @@ export class ImageController {
 		)
 		file: Express.Multer.File,
 	) {
-		await this.imageService.uploadFile({
+		const result = await this.imageService.uploadFile({
 			file,
 			apiInfo: { ...imageDto },
 			clientServiceContext,
 		});
 
-		res.sendStatus(HttpStatus.CREATED);
+		res.status(HttpStatus.CREATED).json(result);
 	}
 
 	@Delete()
@@ -98,12 +99,39 @@ export class ImageController {
 		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Query() imageDto: DeleteImageDto,
 	) {
+		const target = resolveDeleteImageTarget(imageDto);
 		await this.imageService.deleteImage({
-			name: imageDto.beforeName,
-			path: imageDto.path,
+			name: target.name,
+			path: target.path,
 			clientServiceContext,
 		});
 
 		res.sendStatus(HttpStatus.OK);
 	}
+}
+
+function resolveDeleteImageTarget(imageDto: DeleteImageDto) {
+	if (imageDto.imageKey) {
+		const separatorIndex = imageDto.imageKey.lastIndexOf('/');
+		if (
+			separatorIndex <= 0 ||
+			separatorIndex === imageDto.imageKey.length - 1
+		) {
+			throw new BadRequestException('imageKey 형식이 잘못되었습니다.');
+		}
+
+		return {
+			path: imageDto.imageKey.slice(0, separatorIndex),
+			name: imageDto.imageKey.slice(separatorIndex + 1),
+		};
+	}
+
+	if (!imageDto.path || !imageDto.name) {
+		throw new BadRequestException('path/name 또는 imageKey가 필요합니다.');
+	}
+
+	return {
+		path: imageDto.path,
+		name: imageDto.name,
+	};
 }

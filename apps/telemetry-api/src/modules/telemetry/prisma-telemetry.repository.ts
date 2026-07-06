@@ -183,6 +183,7 @@ function toTelemetryEvent(
 		imageId: row.imageId ?? undefined,
 		path: row.path,
 		name: row.name,
+		originalName: readOptionalString(rawPayload, 'originalName'),
 		imageKey: row.imageKey,
 		cacheKey: row.cacheKey ?? undefined,
 		width: row.width ?? undefined,
@@ -202,6 +203,14 @@ function toUnknownRecord(value: Prisma.JsonValue): UnknownRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
 		? (value as UnknownRecord)
 		: {};
+}
+
+function readOptionalString(
+	record: UnknownRecord,
+	key: string,
+): string | undefined {
+	const value = record[key];
+	return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

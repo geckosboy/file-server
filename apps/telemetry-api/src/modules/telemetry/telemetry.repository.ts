@@ -124,6 +124,7 @@ export class InMemoryTelemetryRepository implements TelemetryRepository {
 			imageId: event.imageId,
 			path: event.path,
 			name: event.name,
+			originalName: event.originalName,
 			format: event.format,
 			originalBytes: undefined,
 			storedBytes: undefined,
@@ -143,6 +144,7 @@ export class InMemoryTelemetryRepository implements TelemetryRepository {
 		next.imageId = event.imageId ?? next.imageId;
 		next.path = event.path;
 		next.name = event.name;
+		next.originalName = event.originalName ?? next.originalName;
 		next.format = event.format ?? next.format;
 		next.firstSeenAt = minIso(next.firstSeenAt, event.occurredAt);
 		next.lastSeenAt = maxIso(next.lastSeenAt, event.occurredAt);

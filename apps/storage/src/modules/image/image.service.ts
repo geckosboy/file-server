@@ -11,6 +11,7 @@ import {
 	createClientServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 } from '@file/database';
+import { randomUUID } from 'crypto';
 import { extension } from 'mime-types';
 import { performance } from 'perf_hooks';
 
@@ -147,7 +148,7 @@ export class ImageService {
 		results,
 		telemetryContext,
 	}: {
-		imageId: number;
+		imageId?: number;
 		path: string;
 		name: string;
 		results: ImagePregenerationResult[];
@@ -241,11 +242,15 @@ export class ImageService {
 	/** 이미지 압축 후 저장 */
 	async compressAndSaveImage(imageInfo: {
 		file: Express.Multer.File;
-		apiInfo: Pick<UploadImageDto, 'id' | 'path'>;
+		apiInfo: Pick<UploadImageDto, 'externalImageId' | 'path'>;
 	}) {
 		const { apiInfo, file } = imageInfo;
 		const strategy = this.getStrategyFromMimeType(file.mimetype);
-		const mainName = normalizeSafeFileName(file.originalname, 'original name');
+		const originalName = normalizeSafeFileName(
+			file.originalname,
+			'original name',
+		);
+		const mainName = createStoredImageName(originalName);
 
 		try {
 			const startTime = performance.now();
@@ -260,10 +265,10 @@ export class ImageService {
 			const exeTime = performance.now() - startTime;
 
 			this.logger.log(
-				`[${apiInfo.id}]${apiInfo.path}/${mainName} - ${format} ${file.size}>>${size}byte +${Math.round(exeTime)}ms `,
+				`[${apiInfo.externalImageId ?? 'no-external-id'}]${apiInfo.path}/${mainName} - ${format} ${file.size}>>${size}byte +${Math.round(exeTime)}ms `,
 			);
 
-			return { format, size, exeTime, name: mainName };
+			return { format, size, exeTime, name: mainName, originalName };
 		} catch (error) {
 			this.logger.error(error);
 			throw error;
@@ -366,25 +371,32 @@ export class ImageService {
 		clientServiceContext?: ClientServiceAuthContext;
 	}) {
 		const {
-			apiInfo: { id, path, beforeName },
+			apiInfo: { externalImageId, path, beforeName },
 			clientServiceContext,
 			file,
 		} = imageInfo;
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
+		const failedOriginalName = this.getTelemetryFileName(file);
 
 		try {
-			const { exeTime, format, name, size } = await this.compressAndSaveImage({
-				file,
-				apiInfo: { id, path },
-			});
+			const { exeTime, format, name, originalName, size } =
+				await this.compressAndSaveImage({
+					file,
+					apiInfo: { externalImageId, path },
+				});
+			const imageKey = `${path}/${name}`;
+			const uploadEventId = randomUUID();
 
 			await this.publishLifecycleEvent(
 				createImageLifecycleEvent({
+					eventId: uploadEventId,
 					eventType: ImageLifecycleEventType.UploadCompleted,
-					imageId: id,
+					imageId: externalImageId,
 					path,
 					name,
+					originalName,
+					imageKey,
 					format: normalizeImageFormat(format),
 					inputBytes: file.size,
 					outputBytes: size,
@@ -396,11 +408,14 @@ export class ImageService {
 
 			await this.publishTelemetryEvent(
 				createImageTelemetryEvent({
+					eventId: uploadEventId,
 					eventType: ImageTelemetryEventType.UploadCompleted,
 					sourceApp: 'storage',
-					imageId: id,
+					imageId: externalImageId,
 					path,
 					name,
+					originalName,
+					imageKey,
 					format: normalizeImageFormat(format),
 					inputBytes: file.size,
 					outputBytes: size,
@@ -417,7 +432,7 @@ export class ImageService {
 					name,
 				});
 			await this.publishPregenerationTelemetryEvents({
-				imageId: id,
+				imageId: externalImageId,
 				path,
 				name,
 				results: pregenerationResults,
@@ -438,14 +453,26 @@ export class ImageService {
 					clientServiceContext,
 				});
 			}
+
+			return {
+				imageKey,
+				path,
+				name,
+				originalName,
+				format: normalizeImageFormat(format),
+				size,
+				eventId: uploadEventId,
+			};
 		} catch (error) {
 			const failedFields = createFailedTelemetryFields(error);
 			await this.publishLifecycleEvent(
 				createImageLifecycleEvent({
 					eventType: ImageLifecycleEventType.UploadFailed,
-					imageId: id,
+					imageId: externalImageId,
 					path,
-					name: this.getTelemetryFileName(file),
+					name: failedOriginalName,
+					originalName: failedOriginalName,
+					imageKey: `${path}/${failedOriginalName}`,
 					format: normalizeImageFormat(file.originalname),
 					inputBytes: file.size,
 					status: ImageLifecycleStatus.Failed,
@@ -458,9 +485,11 @@ export class ImageService {
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.UploadFailed,
 					sourceApp: 'storage',
-					imageId: id,
+					imageId: externalImageId,
 					path,
-					name: this.getTelemetryFileName(file),
+					name: failedOriginalName,
+					originalName: failedOriginalName,
+					imageKey: `${path}/${failedOriginalName}`,
 					format: normalizeImageFormat(file.originalname),
 					inputBytes: file.size,
 					status: 'failed',
@@ -475,3 +504,19 @@ export class ImageService {
 		}
 	}
 }
+
+export const createStoredImageName = (
+	originalName: string,
+	suffix: string = randomUUID(),
+) => {
+	const safeOriginalName = normalizeSafeFileName(originalName, 'original name');
+	const extensionIndex = safeOriginalName.lastIndexOf('.');
+
+	if (extensionIndex <= 0) {
+		return `${safeOriginalName}.${suffix}`;
+	}
+
+	const baseName = safeOriginalName.slice(0, extensionIndex);
+	const extension = safeOriginalName.slice(extensionIndex);
+	return `${baseName}.${suffix}${extension}`;
+};

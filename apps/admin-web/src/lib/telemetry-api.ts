@@ -57,6 +57,7 @@ export interface EventListItem {
 	clientServiceSlug?: string;
 	path: string;
 	name: string;
+	originalName?: string;
 	imageKey: string;
 	width?: number;
 	height?: number;
@@ -90,6 +91,7 @@ export interface LifecycleEventListItem {
 	imageId?: number;
 	path: string;
 	name: string;
+	originalName?: string;
 	imageKey: string;
 	format?: string;
 	durationMs?: number;

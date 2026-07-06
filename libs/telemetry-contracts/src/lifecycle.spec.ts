@@ -20,6 +20,7 @@ const baseEvent = {
 	requestId: 'req-1',
 	path: '/products/images/',
 	name: 'sample.png',
+	originalName: 'sample-original.png',
 	imageKey: 'products/images/sample.png',
 	status: ImageLifecycleStatus.Success,
 };
@@ -33,7 +34,6 @@ describe('이미지 lifecycle 이벤트 계약', () => {
 		const result = validateImageLifecycleEvent({
 			...baseEvent,
 			eventType: ImageLifecycleEventType.UploadCompleted,
-			imageId: 10,
 			format: 'png',
 			inputBytes: 1000,
 			outputBytes: 980,
@@ -47,6 +47,7 @@ describe('이미지 lifecycle 이벤트 계약', () => {
 		expect(createLifecycleKafkaKey(result.event)).toBe(
 			'catalog-api:products/images/sample.png:image.upload.completed',
 		);
+		expect(result.event.originalName).toBe('sample-original.png');
 	});
 
 	it('업로드 실패 lifecycle 이벤트에는 실패 정보가 필요하다', () => {
@@ -75,7 +76,6 @@ describe('이미지 lifecycle 이벤트 계약', () => {
 			eventId: 'life-evt-key',
 			eventType: ImageLifecycleEventType.UploadCompleted,
 			imageKey: undefined,
-			imageId: 10,
 			inputBytes: 1000,
 			outputBytes: 980,
 			durationMs: 12,

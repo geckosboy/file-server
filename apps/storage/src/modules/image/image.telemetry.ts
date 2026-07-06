@@ -41,6 +41,7 @@ export interface ImageTelemetryEvent {
 	imageId?: number;
 	path: string;
 	name: string;
+	originalName?: string;
 	imageKey: string;
 	cacheKey?: string;
 	width?: number;

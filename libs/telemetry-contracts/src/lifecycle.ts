@@ -52,6 +52,7 @@ export type ImageLifecycleEventBase = {
 	imageId?: number;
 	path: string;
 	name: string;
+	originalName?: string;
 	imageKey: string;
 	format?: ImageLifecycleFormat;
 	inputBytes?: number;
@@ -66,7 +67,6 @@ export type ImageUploadCompletedLifecycleEvent = ImageLifecycleEventBase & {
 	eventType: typeof ImageLifecycleEventType.UploadCompleted;
 	sourceApp: typeof ImageLifecycleSourceApp.Storage;
 	status: typeof ImageLifecycleStatus.Success;
-	imageId: number;
 	inputBytes: number;
 	outputBytes: number;
 	durationMs: number;
@@ -193,6 +193,13 @@ export const normalizeImageLifecycleEvent = (
 		errors.push('imageId는 양의 정수여야 합니다');
 	}
 
+	if (
+		input.originalName !== undefined &&
+		!isNonEmptyString(input.originalName)
+	) {
+		errors.push('originalName은 비어 있지 않은 문자열이어야 합니다');
+	}
+
 	if (input.format !== undefined && !isOneOf(input.format, formatValues)) {
 		errors.push('지원하지 않는 format입니다');
 	}
@@ -256,9 +263,6 @@ const validateLifecycleSpecificFields = (
 	}
 
 	if (eventType === ImageLifecycleEventType.UploadCompleted) {
-		if (!isPositiveInteger(input.imageId)) {
-			errors.push('업로드 완료 이벤트에는 양의 정수 imageId가 필요합니다');
-		}
 		validateRequiredNonNegativeNumber(
 			input.inputBytes,
 			'업로드 완료 이벤트에는 inputBytes가 필요합니다',

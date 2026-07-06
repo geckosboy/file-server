@@ -8,10 +8,10 @@ const uploadCompleted = {
 	occurredAt: '2026-07-01T00:00:00.000Z',
 	sourceApp: 'storage',
 	environment: 'test',
-	imageId: 100,
 	path: 'products/image',
-	name: 'sample.png',
-	imageKey: 'products/image/sample.png',
+	name: 'sample.00000000-0000-4000-8000-000000000000.png',
+	originalName: 'sample.png',
+	imageKey: 'products/image/sample.00000000-0000-4000-8000-000000000000.png',
 	format: 'png',
 	inputBytes: 1024,
 	outputBytes: 800,
@@ -148,8 +148,8 @@ describe('텔레메트리 수집 서비스', () => {
 
 		expect(await repository.listAssets()).toEqual([
 			expect.objectContaining({
-				imageKey: 'products/image/sample.png',
-				imageId: 100,
+				imageKey: uploadCompleted.imageKey,
+				originalName: 'sample.png',
 				totalEvents: 1,
 				lastUploadedAt: '2026-07-01T00:00:00.000Z',
 				originalBytes: 1024,
@@ -164,7 +164,8 @@ describe('텔레메트리 수집 서비스', () => {
 			eventId: 'evt-cache-hit-1',
 			eventType: 'image.cache.hit',
 			sourceApp: 'cache',
-			cacheKey: 'products/image/sample.png:w128',
+			cacheKey:
+				'products/image/sample.00000000-0000-4000-8000-000000000000.png:w128',
 		});
 
 		expect((await repository.listAssets())[0]).toMatchObject({
@@ -180,7 +181,8 @@ describe('텔레메트리 수집 서비스', () => {
 			eventId: 'evt-cache-miss-1',
 			eventType: 'image.cache.miss',
 			sourceApp: 'cache',
-			cacheKey: 'products/image/sample.png:w128',
+			cacheKey:
+				'products/image/sample.00000000-0000-4000-8000-000000000000.png:w128',
 		});
 
 		expect((await repository.listAssets())[0]).toMatchObject({
@@ -205,7 +207,8 @@ describe('텔레메트리 수집 서비스', () => {
 		expect((await repository.listAssets())[0].totalResizes).toBe(1);
 		expect(await repository.listVariants()).toEqual([
 			expect.objectContaining({
-				variantKey: 'products/image/sample.png:120x80:png',
+				variantKey:
+					'products/image/sample.00000000-0000-4000-8000-000000000000.png:120x80:png',
 				resizeCount: 1,
 				avgDurationMs: 30,
 				p95DurationMs: 30,

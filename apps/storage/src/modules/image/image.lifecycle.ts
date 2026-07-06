@@ -36,6 +36,7 @@ type CreateImageLifecycleEventInput = {
 	imageId?: number;
 	path: string;
 	name: string;
+	originalName?: string;
 	imageKey?: string;
 	format?: ImageLifecycleFormat;
 	inputBytes?: number;
@@ -74,6 +75,7 @@ export const createImageLifecycleEvent = (
 		imageId: input.imageId,
 		path: input.path,
 		name: input.name,
+		originalName: input.originalName,
 		imageKey: input.imageKey ?? createLifecycleImageKey(input.path, input.name),
 		format: input.format,
 		inputBytes: input.inputBytes,

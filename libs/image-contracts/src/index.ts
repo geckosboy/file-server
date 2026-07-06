@@ -10,6 +10,7 @@ import {
 	Max,
 	MaxLength,
 	Min,
+	ValidateIf,
 } from 'class-validator';
 
 /** Cache/Resize 앱에서 공유하는 이미지 조회 계약입니다. */
@@ -65,27 +66,54 @@ class StorageImageDto {
 	@Type(() => Number)
 	@IsNumber()
 	@IsInt()
-	@IsNotEmpty()
-	id!: number;
+	@Min(1)
+	@IsOptional()
+	externalImageId?: number;
 
 	@IsString()
 	@IsNotEmpty()
 	@MaxLength(128)
 	beforeName!: string;
+
+	@IsString()
+	@IsNotEmpty()
+	@MaxLength(384)
+	imageKey!: string;
 }
 
 export class GetImageDto extends PickType(StorageImageDto, ['path', 'name']) {}
 
-export class UploadImageDto extends PickType(StorageImageDto, ['id', 'path']) {
+export class UploadImageDto extends PickType(StorageImageDto, ['path']) {
 	@IsOptional()
 	@IsString()
 	@IsNotEmpty()
 	@MaxLength(128)
 	beforeName?: string;
+
+	@Type(() => Number)
+	@IsOptional()
+	@IsNumber()
+	@IsInt()
+	@Min(1)
+	externalImageId?: number;
 }
 
-export class DeleteImageDto extends PickType(StorageImageDto, [
-	'id',
-	'path',
-	'beforeName',
-]) {}
+export class DeleteImageDto {
+	@ValidateIf((dto: DeleteImageDto) => !dto.imageKey)
+	@IsString()
+	@IsNotEmpty()
+	@MaxLength(256)
+	path!: string;
+
+	@ValidateIf((dto: DeleteImageDto) => !dto.imageKey)
+	@IsString()
+	@IsNotEmpty()
+	@MaxLength(128)
+	name!: string;
+
+	@ValidateIf((dto: DeleteImageDto) => !dto.path || !dto.name)
+	@IsString()
+	@IsNotEmpty()
+	@MaxLength(384)
+	imageKey!: string;
+}

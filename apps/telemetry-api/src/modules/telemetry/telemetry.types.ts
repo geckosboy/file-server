@@ -48,6 +48,7 @@ export interface ImageTelemetryEvent {
 	imageId?: number;
 	path: string;
 	name: string;
+	originalName?: string;
 	imageKey: string;
 	cacheKey?: string;
 	width?: number;
@@ -67,6 +68,7 @@ export interface ImageAssetSummary {
 	imageId?: number;
 	path: string;
 	name: string;
+	originalName?: string;
 	format?: ImageFormat;
 	originalBytes?: number;
 	storedBytes?: number;

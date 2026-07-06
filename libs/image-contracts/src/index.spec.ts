@@ -1,6 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
-import { ImageQueryDto, UploadImageDto } from './index';
+import { DeleteImageDto, ImageQueryDto, UploadImageDto } from './index';
 
 describe('이미지 계약 DTO', () => {
 	it('이미지 크기 쿼리 문자열을 숫자로 변환해 검증한다', async () => {
@@ -26,14 +26,27 @@ describe('이미지 계약 DTO', () => {
 		expect(errors).toHaveLength(1);
 	});
 
-	it('스토리지 업로드 계약에서 이전 이미지 이름은 선택 값으로 허용한다', async () => {
+	it('스토리지 업로드 계약에서 외부 이미지 ID와 이전 이미지 이름은 선택 값으로 허용한다', async () => {
 		const dto = plainToInstance(UploadImageDto, {
-			id: '10',
 			path: 'products/image',
+			externalImageId: '10',
 		});
 
 		await expect(validate(dto)).resolves.toEqual([]);
-		expect(dto.id).toBe(10);
+		expect(dto.externalImageId).toBe(10);
 		expect(dto.beforeName).toBeUndefined();
+	});
+
+	it('스토리지 삭제 계약은 path/name 또는 imageKey를 허용한다', async () => {
+		const byPathAndName = plainToInstance(DeleteImageDto, {
+			path: 'products/image',
+			name: 'sample.png',
+		});
+		const byImageKey = plainToInstance(DeleteImageDto, {
+			imageKey: 'products/image/sample.png',
+		});
+
+		await expect(validate(byPathAndName)).resolves.toEqual([]);
+		await expect(validate(byImageKey)).resolves.toEqual([]);
 	});
 });

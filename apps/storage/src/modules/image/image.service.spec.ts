@@ -20,7 +20,7 @@ import {
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
-import { ImageService } from './image.service';
+import { createStoredImageName, ImageService } from './image.service';
 import { AppConfig } from 'src/config/env.schema';
 
 type KafkaEmitPayload = { key: string; value: string };
@@ -94,6 +94,12 @@ describe('스토리지 이미지 서비스', () => {
 		imageClient.emit.mock.calls
 			.filter(([emittedTopic]) => emittedTopic === topic)
 			.map(([, payload]) => payload as KafkaEmitPayload);
+	const getSavedMainName = () =>
+		(
+			imageManager.saveImageFromTemp.mock.calls.at(-1)?.[1] as {
+				mainName: string;
+			}
+		).mainName;
 
 	beforeEach(() => {
 		imageManager = {
@@ -139,7 +145,7 @@ describe('스토리지 이미지 서비스', () => {
 		jest.restoreAllMocks();
 	});
 
-	it('업로드된 PNG를 원본 파일명으로 압축해 저장한다', async () => {
+	it('업로드된 PNG를 원본 파일명 기반 고유 파일명으로 압축해 저장한다', async () => {
 		const file = createMulterFile({
 			originalname: 'original name.png',
 			filename: 'temp-name.png',
@@ -147,17 +153,29 @@ describe('스토리지 이미지 서비스', () => {
 
 		const result = await service.compressAndSaveImage({
 			file,
-			apiInfo: { id: 10, path: 'products/image' },
+			apiInfo: { externalImageId: 10, path: 'products/image' },
 		});
 
+		const savedName = getSavedMainName();
 		expect(result.format).toBe('png');
+		expect(result.originalName).toBe('original_name.png');
+		expect(result.name).toBe(savedName);
+		expect(savedName).toMatch(
+			/^original_name\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.png$/,
+		);
 		expect(imageManager.saveImageFromTemp).toHaveBeenCalledWith(
 			expect.any(PngStrategy),
 			{
-				mainName: 'original_name.png',
+				mainName: savedName,
 				tempName: 'temp-name.png',
 				savePath: 'products/image',
 			},
+		);
+	});
+
+	it('고유 저장 파일명은 확장자 앞에 suffix를 붙인다', () => {
+		expect(createStoredImageName('sample.png', 'fixed-id')).toBe(
+			'sample.fixed-id.png',
 		);
 	});
 
@@ -167,7 +185,7 @@ describe('스토리지 이미지 서비스', () => {
 		await service.uploadFile({
 			file,
 			apiInfo: {
-				id: 10,
+				externalImageId: 10,
 				path: 'products/image',
 				beforeName: 'previous.png',
 			},
@@ -189,10 +207,10 @@ describe('스토리지 이미지 서비스', () => {
 	it('파일 업로드 후 file.image.events.v1 텔레메트리 이벤트를 정확한 계약으로 발행한다', async () => {
 		const file = createMulterFile();
 
-		await service.uploadFile({
+		const result = await service.uploadFile({
 			file,
 			apiInfo: {
-				id: 10,
+				externalImageId: 10,
 				path: 'products/image',
 			},
 			clientServiceContext,
@@ -202,7 +220,7 @@ describe('스토리지 이미지 서비스', () => {
 		const telemetryPayload = parseKafkaPayload(telemetryMessage);
 
 		expect(telemetryMessage.key).toBe(
-			`products/image/sample.png:${ImageTelemetryEventType.UploadCompleted}`,
+			`${result.imageKey}:${ImageTelemetryEventType.UploadCompleted}`,
 		);
 		expect(telemetryPayload).toEqual(
 			expect.objectContaining({
@@ -212,8 +230,9 @@ describe('스토리지 이미지 서비스', () => {
 				environment: 'test',
 				imageId: 10,
 				path: 'products/image',
-				name: 'sample.png',
-				imageKey: 'products/image/sample.png',
+				name: result.name,
+				originalName: 'sample.png',
+				imageKey: result.imageKey,
 				format: 'png',
 				inputBytes: file.size,
 				outputBytes: 128,
@@ -231,8 +250,18 @@ describe('스토리지 이미지 서비스', () => {
 			{
 				clientServiceId: 'service-1',
 				path: 'products/image',
-				name: 'sample.png',
+				name: result.name,
 			},
+		);
+		expect(result).toEqual(
+			expect.objectContaining({
+				imageKey: `products/image/${result.name}`,
+				path: 'products/image',
+				originalName: 'sample.png',
+				format: 'png',
+				size: 128,
+				eventId: telemetryPayload.eventId,
+			}),
 		);
 	});
 
@@ -261,10 +290,10 @@ describe('스토리지 이미지 서비스', () => {
 		];
 		imagePregenerationService.preGenerateForUpload.mockResolvedValue(results);
 
-		await service.uploadFile({
+		const result = await service.uploadFile({
 			file,
 			apiInfo: {
-				id: 10,
+				externalImageId: 10,
 				path: 'products/image',
 			},
 			clientServiceContext,
@@ -280,9 +309,9 @@ describe('스토리지 이미지 서비스', () => {
 					sourceApp: 'resize',
 					imageId: 10,
 					path: 'products/image',
-					name: 'sample.png',
-					imageKey: 'products/image/sample.png',
-					cacheKey: 'products/image/sample.png:400x400:webp',
+					name: result.name,
+					imageKey: result.imageKey,
+					cacheKey: `${result.imageKey}:400x400:webp`,
 					width: 400,
 					height: 400,
 					format: 'webp',
@@ -298,9 +327,9 @@ describe('스토리지 이미지 서비스', () => {
 					sourceApp: 'resize',
 					imageId: 10,
 					path: 'products/image',
-					name: 'sample.png',
-					imageKey: 'products/image/sample.png',
-					cacheKey: 'products/image/sample.png:800xauto:jpeg',
+					name: result.name,
+					imageKey: result.imageKey,
+					cacheKey: `${result.imageKey}:800xauto:jpeg`,
 					width: 800,
 					format: 'jpeg',
 					status: 'failed',
@@ -314,10 +343,10 @@ describe('스토리지 이미지 서비스', () => {
 	it('파일 업로드 후 file.image.lifecycle.v1 lifecycle 이벤트를 발행한다', async () => {
 		const file = createMulterFile();
 
-		await service.uploadFile({
+		const result = await service.uploadFile({
 			file,
 			apiInfo: {
-				id: 10,
+				externalImageId: 10,
 				path: 'products/image',
 			},
 			clientServiceContext,
@@ -327,7 +356,7 @@ describe('스토리지 이미지 서비스', () => {
 		const lifecyclePayload = parseKafkaPayload(lifecycleMessage);
 
 		expect(lifecycleMessage.key).toBe(
-			`local-demo:products/image/sample.png:${ImageLifecycleEventType.UploadCompleted}`,
+			`local-demo:${result.imageKey}:${ImageLifecycleEventType.UploadCompleted}`,
 		);
 		expect(lifecyclePayload).toEqual(
 			expect.objectContaining({
@@ -337,8 +366,9 @@ describe('스토리지 이미지 서비스', () => {
 				environment: 'test',
 				imageId: 10,
 				path: 'products/image',
-				name: 'sample.png',
-				imageKey: 'products/image/sample.png',
+				name: result.name,
+				originalName: 'sample.png',
+				imageKey: result.imageKey,
 				format: 'png',
 				inputBytes: file.size,
 				outputBytes: 128,
@@ -362,7 +392,7 @@ describe('스토리지 이미지 서비스', () => {
 			service.uploadFile({
 				file,
 				apiInfo: {
-					id: 10,
+					externalImageId: 10,
 					path: 'products/image',
 				},
 			}),
@@ -378,6 +408,11 @@ describe('스토리지 이미지 서비스', () => {
 			expect.objectContaining({
 				eventType: ImageLifecycleEventType.UploadFailed,
 				sourceApp: 'storage',
+				imageId: 10,
+				path: 'products/image',
+				name: 'sample.png',
+				originalName: 'sample.png',
+				imageKey: 'products/image/sample.png',
 				status: 'failed',
 				errorCode: 'Error',
 				errorMessage: 'disk down',
@@ -387,6 +422,11 @@ describe('스토리지 이미지 서비스', () => {
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.UploadFailed,
 				sourceApp: 'storage',
+				imageId: 10,
+				path: 'products/image',
+				name: 'sample.png',
+				originalName: 'sample.png',
+				imageKey: 'products/image/sample.png',
 				status: 'failed',
 				errorCode: 'Error',
 				errorMessage: 'disk down',
@@ -413,11 +453,19 @@ describe('스토리지 이미지 서비스', () => {
 			service.uploadFile({
 				file,
 				apiInfo: {
-					id: 10,
+					externalImageId: 10,
 					path: 'products/image',
 				},
 			}),
-		).resolves.toBeUndefined();
+		).resolves.toEqual(
+			expect.objectContaining({
+				imageKey: expect.stringMatching(
+					/^products\/image\/sample\.[0-9a-f-]{36}\.png$/,
+				),
+				originalName: 'sample.png',
+				eventId: expect.any(String),
+			}),
+		);
 
 		expect(imageManager.deleteTempImage).toHaveBeenCalledWith(file.filename);
 		expect(imageManager.deleteMainImage).not.toHaveBeenCalled();

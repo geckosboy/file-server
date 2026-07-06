@@ -178,7 +178,6 @@ describe('스토리지 앱 e2e', () => {
 
 		await request(app.getHttpServer())
 			.post('/image')
-			.field('id', '1')
 			.field('path', 'e2e-storage/image')
 			.attach('file', image, {
 				filename: 'sample.png',
@@ -190,14 +189,31 @@ describe('스토리지 앱 e2e', () => {
 	it('업로드 이미지를 path/image/name 규칙으로 저장하고 조회와 삭제를 수행한다', async () => {
 		const image = await createPngImage();
 
-		await authorized(request(app.getHttpServer()).post('/image'))
-			.field('id', '100')
+		const uploadResponse = await authorized(
+			request(app.getHttpServer()).post('/image'),
+		)
+			.field('externalImageId', '100')
 			.field('path', 'e2e-storage/image')
 			.attach('file', image, {
 				filename: 'sample.png',
 				contentType: 'image/png',
 			})
-			.expect(201);
+			.expect(201)
+			.expect(({ body }) => {
+				expect(body).toMatchObject({
+					path: 'e2e-storage/image',
+					originalName: 'sample.png',
+					format: 'png',
+					size: expect.any(Number),
+					eventId: expect.any(String),
+				});
+				expect(body.name).toMatch(/^sample\.[0-9a-f-]{36}\.png$/);
+				expect(body.imageKey).toBe(`e2e-storage/image/${body.name}`);
+			});
+		const uploaded = uploadResponse.body as {
+			imageKey: string;
+			name: string;
+		};
 
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
@@ -208,8 +224,9 @@ describe('스토리지 앱 e2e', () => {
 				requestId: testRequestId,
 				imageId: 100,
 				path: 'e2e-storage/image',
-				name: 'sample.png',
-				imageKey: 'e2e-storage/image/sample.png',
+				name: uploaded.name,
+				originalName: 'sample.png',
+				imageKey: uploaded.imageKey,
 				status: 'success',
 			}),
 		]);
@@ -222,14 +239,15 @@ describe('스토리지 앱 e2e', () => {
 				requestId: testRequestId,
 				imageId: 100,
 				path: 'e2e-storage/image',
-				name: 'sample.png',
-				imageKey: 'e2e-storage/image/sample.png',
+				name: uploaded.name,
+				originalName: 'sample.png',
+				imageKey: uploaded.imageKey,
 				status: 'success',
 			}),
 		]);
 
 		const getResponse = await authorized(
-			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
+			request(app.getHttpServer()).get(`/image/e2e-storage/${uploaded.name}`),
 		)
 			.expect(200)
 			.expect('content-type', /image\/png/);
@@ -240,14 +258,12 @@ describe('스토리지 앱 e2e', () => {
 
 		await authorized(request(app.getHttpServer()).delete('/image'))
 			.query({
-				id: 100,
-				path: 'e2e-storage/image',
-				beforeName: 'sample.png',
+				imageKey: uploaded.imageKey,
 			})
 			.expect(200);
 
 		await authorized(
-			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
+			request(app.getHttpServer()).get(`/image/e2e-storage/${uploaded.name}`),
 		).expect(404);
 	});
 
@@ -297,30 +313,36 @@ describe('스토리지 앱 e2e', () => {
 		const previousImage = await createPngImage();
 		const nextImage = await createPngImage();
 
-		await authorized(request(app.getHttpServer()).post('/image'))
-			.field('id', '200')
+		const previousUpload = await authorized(
+			request(app.getHttpServer()).post('/image'),
+		)
+			.field('externalImageId', '200')
 			.field('path', 'e2e-storage/image')
 			.attach('file', previousImage, {
 				filename: 'previous.png',
 				contentType: 'image/png',
 			})
 			.expect(201);
+		const previous = previousUpload.body as { name: string };
 
-		await authorized(request(app.getHttpServer()).post('/image'))
-			.field('id', '201')
+		const nextUpload = await authorized(
+			request(app.getHttpServer()).post('/image'),
+		)
+			.field('externalImageId', '201')
 			.field('path', 'e2e-storage/image')
-			.field('beforeName', 'previous.png')
+			.field('beforeName', previous.name)
 			.attach('file', nextImage, {
 				filename: 'next.png',
 				contentType: 'image/png',
 			})
 			.expect(201);
+		const next = nextUpload.body as { name: string };
 
 		await authorized(
-			request(app.getHttpServer()).get('/image/e2e-storage/previous.png'),
+			request(app.getHttpServer()).get(`/image/e2e-storage/${previous.name}`),
 		).expect(404);
 		await authorized(
-			request(app.getHttpServer()).get('/image/e2e-storage/next.png'),
+			request(app.getHttpServer()).get(`/image/e2e-storage/${next.name}`),
 		).expect(200);
 	});
 });

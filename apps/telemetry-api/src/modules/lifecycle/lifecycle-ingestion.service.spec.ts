@@ -12,10 +12,10 @@ const uploadCompleted = {
 	clientServiceId: 'service-1',
 	clientServiceSlug: 'catalog-api',
 	requestId: 'req-life-1',
-	imageId: 100,
 	path: 'products/image',
-	name: 'sample.png',
-	imageKey: 'products/image/sample.png',
+	name: 'sample.00000000-0000-4000-8000-000000000000.png',
+	originalName: 'sample.png',
+	imageKey: 'products/image/sample.00000000-0000-4000-8000-000000000000.png',
 	format: 'png',
 	inputBytes: 1024,
 	outputBytes: 800,
@@ -33,9 +33,9 @@ const uploadFailed = {
 	clientServiceId: 'service-1',
 	clientServiceSlug: 'catalog-api',
 	requestId: 'req-life-failed-1',
-	imageId: 101,
 	path: 'products/image',
 	name: 'broken.txt',
+	originalName: 'broken.txt',
 	imageKey: 'products/image/broken.txt',
 	format: 'unknown',
 	inputBytes: 9,
@@ -71,6 +71,7 @@ describe('이미지 lifecycle 수집 서비스', () => {
 			eventType: ImageLifecycleEventType.UploadCompleted,
 			receivedAt: '2026-07-01T00:00:01.000Z',
 			clientServiceSlug: 'catalog-api',
+			originalName: 'sample.png',
 			rawPayload: uploadCompleted,
 		});
 	});
@@ -83,6 +84,7 @@ describe('이미지 lifecycle 수집 서비스', () => {
 		expect(event).toMatchObject({
 			eventType: ImageLifecycleEventType.UploadFailed,
 			status: 'failed',
+			originalName: 'broken.txt',
 			errorCode: 'BadRequestException',
 			errorMessage: '알 수 없는 MIME type 입니다.',
 		});

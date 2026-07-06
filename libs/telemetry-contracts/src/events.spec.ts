@@ -17,6 +17,7 @@ const baseEvent = {
 	environment: ImageTelemetryEnvironment.Test,
 	path: '/products/images/',
 	name: 'sample.png',
+	originalName: 'sample-original.png',
 	imageKey: 'products/images/sample.png',
 	status: ImageTelemetryStatus.Success,
 };
@@ -26,7 +27,6 @@ describe('이미지 텔레메트리 이벤트 계약', () => {
 		const result = validateImageTelemetryEvent({
 			...baseEvent,
 			eventType: ImageTelemetryEventType.UploadCompleted,
-			imageId: 10,
 			inputBytes: 1000,
 			outputBytes: 980,
 			durationMs: 12,
@@ -40,6 +40,7 @@ describe('이미지 텔레메트리 이벤트 계약', () => {
 		expect(createTelemetryKafkaKey(result.event)).toBe(
 			'products/images/sample.png:image.upload.completed',
 		);
+		expect(result.event.originalName).toBe('sample-original.png');
 	});
 
 	it('이미지 리사이즈 완료 이벤트에서 크기와 바이트 정보를 검증한다', () => {

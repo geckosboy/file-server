@@ -63,6 +63,7 @@ export type ImageTelemetryEventBase = {
 	imageId?: number;
 	path: string;
 	name: string;
+	originalName?: string;
 	imageKey: string;
 	cacheKey?: string;
 	width?: number;
@@ -80,7 +81,6 @@ export type ImageUploadCompletedEvent = ImageTelemetryEventBase & {
 	eventType: typeof ImageTelemetryEventType.UploadCompleted;
 	sourceApp: typeof ImageTelemetrySourceApp.Storage;
 	status: typeof ImageTelemetryStatus.Success;
-	imageId: number;
 	inputBytes: number;
 	outputBytes: number;
 	durationMs: number;
@@ -315,6 +315,13 @@ export const normalizeImageTelemetryEvent = (
 		errors.push('imageId는 양의 정수여야 합니다');
 	}
 
+	if (
+		input.originalName !== undefined &&
+		!isNonEmptyString(input.originalName)
+	) {
+		errors.push('originalName은 비어 있지 않은 문자열이어야 합니다');
+	}
+
 	if (input.width !== undefined && !isDimension(input.width)) {
 		errors.push('width는 1부터 4096 사이의 정수여야 합니다');
 	}
@@ -410,9 +417,6 @@ const validateEventSpecificFields = (
 	}
 
 	if (eventType === ImageTelemetryEventType.UploadCompleted) {
-		if (!isPositiveInteger(input.imageId)) {
-			errors.push('업로드 완료 이벤트에는 양의 정수 imageId가 필요합니다');
-		}
 		validateRequiredNonNegativeNumber(
 			input.inputBytes,
 			'업로드 완료 이벤트에는 inputBytes가 필요합니다',
