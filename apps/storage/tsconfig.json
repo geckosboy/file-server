@@ -1,7 +1,14 @@
 {
 	"extends": "@file/tsconfig/tsconfig.base.json",
-	"include": ["./src/**/*.ts"],
-	"exclude": ["node_modules", "dist"],
+	"include": [
+		"./src/**/*.ts",
+		"../../libs/global/src/**/*.ts",
+		"../../libs/nest-common/src/**/*.ts",
+		"../../libs/image-contracts/src/**/*.ts",
+		"../../libs/database/src/**/*.ts",
+		"../../libs/telemetry-contracts/src/**/*.ts"
+	],
+	"exclude": ["node_modules", "dist", "test", "**/*.spec.ts"],
 	"compilerOptions": {
 		"declaration": false,
 		"outDir": "./dist",
