@@ -13,6 +13,8 @@
 	"moduleNameMapper": {
 		"^src/(.*)$": "<rootDir>/../src/$1",
 		"^@file/database$": "<rootDir>/../../../libs/database/src",
+		"^@file/nest-common$": "<rootDir>/../../../libs/nest-common/src",
+		"^@file/nest-common/(.*)$": "<rootDir>/../../../libs/nest-common/src/$1",
 		"^@file/telemetry-contracts$": "<rootDir>/../../../libs/telemetry-contracts/src",
 		"^@file/telemetry-contracts/(.*)$": "<rootDir>/../../../libs/telemetry-contracts/src/$1"
 	}

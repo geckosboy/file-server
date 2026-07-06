@@ -258,6 +258,18 @@ describe('클라이언트 서비스 API 키 가드', () => {
 			traceId: 'trace-1',
 			apiKey: 'fs_prefix_secret',
 		});
+		expect(request.reqId).toBe('req-1');
+		expect(request.requestLogContext).toEqual({
+			requestId: 'req-1',
+			traceId: 'trace-1',
+			clientServiceId: 'service-1',
+			clientServiceSlug: 'local-demo',
+			clientServiceName: 'Local Demo',
+			clientServiceKeyId: 'key-1',
+		});
+		expect(JSON.stringify(request.requestLogContext)).not.toContain(
+			'fs_prefix_secret',
+		);
 		expect(
 			createClientServiceTelemetryFields(request.clientServiceContext),
 		).toEqual({
@@ -272,6 +284,30 @@ describe('클라이언트 서비스 API 키 가드', () => {
 			[CLIENT_SERVICE_API_KEY_HEADER]: 'fs_prefix_secret',
 			[CLIENT_SERVICE_REQUEST_ID_HEADER]: 'req-1',
 			[CLIENT_SERVICE_TRACE_ID_HEADER]: 'trace-1',
+		});
+	});
+
+	it('기존 requestLogContext가 있으면 같은 객체에 서비스 정보를 합친다', async () => {
+		const request = createRequest({
+			[CLIENT_SERVICE_API_KEY_HEADER]: 'fs_prefix_secret',
+			[CLIENT_SERVICE_REQUEST_ID_HEADER]: 'req-1',
+		});
+		const existingLogContext = {
+			requestId: 'req-1',
+			method: 'GET',
+		};
+		request.requestLogContext = existingLogContext;
+
+		await expect(guard.canActivate(createContext(request))).resolves.toBe(true);
+
+		expect(request.requestLogContext).toBe(existingLogContext);
+		expect(request.requestLogContext).toMatchObject({
+			requestId: 'req-1',
+			method: 'GET',
+			clientServiceId: 'service-1',
+			clientServiceSlug: 'local-demo',
+			clientServiceName: 'Local Demo',
+			clientServiceKeyId: 'key-1',
 		});
 	});
 

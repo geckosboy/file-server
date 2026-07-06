@@ -6,3 +6,5 @@ export {
 } from './config';
 export type { AppEnvLoadOptions, EnvFilePathResolver } from './config';
 export { PickPartial } from './mapped-types';
+
+export * from './middlewares';

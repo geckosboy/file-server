@@ -44,6 +44,15 @@ export type ClientServiceTelemetryFields = Pick<
 
 export interface ClientServiceAuthenticatedRequest extends Request {
 	clientServiceContext?: ClientServiceAuthContext;
+	reqId?: string;
+	requestLogContext?: {
+		requestId: string;
+		traceId?: string;
+		clientServiceId?: string;
+		clientServiceSlug?: string;
+		clientServiceName?: string;
+		clientServiceKeyId?: string;
+	};
 }
 
 export interface AuthenticatedClientService {
@@ -137,7 +146,9 @@ export class ClientServiceApiKeyGuard implements CanActivate {
 		}
 
 		const requestId = resolveCorrelationId(
-			readHeader(request, CLIENT_SERVICE_REQUEST_ID_HEADER),
+			readHeader(request, CLIENT_SERVICE_REQUEST_ID_HEADER) ??
+				request.requestLogContext?.requestId ??
+				request.reqId,
 		);
 		const traceId = normalizeOptionalCorrelationId(
 			readHeader(request, CLIENT_SERVICE_TRACE_ID_HEADER),
@@ -154,6 +165,7 @@ export class ClientServiceApiKeyGuard implements CanActivate {
 			traceId,
 			apiKey,
 		};
+		attachClientServiceLogContext(request, request.clientServiceContext);
 
 		return true;
 	}
@@ -200,6 +212,26 @@ export const createClientServiceForwardHeaders = (
 			: {}),
 	};
 };
+
+function attachClientServiceLogContext(
+	request: ClientServiceAuthenticatedRequest,
+	context: ClientServiceAuthContext,
+) {
+	const requestLogContext = request.requestLogContext ?? {
+		requestId: context.requestId,
+	};
+
+	Object.assign(requestLogContext, {
+		requestId: context.requestId,
+		clientServiceId: context.clientServiceId,
+		clientServiceSlug: context.clientServiceSlug,
+		clientServiceName: context.clientServiceName,
+		clientServiceKeyId: context.clientServiceKeyId,
+		...(context.traceId ? { traceId: context.traceId } : {}),
+	});
+	request.reqId = context.requestId;
+	request.requestLogContext = requestLogContext;
+}
 
 function isClientServiceKeyUsable(
 	key: ClientServiceKeyWithService,

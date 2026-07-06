@@ -70,3 +70,5 @@ tsconfig.build.tsbuildinfo
 
 # Turborepo
 .turbo/
+
+settings.json
