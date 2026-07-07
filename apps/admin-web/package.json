@@ -15,14 +15,21 @@
 		"test": "pnpm exec jest --passWithNoTests"
 	},
 	"dependencies": {
+		"class-variance-authority": "^0.7.1",
+		"clsx": "^2.1.1",
+		"lucide-react": "^1.23.0",
 		"next": "^16.2.9",
 		"react": "^19.2.7",
-		"react-dom": "^19.2.7"
+		"react-dom": "^19.2.7",
+		"tailwind-merge": "^3.6.0"
 	},
 	"devDependencies": {
 		"@file/tsconfig": "workspace:*",
+		"@tailwindcss/postcss": "^4.3.2",
 		"@types/react": "^19.2.17",
-		"@types/react-dom": "^19.2.3"
+		"@types/react-dom": "^19.2.3",
+		"postcss": "^8.5.16",
+		"tailwindcss": "^4.3.2"
 	},
 	"jest": {
 		"moduleFileExtensions": [

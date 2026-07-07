@@ -1,3 +1,7 @@
+'use client';
+
+import { usePathname } from 'next/navigation';
+
 const links = [
 	{ href: '/dashboard', label: 'Dashboard' },
 	{ href: '/images', label: 'Images' },
@@ -8,17 +12,26 @@ const links = [
 ];
 
 export function Navigation() {
+	const pathname = usePathname();
+
 	return (
 		<nav className="navigation" aria-label="관리자 화면">
 			<a className="brand" href="/dashboard">
 				파일서버 Admin
 			</a>
 			<div className="nav-links">
-				{links.map((link) => (
-					<a key={link.href} href={link.href}>
-						{link.label}
-					</a>
-				))}
+				{links.map((link) => {
+					const active = pathname?.startsWith(link.href) ?? false;
+					return (
+						<a
+							key={link.href}
+							href={link.href}
+							aria-current={active ? 'page' : undefined}
+						>
+							{link.label}
+						</a>
+					);
+				})}
 			</div>
 		</nav>
 	);
