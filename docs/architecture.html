@@ -234,6 +234,8 @@
 					<span class="badge">Admin Web</span>
 					<span class="badge">PostgreSQL + Prisma</span>
 					<span class="badge">Kafka</span>
+					<span class="badge">AsyncAPI</span>
+					<span class="badge">Lifecycle Consumer Tester</span>
 				</div>
 			</div>
 		</header>
@@ -242,8 +244,10 @@
 			<section class="card">
 				<h2>1. 전체 런타임 구조</h2>
 				<p>
-					<code>storage</code>, <code>resize</code>, <code>cache</code>의 이미지
-					라우트는 모두 <code>x-client-api-key</code>를 DB에서 검증합니다. 표준
+					외부 Client Service의 이미지 조회 진입점은 <code>cache</code>입니다.
+					<code>storage</code>는 업로드/삭제만 <code>x-client-api-key</code>로 받고,
+					<code>resize</code> GET과 <code>storage</code> GET은 내부 전용
+					<code>x-internal-api-key</code>와 서명된 client context로만 호출됩니다. 표준
 					telemetry는 <code>file.image.events.v1</code>로, Client Service 후속
 					업무용 lifecycle은 <code>file.image.lifecycle.v1</code>로 나뉩니다.
 					기존 legacy <code>image-topic</code> 발행은 제거했고 이미지 저장 완료 전달은 lifecycle topic이 담당합니다.
@@ -253,16 +257,22 @@
 flowchart TB
 	Client["Client Service"]
 	AdminUser["운영자"]
+	DevUser["개발자"]
 
 	subgraph Runtime["이미지 런타임 앱"]
-		Storage["storage<br/>업로드 삭제 원본조회"]
-		Resize["resize<br/>sharp 리사이징"]
-		Cache["cache<br/>메모리 캐시"]
+		Storage["storage<br/>업로드 삭제 내부조회"]
+		Resize["resize<br/>내부 전용 sharp 리사이징"]
+		Cache["cache<br/>외부 조회 진입점"]
 	end
 
 	subgraph Control["관리와 관측"]
 		Telemetry["telemetry-api<br/>registry ingestion query"]
 		AdminWeb["admin-web<br/>운영 화면"]
+	end
+
+	subgraph TestTool["로컬 점검 도구"]
+		Tester["lifecycle-consumer-tester<br/>Kafka consume and HTTP status"]
+		AsyncApi["AsyncAPI contract<br/>file-image-lifecycle"]
 	end
 
 	subgraph Infra["인프라"]
@@ -272,12 +282,11 @@ flowchart TB
 		Volume["Docker volume<br/>file_dump_volume"]
 	end
 
-	Client -->|"x-client-api-key 요청"| Storage
-	Client -->|"x-client-api-key 요청"| Resize
-	Client -->|"x-client-api-key 요청"| Cache
-	Storage -->|"원본 파일 저장"| Volume
-	Resize -->|"원본 fetch"| Storage
-	Cache -->|"cache miss"| Resize
+	Client -->|"upload/delete x-client-api-key"| Storage
+	Client -->|"image read x-client-api-key"| Cache
+	Storage -->|"원본/variant 파일 저장"| Volume
+	Cache -->|"cache miss x-internal-api-key + signed context"| Resize
+	Resize -->|"x-internal-api-key + signed context"| Storage
 	Storage -->|"telemetry"| EventsTopic
 	Resize -->|"telemetry"| EventsTopic
 	Cache -->|"telemetry"| EventsTopic
@@ -285,12 +294,14 @@ flowchart TB
 	Telemetry -->|"consume telemetry"| EventsTopic
 	Telemetry -->|"consume lifecycle"| LifecycleTopic
 	Telemetry -->|"DB read/write"| Database
-	Storage -->|"API key and resize policy lookup"| Database
-	Resize -->|"API key lookup"| Database
+	Storage -->|"API key, outbox, resize policy lookup"| Database
 	Cache -->|"API key lookup"| Database
 	AdminUser --> AdminWeb
 	AdminWeb -->|"x-admin-token"| Telemetry
 	Client -->|"own consumer group"| LifecycleTopic
+	DevUser --> Tester
+	AsyncApi --> Tester
+	Tester -->|"consume for local check"| LifecycleTopic
 					</pre>
 				</div>
 			</section>
@@ -300,18 +311,18 @@ flowchart TB
 				<div class="grid">
 					<div class="info">
 						<strong>storage</strong>
-						원본 업로드/삭제/조회, telemetry 발행,
+						원본 업로드/삭제, 내부 원본/variant 조회, telemetry 발행,
 						lifecycle outbox 저장/재시도, pre-generate variant 생성을 담당합니다.
 					</div>
 					<div class="info">
 						<strong>resize</strong>
-						storage에서 원본을 가져와 on-demand 리사이징을 수행하고 결과를
-						바로 응답합니다.
+						cache miss 때 내부 호출로만 진입하며, storage에서 원본/variant를 가져와
+						on-demand 리사이징 또는 pre-generated pass-through를 수행합니다.
 					</div>
 					<div class="info">
 						<strong>cache</strong>
-						on-demand resize 결과를 NodeCache 메모리에 저장합니다. 서버
-						재시작 시 캐시는 사라집니다.
+						외부 Client Service의 이미지 조회 진입점입니다. on-demand resize 결과를
+						NodeCache 메모리에 저장하며 서버 재시작 시 캐시는 사라집니다.
 					</div>
 					<div class="info">
 						<strong>telemetry-api</strong>
@@ -324,19 +335,62 @@ flowchart TB
 						추천 반영, dashboard/events/images/lifecycle 조회 화면을 제공합니다.
 					</div>
 					<div class="info">
+						<strong>lifecycle-consumer-tester</strong>
+						<code>file.image.lifecycle.v1</code>을 실제 Client Service처럼 consume하고
+						수신 이벤트를 메모리에 저장해 <code>/health</code>, <code>/consumer/status</code>,
+						<code>/events</code>로 확인하는 로컬 점검 앱입니다.
+					</div>
+					<div class="info">
+						<strong>docs / AsyncAPI</strong>
+						<code>docs/asyncapi/file-image-lifecycle.asyncapi.yaml</code>이
+						Client Service 소비용 lifecycle payload 계약을 문서화합니다.
+					</div>
+					<div class="info">
 						<strong>libs</strong>
-						PrismaService, API key hash/verify, Client Service guard, request context,
+						PrismaService, API key hash/verify, Client Service guard, internal guard, request context,
 						telemetry/lifecycle event contract를 공유합니다.
 					</div>
 				</div>
 			</section>
 
 			<section class="card">
-				<h2>3. 신규 Client Service 추가와 재시작 기준</h2>
+				<h2>3. 공통 계약과 로그 기준</h2>
+				<p>
+					표준 telemetry payload는 <code>@file/telemetry-contracts/events</code>,
+					Client Service 소비용 lifecycle payload는 <code>@file/telemetry-contracts/lifecycle</code>이
+					런타임 검증 기준입니다. lifecycle Kafka 계약은
+					<code>docs/asyncapi/file-image-lifecycle.asyncapi.yaml</code>로도 문서화하며,
+					contract drift 테스트로 핵심 topic/event/schema 값이 어긋나지 않게 확인합니다.
+				</p>
+				<div class="grid">
+					<div class="info">
+						<strong>Request logging</strong>
+						<code>storage</code>, <code>resize</code>, <code>cache</code>,
+						<code>telemetry-api</code>, <code>lifecycle-consumer-tester</code>는
+						<code>@file/nest-common</code>의 <code>LoggerModule</code>을 사용합니다.
+					</div>
+					<div class="info">
+						<strong>Lifecycle tester log</strong>
+						tester는 lifecycle event 저장/필터 스킵 시 <code>eventId</code>,
+						<code>eventType</code>, <code>clientService</code>, <code>imageKey</code>,
+						Kafka offset을 콘솔에 남깁니다.
+					</div>
+					<div class="info">
+						<strong>Tester docs</strong>
+						consumer tester의 env, 실행 명령, 확인 API, 로그 확인법은
+						<code>apps/lifecycle-consumer-tester/README.md</code>에 둡니다.
+					</div>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>4. 신규 Client Service 추가와 재시작 기준</h2>
 				<p>
 					새 서비스는 admin API 또는 admin-web에서 DB에 등록하고 API key를 발급하면
-					됩니다. <code>storage</code>, <code>resize</code>, <code>cache</code>는 요청마다
-					key prefix와 hash를 DB에서 조회하므로 서비스 추가만으로는 재시작이 필요 없습니다.
+					됩니다. 외부 진입점인 <code>storage</code> 업로드/삭제와 <code>cache</code> 조회는
+					요청마다 key prefix와 hash를 DB에서 조회하므로 서비스 추가만으로는 재시작이 필요 없습니다.
+					<code>resize</code> GET과 <code>storage</code> GET은 내부 호출만 허용하며, cache가 전달한
+					서명된 client context로 서비스 식별자를 이어받습니다.
 				</p>
 				<table>
 					<thead>
@@ -350,7 +404,7 @@ flowchart TB
 						<tr>
 							<td>storage / resize / cache</td>
 							<td>불필요</td>
-							<td><code>DATABASE_URL</code>, <code>CLIENT_API_KEY_PEPPER</code>, 서버 URL, Kafka broker, 코드 변경</td>
+							<td><code>DATABASE_URL</code>, <code>CLIENT_API_KEY_PEPPER</code>, <code>INTERNAL_API_KEY</code>, 서버 URL, Kafka broker, 코드 변경</td>
 						</tr>
 						<tr>
 							<td>telemetry-api</td>
@@ -372,7 +426,7 @@ flowchart TB
 			</section>
 
 			<section class="card">
-				<h2>4. 업로드와 lifecycle outbox 플로우</h2>
+				<h2>5. 업로드와 lifecycle outbox 플로우</h2>
 				<p>
 					업로드 성공/실패 lifecycle event는 먼저 <code>image_lifecycle_outbox</code>에
 					저장된 뒤 Kafka로 발행됩니다. 발행 실패 시 scheduled publisher가 재시도하고,
@@ -413,13 +467,13 @@ sequenceDiagram
 				<div class="note">
 					현재 pre-generate 파일명은 원본과 같은 directory에
 					<code>&lt;원본&gt;__w&lt;width|auto&gt;_h&lt;height|auto&gt;.&lt;format&gt;</code>
-					형태로 저장됩니다. 조회 요청에 같은 width/height/format이 들어오면
-					storage가 이 variant 파일을 먼저 반환하고, 없으면 resize가 기존 on-demand 흐름으로 fallback합니다.
+					형태로 저장됩니다. Client Service는 cache로 조회하고, 내부 storage 조회에서
+					같은 width/height/format의 variant 파일을 먼저 반환합니다. 없으면 resize가 기존 on-demand 흐름으로 fallback합니다.
 				</div>
 			</section>
 
 			<section class="card">
-				<h2>5. 조회 / resize / cache 플로우</h2>
+				<h2>6. 조회 / resize / cache 플로우</h2>
 				<div class="diagram">
 					<pre class="mermaid">
 sequenceDiagram
@@ -432,7 +486,7 @@ sequenceDiagram
 	participant T as TelemetryAPI
 	participant DB as PostgreSQL
 
-	C->>Ca: GET /image/path/name?width=400&height=400
+	C->>Ca: GET image with x-client-api-key and width height format
 	Ca->>DB: API key lookup
 	Ca->>Ca: cache key lookup
 	alt cache hit
@@ -440,17 +494,24 @@ sequenceDiagram
 		Ca-->>C: cached image buffer
 	else cache miss
 		Ca->>K: image.cache.miss
-		Ca->>R: forward request and auth context
-		R->>DB: API key lookup
-		R->>S: fetch original with auth context
-		S->>DB: API key lookup
-		S-->>R: original image buffer
-		R->>R: sharp resize
-		R->>K: image.resize.completed or failed
-		R-->>Ca: resized image buffer
+		Ca->>R: x-internal-api-key + signed client context
+		R->>R: verify internal key and context signature
+		R->>S: x-internal-api-key + signed context + variant params
+		S->>S: verify internal key and context signature
+		S->>DB: pre-generate policy lookup
+		alt matching pre-generated variant file exists
+			S-->>R: variant image buffer with variant headers
+			R->>K: image.resize.completed as pre-generated pass-through
+			R-->>Ca: variant image buffer without sharp resize
+		else no variant file
+			S-->>R: original image buffer
+			R->>R: sharp on-demand resize
+			R->>K: image.resize.completed or failed
+			R-->>Ca: resized image buffer
+		end
 		Ca->>Ca: store in memory cache
 		Ca->>K: image.cache.stored
-		Ca-->>C: resized image buffer
+		Ca-->>C: image buffer
 	end
 	T->>K: consume file.image.events.v1
 	T->>DB: save telemetry_events
@@ -459,7 +520,7 @@ sequenceDiagram
 			</section>
 
 			<section class="card">
-				<h2>6. 주요 DB 테이블</h2>
+				<h2>7. 주요 DB 테이블</h2>
 				<div class="diagram">
 					<pre class="mermaid">
 erDiagram
@@ -550,7 +611,7 @@ erDiagram
 			</section>
 
 			<section class="card">
-				<h2>7. 리사이징 정책과 추천</h2>
+				<h2>8. 리사이징 정책과 추천</h2>
 				<p>
 					Client Service별 정책은 <code>ON_DEMAND</code> 또는 <code>PRE_GENERATE</code>입니다.
 					<code>PRE_GENERATE</code>에서는 업로드 직후 활성 variant(width/height/format)를
@@ -580,7 +641,7 @@ flowchart LR
 			</section>
 
 			<section class="card">
-				<h2>8. admin-web 운영 화면</h2>
+				<h2>9. admin-web 운영 화면</h2>
 				<ul>
 					<li><code>/dashboard</code>: 서비스별 KPI, cache hit/miss, resize/upload 추이</li>
 					<li><code>/events</code>: 표준 telemetry event 조회와 필터</li>
@@ -592,7 +653,7 @@ flowchart LR
 			</section>
 
 			<section class="card">
-				<h2>9. 실서버 저장 위치</h2>
+				<h2>10. 실서버 저장 위치</h2>
 				<p>
 					<code>.github/workflows/storage.yml</code> 기준 production storage 컨테이너는
 					Docker named volume <code>file_dump_volume</code>을 assets 경로에 mount합니다.
@@ -611,19 +672,20 @@ docker run -d \
 			</section>
 
 			<section class="card">
-				<h2>10. end-to-end 점검 순서</h2>
+				<h2>11. end-to-end 점검 순서</h2>
 				<ol>
 					<li>PostgreSQL/Kafka topic을 준비하고 Prisma migration을 적용합니다.</li>
 					<li>telemetry-api를 켜고 Client Service를 등록한 뒤 API key를 발급합니다.</li>
-					<li>storage/resize/cache를 켜고 같은 <code>CLIENT_API_KEY_PEPPER</code>와 DB를 보게 합니다.</li>
-					<li>API key로 업로드, 원본 조회, resize, cache hit/miss를 수행합니다.</li>
-					<li>Client Service consumer group으로 <code>file.image.lifecycle.v1</code> 이벤트를 소비합니다.</li>
+					<li>storage/resize/cache를 켜고 같은 <code>CLIENT_API_KEY_PEPPER</code>, <code>INTERNAL_API_KEY</code>와 DB를 보게 합니다.</li>
+					<li>API key로 storage 업로드/삭제와 cache 원본/리사이즈/cache hit/miss를 수행하고, resize/storage 직접 GET은 거부되는지 확인합니다.</li>
+					<li>Client Service consumer group 또는 <code>lifecycle-consumer-tester</code>로 <code>file.image.lifecycle.v1</code> 이벤트를 소비합니다.</li>
 					<li>admin-web에서 dashboard/events/lifecycle/images/services/recommendations를 확인합니다.</li>
 					<li><code>PRE_GENERATE</code> 정책을 켠 서비스 업로드에서 variant 생성과 resize telemetry를 확인합니다.</li>
-					<li>같은 width/height/format 조회가 pre-generated variant를 우선 반환하는지 확인합니다.</li>
+					<li>같은 width/height/format cache 조회가 pre-generated variant를 우선 반환하는지 확인합니다.</li>
 				</ol>
 				<div class="note">
-					명령어 기반 상세 절차는 repository 루트의 <code>INSPECT.md</code>를 기준으로 점검합니다.
+					명령어 기반 전체 점검은 repository 루트의 <code>INSPECT.md</code>,
+					lifecycle consumer tester 세부 실행법은 <code>apps/lifecycle-consumer-tester/README.md</code>를 기준으로 점검합니다.
 				</div>
 			</section>
 		</main>

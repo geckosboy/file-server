@@ -6,7 +6,7 @@ import {
 	createParamDecorator,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { randomUUID } from 'crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
 import type { Prisma } from '@prisma/client';
 import { PrismaService } from './prisma.service';
 import {
@@ -18,6 +18,10 @@ import {
 export const CLIENT_SERVICE_API_KEY_HEADER = 'x-client-api-key';
 export const CLIENT_SERVICE_REQUEST_ID_HEADER = 'x-request-id';
 export const CLIENT_SERVICE_TRACE_ID_HEADER = 'x-trace-id';
+export const INTERNAL_API_KEY_HEADER = 'x-internal-api-key';
+export const INTERNAL_CLIENT_CONTEXT_HEADER = 'x-internal-client-context';
+export const INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER =
+	'x-internal-client-context-signature';
 
 const ACTIVE_CLIENT_SERVICE_STATUS = 'ACTIVE';
 const MAX_CORRELATION_ID_LENGTH = 128;
@@ -31,10 +35,11 @@ export interface ClientServiceAuthContext {
 	requestId: string;
 	traceId?: string;
 	/**
-	 * 현재 요청 안에서 cache/resize/storage 내부 호출에만 전달한다.
+	 * 외부 Client Service가 보낸 원본 API key다.
+	 * 외부 인증 guard에서만 설정하고, 내부 앱 간 호출에는 전달하지 않는다.
 	 * 로그, 응답, 텔레메트리 payload에 넣으면 안 된다.
 	 */
-	apiKey: string;
+	apiKey?: string;
 }
 
 export type ClientServiceTelemetryFields = Pick<
@@ -72,6 +77,17 @@ export interface AuthenticatedClientService {
 type ClientServiceKeyWithService = Prisma.ClientServiceKeyGetPayload<{
 	include: { clientService: true };
 }>;
+
+type InternalClientServiceContextPayload = Pick<
+	ClientServiceAuthContext,
+	| 'clientServiceId'
+	| 'clientServiceSlug'
+	| 'clientServiceName'
+	| 'clientServiceKeyId'
+	| 'keyPrefix'
+	| 'requestId'
+	| 'traceId'
+>;
 
 @Injectable()
 export class ClientServiceAuthService {
@@ -171,6 +187,44 @@ export class ClientServiceApiKeyGuard implements CanActivate {
 	}
 }
 
+@Injectable()
+export class InternalServiceGuard implements CanActivate {
+	canActivate(context: ExecutionContext): boolean {
+		const request = context
+			.switchToHttp()
+			.getRequest<ClientServiceAuthenticatedRequest>();
+		const internalApiKey = normalizeInternalApiKey(
+			process.env.INTERNAL_API_KEY,
+		);
+		const presentedApiKey = readHeader(request, INTERNAL_API_KEY_HEADER);
+
+		if (!internalApiKey) {
+			throw new UnauthorizedException('내부 API 키 설정이 필요합니다.');
+		}
+
+		if (
+			!presentedApiKey ||
+			!isConstantTimeEqual(presentedApiKey, internalApiKey)
+		) {
+			throw new UnauthorizedException('내부 API 키가 올바르지 않습니다.');
+		}
+
+		request.clientServiceContext = readSignedInternalClientServiceContext(
+			request,
+			internalApiKey,
+		);
+		request.headers[CLIENT_SERVICE_REQUEST_ID_HEADER] =
+			request.clientServiceContext.requestId;
+		if (request.clientServiceContext.traceId) {
+			request.headers[CLIENT_SERVICE_TRACE_ID_HEADER] =
+				request.clientServiceContext.traceId;
+		}
+		attachClientServiceLogContext(request, request.clientServiceContext);
+
+		return true;
+	}
+}
+
 export const ClientServiceContext = createParamDecorator(
 	(_data: unknown, context: ExecutionContext) =>
 		getClientServiceContext(
@@ -200,7 +254,7 @@ export const createClientServiceTelemetryFields = (
 export const createClientServiceForwardHeaders = (
 	context?: ClientServiceAuthContext | null,
 ): Record<string, string> => {
-	if (!context) {
+	if (!context?.apiKey) {
 		return {};
 	}
 
@@ -210,6 +264,31 @@ export const createClientServiceForwardHeaders = (
 		...(context.traceId
 			? { [CLIENT_SERVICE_TRACE_ID_HEADER]: context.traceId }
 			: {}),
+	};
+};
+
+export const createInternalServiceForwardHeaders = (
+	context: ClientServiceAuthContext | null | undefined,
+	internalApiKey: string | null | undefined,
+): Record<string, string> => {
+	const normalizedInternalApiKey = normalizeInternalApiKey(internalApiKey);
+	if (!normalizedInternalApiKey) {
+		throw new Error('INTERNAL_API_KEY 설정이 필요합니다.');
+	}
+	if (!context) {
+		throw new Error('클라이언트 서비스 컨텍스트가 필요합니다.');
+	}
+
+	const payload = pickInternalClientServiceContextPayload(context);
+	const encodedContext = encodeInternalContext(payload);
+
+	return {
+		[INTERNAL_API_KEY_HEADER]: normalizedInternalApiKey,
+		[INTERNAL_CLIENT_CONTEXT_HEADER]: encodedContext,
+		[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: signInternalContext(
+			encodedContext,
+			normalizedInternalApiKey,
+		),
 	};
 };
 
@@ -265,6 +344,130 @@ function readClientServiceApiKey(request: Request): string | undefined {
 
 	const [scheme, value] = authorizationHeader.split(/\s+/, 2);
 	return scheme?.toLowerCase() === 'bearer' && value ? value : undefined;
+}
+
+function readSignedInternalClientServiceContext(
+	request: Request,
+	internalApiKey: string,
+): ClientServiceAuthContext {
+	const encodedContext = readHeader(request, INTERNAL_CLIENT_CONTEXT_HEADER);
+	const signature = readHeader(
+		request,
+		INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
+	);
+	if (!encodedContext || !signature) {
+		throw new UnauthorizedException(
+			'서명된 내부 클라이언트 컨텍스트가 필요합니다.',
+		);
+	}
+
+	const expectedSignature = signInternalContext(encodedContext, internalApiKey);
+	if (!isConstantTimeEqual(signature, expectedSignature)) {
+		throw new UnauthorizedException(
+			'내부 클라이언트 컨텍스트 서명이 올바르지 않습니다.',
+		);
+	}
+
+	try {
+		const payload = JSON.parse(
+			decodeInternalContext(encodedContext),
+		) as Partial<Record<keyof InternalClientServiceContextPayload, unknown>>;
+		return pickInternalClientServiceContextPayload(payload);
+	} catch (error) {
+		if (error instanceof UnauthorizedException) {
+			throw error;
+		}
+		throw new UnauthorizedException(
+			'내부 클라이언트 컨텍스트를 해석할 수 없습니다.',
+		);
+	}
+}
+
+function pickInternalClientServiceContextPayload(
+	context: Partial<Record<keyof InternalClientServiceContextPayload, unknown>>,
+): InternalClientServiceContextPayload {
+	const traceId = normalizeOptionalCorrelationId(
+		readInternalStringField(context, 'traceId', { optional: true }),
+	);
+
+	return {
+		clientServiceId: readInternalStringField(context, 'clientServiceId'),
+		clientServiceSlug: readInternalStringField(context, 'clientServiceSlug'),
+		clientServiceName: readInternalStringField(context, 'clientServiceName'),
+		clientServiceKeyId: readInternalStringField(context, 'clientServiceKeyId'),
+		keyPrefix: readInternalStringField(context, 'keyPrefix'),
+		requestId: resolveCorrelationId(
+			readInternalStringField(context, 'requestId', { optional: true }),
+		),
+		...(traceId ? { traceId } : {}),
+	};
+}
+
+function readInternalStringField(
+	context: Partial<Record<keyof InternalClientServiceContextPayload, unknown>>,
+	field: keyof InternalClientServiceContextPayload,
+): string;
+function readInternalStringField(
+	context: Partial<Record<keyof InternalClientServiceContextPayload, unknown>>,
+	field: keyof InternalClientServiceContextPayload,
+	options: { optional: true },
+): string | undefined;
+function readInternalStringField(
+	context: Partial<Record<keyof InternalClientServiceContextPayload, unknown>>,
+	field: keyof InternalClientServiceContextPayload,
+	options: { optional?: boolean } = {},
+): string | undefined {
+	const value = context[field];
+	if (typeof value !== 'string') {
+		if (options.optional) {
+			return undefined;
+		}
+		throw new UnauthorizedException(
+			'내부 클라이언트 컨텍스트 형식이 잘못되었습니다.',
+		);
+	}
+
+	const trimmed = value.trim();
+	if (!trimmed) {
+		if (options.optional) {
+			return undefined;
+		}
+		throw new UnauthorizedException(
+			'내부 클라이언트 컨텍스트 형식이 잘못되었습니다.',
+		);
+	}
+
+	return trimmed;
+}
+
+function encodeInternalContext(payload: InternalClientServiceContextPayload) {
+	return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+}
+
+function decodeInternalContext(encodedContext: string) {
+	return Buffer.from(encodedContext, 'base64url').toString('utf8');
+}
+
+function signInternalContext(encodedContext: string, internalApiKey: string) {
+	return createHmac('sha256', internalApiKey)
+		.update(encodedContext)
+		.digest('hex');
+}
+
+function normalizeInternalApiKey(
+	value: string | null | undefined,
+): string | undefined {
+	const trimmed = value?.trim();
+	return trimmed ? trimmed : undefined;
+}
+
+function isConstantTimeEqual(a: string, b: string): boolean {
+	const aBuffer = Buffer.from(a);
+	const bBuffer = Buffer.from(b);
+	if (aBuffer.length !== bBuffer.length) {
+		return false;
+	}
+	return timingSafeEqual(aBuffer, bBuffer);
 }
 
 function readHeader(request: Request, name: string): string | undefined {

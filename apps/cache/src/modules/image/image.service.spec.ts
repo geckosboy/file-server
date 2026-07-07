@@ -1,12 +1,18 @@
 jest.mock('src/config', () => ({
 	envConfig: {
 		RESIZING_SERVER: 'http://resize.test',
+		INTERNAL_API_KEY: 'internal-test-key',
 	},
 }));
 
 import { NotFoundException } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
-import { ClientServiceAuthContext } from '@file/database';
+import {
+	ClientServiceAuthContext,
+	INTERNAL_API_KEY_HEADER,
+	INTERNAL_CLIENT_CONTEXT_HEADER,
+	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
+} from '@file/database';
 import { of } from 'rxjs';
 import { CacheService, CachedImage } from '../node-cache/cache.service';
 import {
@@ -132,12 +138,18 @@ describe('캐시 이미지 서비스', () => {
 
 		expect(fetchSpy).toHaveBeenCalledWith(
 			'http://resize.test/image/public/sample.webp?width=100',
-			{
-				headers: {
-					'x-client-api-key': 'fs_prefix_secret',
-					'x-request-id': 'req-cache-1',
-				},
-			},
+			expect.any(Object),
+		);
+		const fetchOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+		expect(fetchOptions).toEqual({
+			headers: expect.objectContaining({
+				[INTERNAL_API_KEY_HEADER]: 'internal-test-key',
+				[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
+				[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
+			}),
+		});
+		expect(JSON.stringify(fetchOptions.headers)).not.toContain(
+			'fs_prefix_secret',
 		);
 		expect(result.contentType).toBe('image/webp');
 		expect(result.imageBuffer.equals(resized)).toBe(true);
@@ -216,10 +228,13 @@ describe('캐시 이미지 서비스', () => {
 		cacheService.getCachedImage.mockReturnValue(undefined);
 		fetchSpy.mockResolvedValue(createFetchResponse(Buffer.from('jpeg-image')));
 
-		const result = await service.getCacheImage({
-			path: 'public',
-			name: 'sample.jpg',
-		});
+		const result = await service.getCacheImage(
+			{
+				path: 'public',
+				name: 'sample.jpg',
+			},
+			clientServiceContext,
+		);
 
 		expect(result.contentType).toBe('image/jpeg');
 	});
@@ -231,7 +246,10 @@ describe('캐시 이미지 서비스', () => {
 		);
 
 		await expect(
-			service.getCacheImage({ path: 'public', name: 'missing.png' }),
+			service.getCacheImage(
+				{ path: 'public', name: 'missing.png' },
+				clientServiceContext,
+			),
 		).rejects.toBeInstanceOf(NotFoundException);
 		expect(cacheService.cacheImage).not.toHaveBeenCalled();
 		expect(getTelemetryPayloads()).toEqual([

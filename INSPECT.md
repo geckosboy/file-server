@@ -7,18 +7,12 @@
 ├─ `file.image.events.v1` → telemetry-api consumer → PostgreSQL 저장
 └─ `file.image.lifecycle.v1` → Client Service consumer가 업로드 완료/실패 후속 처리
 
-원본 조회:
-내 백엔드 → storage → 로컬 파일 반환
-
-리사이즈 조회:
-내 백엔드 → resize → storage에서 원본 fetch → sharp resize → 반환
-
-캐시 조회:
+이미지 조회:
 내 백엔드 → cache
 ├─ cache hit → 바로 반환
-└─ cache miss → resize → storage → 결과 캐싱 → 반환
+└─ cache miss → resize 내부 호출 → storage 내부 조회 → sharp resize/variant 반환 → cache 저장 → 반환
 
-현재 구조에서 `storage`, `resize`, `cache`의 `/image` 라우트는 모두 `x-client-api-key`가 필요합니다. API key는 PostgreSQL 서비스 레지스트리에 저장된 key만 통과하고, 세 앱과 `telemetry-api`는 같은 `CLIENT_API_KEY_PEPPER`를 써야 합니다. 요청 ID는 `x-request-id`를 주면 그대로 쓰고, 없으면 guard가 자동 생성해서 telemetry event에 넣습니다.
+외부 Client Service의 조회 진입점은 `cache`입니다. `storage`는 업로드/삭제만 외부 API key(`x-client-api-key`)로 받고, `resize` GET과 `storage` GET은 앱 내부 전용입니다. cache→resize, resize→storage 호출은 공유 `x-internal-api-key`와 서명된 내부 client context header를 사용하므로 Client Service가 `x-client-api-key`만으로 resize/storage 조회를 직접 호출하면 거부됩니다. API key는 PostgreSQL 서비스 레지스트리에 저장된 key만 통과하고, `storage`, `resize`, `cache`, `telemetry-api`는 같은 `CLIENT_API_KEY_PEPPER`를 써야 합니다. 요청 ID는 `x-request-id`를 주면 그대로 쓰고, 없으면 guard가 자동 생성해서 telemetry event에 넣습니다.
 
 현재 `telemetry-api`는 Kafka `file.image.events.v1` topic을 직접 consume해서 Prisma `TelemetryEvent` 모델/DB `telemetry_events` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
 
@@ -59,6 +53,8 @@ apps/telemetry-api/.env.local
 ```
 
 `CLIENT_API_KEY_PEPPER`는 API key hash에 쓰는 서버 쪽 pepper입니다. API key를 발급하는 `telemetry-api`와 API key를 검증하는 `storage`, `resize`, `cache`가 모두 같은 값을 써야 합니다.
+
+`INTERNAL_API_KEY`는 cache→resize, resize→storage 내부 조회에만 쓰는 공유 비밀입니다. `apps/storage/.env.local`, `apps/resize/.env.local`, `apps/cache/.env.local`에 같은 값을 넣어야 하며, Client Service나 브라우저/외부 백엔드에는 절대 전달하지 않습니다.
 
 repo의 Docker PostgreSQL을 쓴다면 기본값 그대로 실행하면 됩니다.
 
@@ -269,54 +265,40 @@ echo "$IMAGE_KEY"
 }
 ```
 
-서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<저장이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 응답 `name`이 `sample.<uuid>.png`이고 `400x400 webp` variant를 두면 storage 내부에는 `sample.<uuid>__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.<uuid>.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다. 이후 `storage`/`resize`/`cache` 조회에서 `?width=400&height=400&format=webp`를 요청하면 해당 variant 파일이 먼저 반환되고, 파일이 없으면 기존 on-demand 흐름으로 fallback합니다.
+서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<저장이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 응답 `name`이 `sample.<uuid>.png`이고 `400x400 webp` variant를 두면 storage 내부에는 `sample.<uuid>__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.<uuid>.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다. 이후 Client Service는 항상 `cache`로 `?width=400&height=400&format=webp`를 요청합니다. cache miss면 내부적으로 resize→storage를 타고, 해당 variant 파일이 있으면 on-demand resize 대신 먼저 반환됩니다. 파일이 없으면 기존 on-demand 흐름으로 fallback합니다.
 
-4-1에서 `40x40 webp` variant를 등록했다면 업로드 직후 아래로 사전 생성 variant 우선 반환을 확인할 수 있습니다. `storage` 직접 조회는 `x-file-server-pregenerated-variant: true` 헤더가 나오면 정상입니다.
-
-```bash
-curl -f -D /tmp/storage-pregen.headers \
-  "http://127.0.0.1:3032/image/demo/$IMAGE_NAME?width=40&height=40&format=webp" \
-  -H "x-client-api-key: $CLIENT_API_KEY" \
-  -H "x-request-id: inspect-storage-pregen-$STAMP" \
-  -o /tmp/storage-pregen.webp
-grep -i 'x-file-server-pregenerated-variant' /tmp/storage-pregen.headers
-```
-
-`resize`와 `cache`는 이 header를 그대로 노출하지 않으므로, 응답 파일이 내려오는지와 로그/telemetry에서 pre-generated 경로가 사용됐는지 확인합니다.
+4-1에서 `40x40 webp` variant를 등록했다면 업로드 직후 아래처럼 **cache 진입점**으로 사전 생성 variant 우선 반환을 확인합니다. `resize`와 `storage` 직접 GET은 내부 전용이므로 `x-client-api-key`로 호출하면 거부되는 것이 정상입니다.
 
 ```bash
-curl -f "http://127.0.0.1:3031/image/demo/$IMAGE_NAME?width=40&height=40&format=webp" \
-  -H "x-client-api-key: $CLIENT_API_KEY" \
-  -H "x-request-id: inspect-resize-pregen-$STAMP" \
-  -o /tmp/resize-pregen.webp
-
 curl -f "http://127.0.0.1:3030/image/demo/$IMAGE_NAME?width=40&height=40&format=webp" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-cache-pregen-$STAMP" \
   -o /tmp/cache-pregen.webp
 ```
 
-## 6. 원본 조회 확인
+pre-generated 경로가 실제로 쓰였는지는 storage/resize 로그 또는 telemetry의 `image.resize.completed` 이벤트에서 같은 `imageKey`, `width`, `height`, `format` 조합을 확인합니다.
 
-조회 URL에서는 path가 `demo`입니다.
+## 6. cache를 통한 원본 조회 확인
+
+Client Service 조회 URL에서는 path가 `demo`입니다. 원본도 `storage`가 아니라 `cache`로 조회합니다.
 
 ```bash
-curl -f "http://127.0.0.1:3032/image/demo/$IMAGE_NAME" \
+curl -f "http://127.0.0.1:3030/image/demo/$IMAGE_NAME" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
-  -H "x-request-id: inspect-storage-read-$STAMP" \
-  -o /tmp/storage-original.png
+  -H "x-request-id: inspect-cache-original-$STAMP" \
+  -o /tmp/cache-original.png
 ```
 
-## 7. 리사이즈 확인
+## 7. cache를 통한 리사이즈 조회 확인
 
 ```bash
-curl -f "http://127.0.0.1:3031/image/demo/$IMAGE_NAME?width=40&height=40" \
+curl -f "http://127.0.0.1:3030/image/demo/$IMAGE_NAME?width=40&height=40" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
-  -H "x-request-id: inspect-resize-$STAMP" \
+  -H "x-request-id: inspect-cache-resize-$STAMP" \
   -o /tmp/resized.png
 ```
 
-## 8. 캐시 확인
+## 8. cache hit 확인
 
 첫 요청은 cache miss, 두 번째 요청은 cache hit 로그가 나와야 합니다.
 
@@ -331,6 +313,20 @@ curl -f "http://127.0.0.1:3030/image/demo/$IMAGE_NAME?width=40&height=40" \
   -o /tmp/cached-2.png
 ```
 
+## 8-1. 내부 전용 조회 경로 거부 확인
+
+`resize` GET과 `storage` GET은 앱 내부 호출 전용입니다. 아래 요청은 `x-client-api-key`가 있어도 `401`이 나와야 정상입니다. Client Service 조회는 위처럼 항상 `cache`로 들어가야 합니다.
+
+```bash
+curl -i "http://127.0.0.1:3031/image/demo/$IMAGE_NAME?width=40&height=40" \
+  -H "x-client-api-key: $CLIENT_API_KEY" \
+  -H "x-request-id: inspect-direct-resize-reject-$STAMP"
+
+curl -i "http://127.0.0.1:3032/image/demo/$IMAGE_NAME" \
+  -H "x-client-api-key: $CLIENT_API_KEY" \
+  -H "x-request-id: inspect-direct-storage-reject-$STAMP"
+```
+
 ## 9. 삭제 확인
 
 삭제할 때는 업로드 응답의 `imageKey`를 그대로 쓰거나, `path=demo/image&name=$IMAGE_NAME` 조합을 씁니다.
@@ -342,15 +338,15 @@ curl -i -X DELETE -G 'http://127.0.0.1:3032/image' \
   -H "x-request-id: inspect-delete-$STAMP"
 ```
 
-삭제 후 원본 조회가 404면 정상입니다.
+삭제 후 cache 조회가 404면 정상입니다.
 
 ```bash
-curl -i "http://127.0.0.1:3032/image/demo/$IMAGE_NAME" \
+curl -i "http://127.0.0.1:3030/image/demo/$IMAGE_NAME" \
   -H "x-client-api-key: $CLIENT_API_KEY" \
   -H "x-request-id: inspect-after-delete-$STAMP"
 ```
 
-핵심 점검 포인트는 storage 직접 조회, resize가 storage를 타는지, cache 두 번째 요청에서 hit가 나는지, Kafka UI의 standard telemetry event에 `clientServiceId`, `clientServiceSlug`, `requestId`가 들어가는지, 그리고 telemetry-api/admin-web에서 같은 이벤트가 DB 조회되는지입니다.
+핵심 점검 포인트는 Client Service 조회가 cache로만 들어가는지, cache miss 때 내부적으로 resize→storage를 타는지, cache 두 번째 요청에서 hit가 나는지, resize/storage 직접 GET이 `x-client-api-key`만으로 거부되는지, Kafka UI의 standard telemetry event에 `clientServiceId`, `clientServiceSlug`, `requestId`가 들어가는지, 그리고 telemetry-api/admin-web에서 같은 이벤트가 DB 조회되는지입니다.
 
 ---
 
@@ -815,10 +811,10 @@ pnpm all:test:e2e
 
 1. PostgreSQL migration/client generate 적용 후 `telemetry-api`가 health check에서 PostgreSQL, `kafka`, `lifecycleKafka` connected 상태를 보입니다.
 2. admin API 또는 `/services`에서 신규 Client Service를 등록하고 API key를 발급합니다.
-3. 앱 재시작 없이 그 API key로 `storage`, `resize`, `cache` `/image` 요청이 통과합니다.
+3. 앱 재시작 없이 그 API key로 `storage` 업로드/삭제와 `cache` 조회가 통과하고, `resize` GET과 `storage` GET은 외부 API key만으로 거부됩니다.
 4. 업로드 성공/실패 lifecycle event가 `file.image.lifecycle.v1` consumer와 `/lifecycle-events` 양쪽에서 같은 `eventId`로 확인됩니다.
 5. `storage`/`resize`/`cache` telemetry event가 `file.image.events.v1`을 거쳐 `/events`, `/dashboard`, `/images`에 반영됩니다.
 6. `/services`에서 Client Service의 리사이징 정책을 `PRE_GENERATE`로 바꾸고 variant를 추가하면 다음 업로드 때 사전 생성 파일과 `image.resize.completed` telemetry가 남습니다.
-7. 같은 width/height/format으로 조회하면 storage/resize/cache가 사전 생성 variant를 우선 반환하고, variant 파일이 없으면 기존 on-demand resize 흐름을 유지합니다.
+7. 같은 width/height/format으로 cache 조회하면 내부 resize/storage 경로가 사전 생성 variant를 우선 반환하고, variant 파일이 없으면 기존 on-demand resize 흐름을 유지합니다.
 8. on-demand resize 사용량이 쌓이면 `/resize-recommendations`에서 추천 사이즈가 보이고, `정책에 반영` 버튼으로 같은 서비스의 active pre-generate variant가 생성됩니다.
 9. 구조 다이어그램과 책임 관계는 `docs/architecture.html`을 기준으로 확인합니다.

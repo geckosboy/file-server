@@ -1,7 +1,7 @@
 import { Controller, Get, Param, Query, Res, UseGuards } from '@nestjs/common';
 import {
-	ClientServiceApiKeyGuard,
 	ClientServiceAuthContext,
+	InternalServiceGuard,
 	ClientServiceContext,
 } from '@file/database';
 import { Response } from 'express';
@@ -10,7 +10,7 @@ import { ImageService } from './image.service';
 import { ImageParamDto, ImageQueryDto } from '@file/image-contracts';
 
 @Controller('image')
-@UseGuards(ClientServiceApiKeyGuard)
+@UseGuards(InternalServiceGuard)
 export class ImageController {
 	constructor(private readonly imageService: ImageService) {}
 

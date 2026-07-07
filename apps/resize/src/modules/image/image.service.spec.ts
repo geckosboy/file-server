@@ -1,6 +1,7 @@
 jest.mock('src/config', () => ({
 	envConfig: {
 		STORAGE_SERVER: 'http://storage.test',
+		INTERNAL_API_KEY: 'internal-test-key',
 	},
 }));
 
@@ -9,7 +10,12 @@ import {
 	NotFoundException,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
-import { ClientServiceAuthContext } from '@file/database';
+import {
+	ClientServiceAuthContext,
+	INTERNAL_API_KEY_HEADER,
+	INTERNAL_CLIENT_CONTEXT_HEADER,
+	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
+} from '@file/database';
 import { of } from 'rxjs';
 import { ImageManager } from './manager';
 import {
@@ -85,13 +91,19 @@ describe('리사이즈 이미지 서비스', () => {
 
 		expect(fetchSpy).toHaveBeenCalledWith(
 			'http://storage.test/image/public/sample.png',
-			{
-				method: 'get',
-				headers: {
-					'x-client-api-key': 'fs_prefix_secret',
-					'x-request-id': 'req-resize-1',
-				},
-			},
+			expect.any(Object),
+		);
+		const fetchOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+		expect(fetchOptions).toEqual({
+			method: 'get',
+			headers: expect.objectContaining({
+				[INTERNAL_API_KEY_HEADER]: 'internal-test-key',
+				[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
+				[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
+			}),
+		});
+		expect(JSON.stringify(fetchOptions.headers)).not.toContain(
+			'fs_prefix_secret',
 		);
 		expect(result.imageBuffer.equals(originalImage)).toBe(true);
 		expect(result.contentType).toBe('image/png');
@@ -104,7 +116,10 @@ describe('리사이즈 이미지 서비스', () => {
 		);
 
 		await expect(
-			service.getImageFromMain({ path: 'public', name: 'missing.png' }),
+			service.getImageFromMain(
+				{ path: 'public', name: 'missing.png' },
+				clientServiceContext,
+			),
 		).rejects.toBeInstanceOf(NotFoundException);
 	});
 
@@ -114,7 +129,10 @@ describe('리사이즈 이미지 서비스', () => {
 		);
 
 		await expect(
-			service.getImageFromMain({ path: 'public', name: 'error.png' }),
+			service.getImageFromMain(
+				{ path: 'public', name: 'error.png' },
+				clientServiceContext,
+			),
 		).rejects.toBeInstanceOf(InternalServerErrorException);
 	});
 
@@ -122,7 +140,10 @@ describe('리사이즈 이미지 서비스', () => {
 		fetchSpy.mockResolvedValue(createFetchResponse(Buffer.alloc(0)));
 
 		await expect(
-			service.getImageFromMain({ path: 'public', name: 'empty.png' }),
+			service.getImageFromMain(
+				{ path: 'public', name: 'empty.png' },
+				clientServiceContext,
+			),
 		).rejects.toBeInstanceOf(NotFoundException);
 	});
 

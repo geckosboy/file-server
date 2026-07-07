@@ -3,10 +3,15 @@ import {
 	CLIENT_SERVICE_API_KEY_HEADER,
 	CLIENT_SERVICE_REQUEST_ID_HEADER,
 	CLIENT_SERVICE_TRACE_ID_HEADER,
+	INTERNAL_API_KEY_HEADER,
+	INTERNAL_CLIENT_CONTEXT_HEADER,
+	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
 	ClientServiceApiKeyGuard,
 	ClientServiceAuthService,
 	ClientServiceAuthenticatedRequest,
+	InternalServiceGuard,
 	createClientServiceForwardHeaders,
+	createInternalServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 } from './client-service-auth';
 import {
@@ -323,5 +328,96 @@ describe('클라이언트 서비스 API 키 가드', () => {
 		expect(request.headers[CLIENT_SERVICE_REQUEST_ID_HEADER]).toBe(
 			request.clientServiceContext?.requestId,
 		);
+	});
+});
+
+describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
+	const originalInternalApiKey = process.env.INTERNAL_API_KEY;
+	const internalApiKey = 'internal-test-key';
+	const clientServiceContext = {
+		clientServiceId: 'service-1',
+		clientServiceSlug: 'local-demo',
+		clientServiceName: 'Local Demo',
+		clientServiceKeyId: 'key-1',
+		keyPrefix: 'prefix-1',
+		requestId: 'req-internal-1',
+		traceId: 'trace-internal-1',
+		apiKey: 'fs_prefix_secret',
+	};
+
+	beforeEach(() => {
+		process.env.INTERNAL_API_KEY = internalApiKey;
+	});
+
+	afterEach(() => {
+		if (originalInternalApiKey === undefined) {
+			delete process.env.INTERNAL_API_KEY;
+		} else {
+			process.env.INTERNAL_API_KEY = originalInternalApiKey;
+		}
+	});
+
+	it('내부 호출 헤더는 내부 API key와 서명된 컨텍스트만 포함하고 원본 client API key는 제외한다', () => {
+		const headers = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			internalApiKey,
+		);
+
+		expect(headers).toEqual({
+			[INTERNAL_API_KEY_HEADER]: internalApiKey,
+			[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
+			[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
+		});
+		expect(JSON.stringify(headers)).not.toContain('fs_prefix_secret');
+	});
+
+	it('올바른 내부 API key와 컨텍스트 서명이 있으면 요청 컨텍스트를 복원한다', () => {
+		const headers = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			internalApiKey,
+		);
+		const request = createRequest(headers);
+		const guard = new InternalServiceGuard();
+
+		expect(guard.canActivate(createContext(request))).toBe(true);
+		expect(request.clientServiceContext).toEqual({
+			clientServiceId: 'service-1',
+			clientServiceSlug: 'local-demo',
+			clientServiceName: 'Local Demo',
+			clientServiceKeyId: 'key-1',
+			keyPrefix: 'prefix-1',
+			requestId: 'req-internal-1',
+			traceId: 'trace-internal-1',
+		});
+		expect(request.requestLogContext).toEqual({
+			requestId: 'req-internal-1',
+			traceId: 'trace-internal-1',
+			clientServiceId: 'service-1',
+			clientServiceSlug: 'local-demo',
+			clientServiceName: 'Local Demo',
+			clientServiceKeyId: 'key-1',
+		});
+	});
+
+	it('내부 API key가 없거나 서명이 변조되면 요청을 거부한다', () => {
+		const guard = new InternalServiceGuard();
+		const headers = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			internalApiKey,
+		);
+
+		expect(() => guard.canActivate(createContext(createRequest()))).toThrow(
+			UnauthorizedException,
+		);
+		expect(() =>
+			guard.canActivate(
+				createContext(
+					createRequest({
+						...headers,
+						[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: 'tampered',
+					}),
+				),
+			),
+		).toThrow(UnauthorizedException);
 	});
 });

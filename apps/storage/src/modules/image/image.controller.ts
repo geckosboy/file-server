@@ -21,6 +21,7 @@ import {
 	ClientServiceApiKeyGuard,
 	ClientServiceAuthContext,
 	ClientServiceContext,
+	InternalServiceGuard,
 } from '@file/database';
 import { Response } from 'express';
 import { lookup } from 'mime-types';
@@ -34,11 +35,11 @@ import {
 } from '@file/image-contracts';
 
 @Controller('image')
-@UseGuards(ClientServiceApiKeyGuard)
 export class ImageController {
 	constructor(private readonly imageService: ImageService) {}
 
 	@Get(':path/:name')
+	@UseGuards(InternalServiceGuard)
 	async getFile(
 		@Param() imageDto: GetImageDto,
 		@Query() imageQuery: ImageQueryDto,
@@ -68,6 +69,7 @@ export class ImageController {
 	}
 
 	@Post()
+	@UseGuards(ClientServiceApiKeyGuard)
 	@UseInterceptors(FileInterceptor('file', imageMulterOptions))
 	async uploadFile(
 		@Res()
@@ -93,6 +95,7 @@ export class ImageController {
 	}
 
 	@Delete()
+	@UseGuards(ClientServiceApiKeyGuard)
 	async deleteFile(
 		@Res()
 		res: Response,

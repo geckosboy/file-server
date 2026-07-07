@@ -3,7 +3,10 @@ import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
 	ClientServiceApiKeyGuard,
+	ClientServiceAuthContext,
 	ClientServiceAuthService,
+	InternalServiceGuard,
+	createInternalServiceForwardHeaders,
 } from '@file/database';
 import { rm } from 'fs/promises';
 import * as path from 'path';
@@ -32,8 +35,18 @@ import { PngStrategy } from '../src/modules/image/strategies/sharp/png.strategy'
 
 const testClientApiKey = 'fs_prefix_secret';
 const testRequestId = 'req-storage-e2e';
+const testInternalApiKey = 'internal-test-key';
 const assetRoot = path.resolve(Root, 'assets', 'e2e-storage');
 const tempRoot = path.resolve(Root, 'temp');
+
+const clientServiceContext: ClientServiceAuthContext = {
+	clientServiceId: 'service-1',
+	clientServiceSlug: 'local-demo',
+	clientServiceName: 'Local Demo',
+	clientServiceKeyId: 'key-1',
+	keyPrefix: 'prefix-1',
+	requestId: testRequestId,
+};
 
 type KafkaEmitPayload = { key: string; value: string };
 
@@ -78,7 +91,19 @@ const authorized = (agent: request.Test) =>
 		.set('x-client-api-key', testClientApiKey)
 		.set('x-request-id', testRequestId);
 
+const internalAuthorized = (agent: request.Test) => {
+	const headers = createInternalServiceForwardHeaders(
+		clientServiceContext,
+		testInternalApiKey,
+	);
+	return Object.entries(headers).reduce(
+		(req, [name, value]) => req.set(name, value),
+		agent,
+	);
+};
+
 describe('스토리지 앱 e2e', () => {
+	const originalInternalApiKey = process.env.INTERNAL_API_KEY;
 	let app: INestApplication;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let lifecycleOutbox: jest.Mocked<
@@ -103,6 +128,7 @@ describe('스토리지 앱 e2e', () => {
 			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(async () => {
+		process.env.INTERNAL_API_KEY = testInternalApiKey;
 		await rm(assetRoot, { recursive: true, force: true });
 		await rm(tempRoot, { recursive: true, force: true });
 
@@ -128,6 +154,7 @@ describe('스토리지 앱 e2e', () => {
 			providers: [
 				ImageService,
 				ClientServiceApiKeyGuard,
+				InternalServiceGuard,
 				{
 					provide: ClientServiceAuthService,
 					useValue: authService,
@@ -162,6 +189,11 @@ describe('스토리지 앱 e2e', () => {
 
 	afterEach(async () => {
 		await app.close();
+		if (originalInternalApiKey === undefined) {
+			delete process.env.INTERNAL_API_KEY;
+		} else {
+			process.env.INTERNAL_API_KEY = originalInternalApiKey;
+		}
 		await rm(assetRoot, { recursive: true, force: true });
 		await rm(tempRoot, { recursive: true, force: true });
 	});
@@ -184,6 +216,12 @@ describe('스토리지 앱 e2e', () => {
 				contentType: 'image/png',
 			})
 			.expect(401);
+	});
+
+	it('클라이언트 서비스 API 키만으로는 이미지 조회를 거부한다', async () => {
+		await authorized(
+			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
+		).expect(401);
 	});
 
 	it('업로드 이미지를 path/image/name 규칙으로 저장하고 조회와 삭제를 수행한다', async () => {
@@ -246,7 +284,7 @@ describe('스토리지 앱 e2e', () => {
 			}),
 		]);
 
-		const getResponse = await authorized(
+		const getResponse = await internalAuthorized(
 			request(app.getHttpServer()).get(`/image/e2e-storage/${uploaded.name}`),
 		)
 			.expect(200)
@@ -262,7 +300,7 @@ describe('스토리지 앱 e2e', () => {
 			})
 			.expect(200);
 
-		await authorized(
+		await internalAuthorized(
 			request(app.getHttpServer()).get(`/image/e2e-storage/${uploaded.name}`),
 		).expect(404);
 	});
@@ -288,7 +326,7 @@ describe('스토리지 앱 e2e', () => {
 			},
 		);
 
-		const response = await authorized(
+		const response = await internalAuthorized(
 			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
 		)
 			.query({ width: 4, height: 4, format: 'webp' })
@@ -338,10 +376,10 @@ describe('스토리지 앱 e2e', () => {
 			.expect(201);
 		const next = nextUpload.body as { name: string };
 
-		await authorized(
+		await internalAuthorized(
 			request(app.getHttpServer()).get(`/image/e2e-storage/${previous.name}`),
 		).expect(404);
-		await authorized(
+		await internalAuthorized(
 			request(app.getHttpServer()).get(`/image/e2e-storage/${next.name}`),
 		).expect(200);
 	});

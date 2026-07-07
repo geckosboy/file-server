@@ -8,8 +8,8 @@ import {
 import { ClientKafka } from '@nestjs/microservices';
 import {
 	ClientServiceAuthContext,
-	createClientServiceForwardHeaders,
 	createClientServiceTelemetryFields,
+	createInternalServiceForwardHeaders,
 } from '@file/database';
 import { lookup } from 'mime-types';
 import { performance } from 'perf_hooks';
@@ -89,7 +89,10 @@ export class ImageService {
 		clientServiceContext?: ClientServiceAuthContext,
 	): Promise<StorageImageResult> {
 		let result: Response;
-		const headers = createClientServiceForwardHeaders(clientServiceContext);
+		const headers = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			process.env.INTERNAL_API_KEY ?? envConfig.INTERNAL_API_KEY,
+		);
 		try {
 			result = await fetch(this.getImageUrl(imageInfo), {
 				method: 'get',

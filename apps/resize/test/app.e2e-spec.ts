@@ -1,6 +1,7 @@
 jest.mock('src/config', () => ({
 	envConfig: {
 		STORAGE_SERVER: 'http://storage.test',
+		INTERNAL_API_KEY: 'internal-test-key',
 	},
 }));
 
@@ -8,8 +9,12 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
-	ClientServiceApiKeyGuard,
-	ClientServiceAuthService,
+	ClientServiceAuthContext,
+	INTERNAL_API_KEY_HEADER,
+	INTERNAL_CLIENT_CONTEXT_HEADER,
+	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
+	InternalServiceGuard,
+	createInternalServiceForwardHeaders,
 } from '@file/database';
 import { of } from 'rxjs';
 import * as request from 'supertest';
@@ -23,8 +28,16 @@ import {
 	ImageTelemetryEventType,
 } from '../src/modules/image/image.telemetry';
 
-const testClientApiKey = 'fs_prefix_secret';
+const testInternalApiKey = 'internal-test-key';
 const testRequestId = 'req-resize-e2e';
+const clientServiceContext: ClientServiceAuthContext = {
+	clientServiceId: 'service-1',
+	clientServiceSlug: 'local-demo',
+	clientServiceName: 'Local Demo',
+	clientServiceKeyId: 'key-1',
+	keyPrefix: 'prefix-1',
+	requestId: testRequestId,
+};
 
 type KafkaEmitPayload = { key: string; value: string };
 
@@ -40,38 +53,23 @@ const createFetchResponse = (
 		headers: options.headers,
 	});
 
-const createAuthService = () => ({
-	authenticate: jest.fn((apiKey: string) =>
-		Promise.resolve(
-			apiKey === testClientApiKey
-				? {
-						clientService: {
-							id: 'service-1',
-							slug: 'local-demo',
-							name: 'Local Demo',
-							status: 'ACTIVE',
-						},
-						key: {
-							id: 'key-1',
-							keyPrefix: 'prefix-1',
-						},
-					}
-				: null,
-		),
-	),
-});
-
-const authorized = (agent: request.Test) =>
-	agent
-		.set('x-client-api-key', testClientApiKey)
-		.set('x-request-id', testRequestId);
+const internalAuthorized = (agent: request.Test) => {
+	const headers = createInternalServiceForwardHeaders(
+		clientServiceContext,
+		testInternalApiKey,
+	);
+	return Object.entries(headers).reduce(
+		(req, [name, value]) => req.set(name, value),
+		agent,
+	);
+};
 
 describe('리사이즈 앱 e2e', () => {
+	const originalInternalApiKey = process.env.INTERNAL_API_KEY;
 	let app: INestApplication;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let originalImage: Buffer;
-	let authService: ReturnType<typeof createAuthService>;
 
 	const getTelemetryPayloads = () =>
 		imageClient.emit.mock.calls
@@ -79,6 +77,7 @@ describe('리사이즈 앱 e2e', () => {
 			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(async () => {
+		process.env.INTERNAL_API_KEY = testInternalApiKey;
 		originalImage = await sharp({
 			create: {
 				width: 24,
@@ -96,17 +95,12 @@ describe('리사이즈 앱 e2e', () => {
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
 		};
-		authService = createAuthService();
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
 			providers: [
 				ImageService,
-				ClientServiceApiKeyGuard,
-				{
-					provide: ClientServiceAuthService,
-					useValue: authService,
-				},
+				InternalServiceGuard,
 				ImageManager,
 				{
 					provide: 'RESIZE_IMAGE_MICROSERVICE',
@@ -127,6 +121,11 @@ describe('리사이즈 앱 e2e', () => {
 
 	afterEach(async () => {
 		await app.close();
+		if (originalInternalApiKey === undefined) {
+			delete process.env.INTERNAL_API_KEY;
+		} else {
+			process.env.INTERNAL_API_KEY = originalInternalApiKey;
+		}
 		jest.restoreAllMocks();
 	});
 
@@ -137,14 +136,14 @@ describe('리사이즈 앱 e2e', () => {
 			.expect('OK');
 	});
 
-	it('클라이언트 서비스 API 키가 없으면 이미지 조회를 거부한다', () => {
+	it('내부 API 키가 없으면 이미지 조회를 거부한다', () => {
 		return request(app.getHttpServer())
 			.get('/image/public/sample.png')
 			.expect(401);
 	});
 
 	it('크기 쿼리가 없으면 스토리지 앱의 원본 이미지를 반환한다', async () => {
-		const response = await authorized(
+		const response = await internalAuthorized(
 			request(app.getHttpServer()).get('/image/public/sample.png'),
 		)
 			.expect(200)
@@ -153,18 +152,21 @@ describe('리사이즈 앱 e2e', () => {
 		expect(Buffer.from(response.body).equals(originalImage)).toBe(true);
 		expect(fetchSpy).toHaveBeenCalledWith(
 			'http://storage.test/image/public/sample.png',
-			{
-				method: 'get',
-				headers: {
-					'x-client-api-key': testClientApiKey,
-					'x-request-id': testRequestId,
-				},
-			},
+			expect.any(Object),
 		);
+		const fetchOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+		expect(fetchOptions).toEqual({
+			method: 'get',
+			headers: expect.objectContaining({
+				[INTERNAL_API_KEY_HEADER]: testInternalApiKey,
+				[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
+				[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
+			}),
+		});
 	});
 
 	it('너비와 높이 쿼리가 있으면 리사이즈된 이미지를 반환한다', async () => {
-		const response = await authorized(
+		const response = await internalAuthorized(
 			request(app.getHttpServer()).get('/image/public/sample.png'),
 		)
 			.query({ width: 6, height: 3 })
@@ -216,7 +218,7 @@ describe('리사이즈 앱 e2e', () => {
 			}),
 		);
 
-		const response = await authorized(
+		const response = await internalAuthorized(
 			request(app.getHttpServer()).get('/image/public/sample.png'),
 		)
 			.query({ width: 6, height: 3, format: 'webp' })
@@ -252,7 +254,7 @@ describe('리사이즈 앱 e2e', () => {
 			createFetchResponse(Buffer.from('missing'), { status: 404 }),
 		);
 
-		return authorized(
+		return internalAuthorized(
 			request(app.getHttpServer()).get('/image/public/missing.png'),
 		).expect(404);
 	});

@@ -1,6 +1,7 @@
 jest.mock('src/config', () => ({
 	envConfig: {
 		RESIZING_SERVER: 'http://resize.test',
+		INTERNAL_API_KEY: 'internal-test-key',
 	},
 }));
 
@@ -10,6 +11,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
 	ClientServiceApiKeyGuard,
 	ClientServiceAuthService,
+	INTERNAL_API_KEY_HEADER,
+	INTERNAL_CLIENT_CONTEXT_HEADER,
+	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
 } from '@file/database';
 import { of } from 'rxjs';
 import * as request from 'supertest';
@@ -163,12 +167,17 @@ describe('캐시 앱 e2e', () => {
 		);
 		expect(requestedUrl.searchParams.get('width')).toBe('32');
 		expect(requestedUrl.searchParams.get('height')).toBe('16');
-		expect(fetchSpy.mock.calls[0][1]).toEqual({
-			headers: {
-				'x-client-api-key': testClientApiKey,
-				'x-request-id': testRequestId,
-			},
+		const fetchOptions = fetchSpy.mock.calls[0][1] as RequestInit;
+		expect(fetchOptions).toEqual({
+			headers: expect.objectContaining({
+				[INTERNAL_API_KEY_HEADER]: 'internal-test-key',
+				[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
+				[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
+			}),
 		});
+		expect(JSON.stringify(fetchOptions.headers)).not.toContain(
+			testClientApiKey,
+		);
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheMiss,
