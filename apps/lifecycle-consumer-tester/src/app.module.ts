@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { LoggerModule } from '@file/nest-common';
 import { HealthController } from './health.controller';
 import { ConsumerController } from './consumer/consumer.controller';
 import { EventsController } from './consumer/events.controller';
@@ -11,6 +12,12 @@ import { LifecycleConsumerStatusService } from './consumer/lifecycle-consumer-st
 import { LifecycleEventStoreService } from './consumer/lifecycle-event-store.service';
 
 @Module({
+	imports: [
+		LoggerModule.forRoot({
+			appName: 'lifecycle-consumer-tester',
+			exclude: ['/health'],
+		}),
+	],
 	controllers: [HealthController, ConsumerController, EventsController],
 	providers: [
 		LifecycleConsumerService,

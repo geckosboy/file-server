@@ -19,6 +19,12 @@ AsyncAPI 문서:
 docs/asyncapi/file-image-lifecycle.asyncapi.yaml
 ```
 
+문서를 눈으로 확인하려면 [AsyncAPI Studio](https://studio.asyncapi.com/)에 YAML을 붙여 넣습니다. CLI 검증이 필요하면 아래처럼 실행합니다.
+
+```bash
+pnpm dlx @asyncapi/cli validate docs/asyncapi/file-image-lifecycle.asyncapi.yaml
+```
+
 런타임 검증 기준:
 
 ```txt
@@ -104,6 +110,57 @@ curl -s 'http://127.0.0.1:3110/events?clientServiceSlug=local-demo&eventType=ima
 ```bash
 curl -s -X DELETE http://127.0.0.1:3110/events | python3 -m json.tool
 ```
+
+## 이벤트 발생시키기
+
+전체 앱을 띄운 뒤 `INSPECT.md`의 Client Service 등록과 업로드 절차를 먼저 진행합니다. 성공 이벤트는 같은 업로드를 다시 실행하면 들어옵니다.
+
+실패 이벤트는 인증 실패가 아니라 storage 업로드 처리 중 실패해야 발행됩니다. 예를 들어 이미지가 아닌 파일을 업로드하면 `image.upload.failed`가 들어옵니다.
+
+```bash
+printf 'not image' > /tmp/file-server-not-image.txt
+STAMP="$(date +%s)"
+
+curl -i -X POST http://127.0.0.1:3032/image \
+  -H "x-client-api-key: $CLIENT_API_KEY" \
+  -H "x-request-id: inspect-upload-failed-$STAMP" \
+  -F path=inspect/image \
+  -F 'file=@/tmp/file-server-not-image.txt;type=text/plain;filename=not-image.txt'
+```
+
+응답은 `400 Bad Request`가 정상이고, tester에는 `image.upload.failed`가 저장되어야 합니다.
+
+이벤트가 안 들어오면 outbox 상태를 먼저 봅니다.
+
+```bash
+psql "$DATABASE_URL" -c "
+select event_id, status, attempts, last_error, next_attempt_at, published_at
+from image_lifecycle_outbox
+order by created_at desc
+limit 10;
+"
+```
+
+`status=PUBLISHED`면 Kafka 발행은 끝난 상태라 tester의 `LIFECYCLE_KAFKA_GROUP_ID`, `CLIENT_SERVICE_SLUG`, `CLIENT_SERVICE_ID`, `LIFECYCLE_KAFKA_FROM_BEGINNING` 값을 봐야 합니다.
+
+## 로그 확인
+
+이 앱은 기존 `storage` / `resize` / `cache`와 같은 `@file/nest-common` request logger를 사용합니다.
+
+- `/health`는 health check 노이즈를 줄이기 위해 request log에서 제외합니다.
+- `/consumer/status`, `/events`, `DELETE /events` 요청은 `lifecycle-consumer-tester` context로 로그가 찍힙니다.
+- Kafka lifecycle event가 저장되면 아래 형태의 로그가 찍힙니다.
+
+```txt
+Lifecycle event stored: eventId=... eventType=image.upload.completed status=success clientService=local-demo imageKey=demo/image/sample.png offset=0:1
+```
+
+이 로그가 안 보이면 먼저 아래를 확인하세요.
+
+1. `file.image.lifecycle.v1` topic이 생성됐는지
+2. storage 업로드 성공/실패가 실제로 발생했는지
+3. `.env.local`의 `CLIENT_SERVICE_SLUG` / `CLIENT_SERVICE_ID` filter가 이벤트 payload와 맞는지
+4. 같은 `LIFECYCLE_KAFKA_GROUP_ID`로 이미 offset을 소비한 상태가 아닌지
 
 ## 응답 구조
 

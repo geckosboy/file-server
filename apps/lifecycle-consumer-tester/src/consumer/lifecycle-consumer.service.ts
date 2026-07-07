@@ -95,6 +95,9 @@ export class LifecycleConsumerService
 
 		if (!this.shouldStore(validated.event)) {
 			this.statusService.markSkipped();
+			this.logger.log(
+				`Lifecycle event skipped by filter: ${formatLifecycleEventLog(validated.event)}`,
+			);
 			return;
 		}
 
@@ -107,6 +110,9 @@ export class LifecycleConsumerService
 			event: validated.event,
 		});
 		this.statusService.markStored(this.eventStore.count());
+		this.logger.log(
+			`Lifecycle event stored: ${formatLifecycleEventLog(validated.event)} offset=${payload.partition}:${payload.message.offset}`,
+		);
 	}
 
 	private shouldStore(event: {
@@ -134,4 +140,21 @@ function matchesOptionalFilter(actual: string | undefined, expected?: string) {
 
 function errorToMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function formatLifecycleEventLog(event: {
+	eventId: string;
+	eventType: string;
+	status: string;
+	clientServiceSlug?: string;
+	clientServiceId?: string;
+	imageKey: string;
+}) {
+	return [
+		`eventId=${event.eventId}`,
+		`eventType=${event.eventType}`,
+		`status=${event.status}`,
+		`clientService=${event.clientServiceSlug ?? event.clientServiceId ?? 'unknown'}`,
+		`imageKey=${event.imageKey}`,
+	].join(' ');
 }

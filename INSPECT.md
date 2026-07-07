@@ -481,103 +481,26 @@ curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limi
 cat docs/asyncapi/file-image-lifecycle.asyncapi.yaml
 ```
 
-GUI로 보고 싶으면 [AsyncAPI Studio](https://studio.asyncapi.com/)에 YAML을 붙여 넣어 확인합니다. CLI 검증이 필요하면 아래 명령을 선택적으로 실행합니다.
+GUI/CLI로 확인하는 방법과 consumer tester 실행법은 tester 앱 문서에 둡니다.
 
-```bash
-pnpm dlx @asyncapi/cli validate docs/asyncapi/file-image-lifecycle.asyncapi.yaml
+```txt
+apps/lifecycle-consumer-tester/README.md
 ```
 
 ### 10-4-2. Client Service lifecycle 이벤트 소비 확인
 
 `file.image.lifecycle.v1`은 telemetry 저장용이 아니라 Client Service가 후속 업무를 붙이기 위한 topic입니다. 각 Client Service는 자기 consumer group을 사용해야 서로 offset을 빼앗지 않습니다.
 
-발행 유실 방지를 위해 storage는 upload lifecycle 이벤트를 바로 Kafka에만 쓰지 않고 `image_lifecycle_outbox`에 먼저 저장합니다. 점검 중 Kafka를 잠시 내려도 row는 남아 있어야 하며, Kafka를 다시 올리면 scheduled publisher가 같은 `eventId`로 재발행합니다. 이 구조는 유실 방지용 at-least-once 패턴이라 중복 수신이 가능하므로 실제 Client Service는 `eventId`를 처리 완료 테이블이나 cache에 기록해 중복 처리를 막아야 합니다.
+발행 유실 방지를 위해 storage는 upload lifecycle 이벤트를 바로 Kafka에만 쓰지 않고 `image_lifecycle_outbox`에 먼저 저장합니다. 이 구조는 at-least-once 패턴이라 중복 수신이 가능하므로 실제 Client Service는 `eventId`로 idempotency 처리를 해야 합니다.
 
-먼저 topic을 명시 생성합니다.
+통합 플로우에서는 topic을 만들고, 5단계 업로드를 다시 실행한 뒤 아래 둘 중 하나로 소비를 확인합니다.
 
 ```bash
 pnpm kafka:topics:dev
 ```
 
-실제 앱 형태로 확인하려면 `apps/lifecycle-consumer-tester/.env.local`을 맞춘 뒤 새 터미널에서 consumer tester를 켭니다. 이 앱은 Kafka event를 메모리에 저장하고 HTTP로 상태를 확인합니다.
-
-```bash
-cat > apps/lifecycle-consumer-tester/.env.local <<EOF
-NODE_ENV=development
-HOST=127.0.0.1
-PORT=3110
-KAFKA_CLIENT_BROKERS=localhost:9094
-LIFECYCLE_KAFKA_CLIENT_ID=lifecycle-consumer-tester
-LIFECYCLE_KAFKA_GROUP_ID=$CONSUMER_GROUP
-LIFECYCLE_KAFKA_TOPIC=file.image.lifecycle.v1
-LIFECYCLE_KAFKA_FROM_BEGINNING=true
-LIFECYCLE_CONSUMER_TESTER_MAX_EVENTS=200
-CLIENT_SERVICE_SLUG=$SERVICE_SLUG
-KAFKA_LIFECYCLE_EVENT_TYPES=image.upload.completed,image.upload.failed
-EOF
-
-pnpm dev:lifecycle-consumer-tester
-```
-
-consumer tester 확인 API는 아래와 같습니다.
-
-```bash
-curl -s http://127.0.0.1:3110/health | python3 -m json.tool
-curl -s http://127.0.0.1:3110/consumer/status | python3 -m json.tool
-curl -s "http://127.0.0.1:3110/events?limit=20&clientServiceSlug=$SERVICE_SLUG" | python3 -m json.tool
-curl -s -X DELETE http://127.0.0.1:3110/events | python3 -m json.tool
-```
-
-더 가벼운 stdout 예시 consumer만 쓰고 싶으면 새 터미널에서 아래처럼 실행합니다. `CLIENT_SERVICE_SLUG`를 넣으면 해당 서비스 이벤트만 출력합니다. 신규 서비스 점검은 위에서 등록한 `CONSUMER_GROUP`을 그대로 쓰면 됩니다. 과거 메시지까지 다시 보려면 임시 점검용 group을 새로 쓰세요. 현재 단계에서는 DB subscription이 운영 관리 기준이고 실제 Kafka ACL 강제는 아직 붙이지 않았습니다.
-
-```bash
-KAFKA_CLIENT_BROKERS=localhost:9094 \
-KAFKA_LIFECYCLE_GROUP_ID="$CONSUMER_GROUP" \
-CLIENT_SERVICE_SLUG="$SERVICE_SLUG" \
-pnpm kafka:lifecycle:consume
-```
-
-성공 이벤트는 5단계 업로드를 다시 실행하면 확인할 수 있습니다. consumer에 아래처럼 `image.upload.completed`가 찍히면 정상입니다.
-
-```json
-{
-	"eventType": "image.upload.completed",
-	"status": "success",
-	"clientServiceSlug": "local-demo-...",
-	"requestId": "inspect-upload-...",
-	"originalName": "sample.png",
-	"name": "sample.00000000-0000-4000-8000-000000000000.png",
-	"imageKey": "demo/image/sample.00000000-0000-4000-8000-000000000000.png"
-}
-```
-
-실패 이벤트는 인증 실패가 아니라 storage 업로드 처리 중 실패해야 발행됩니다. 예를 들어 이미지가 아닌 `text/plain` 파일을 업로드하면 guard는 통과하지만 storage 이미지 처리에서 실패하고 `image.upload.failed` lifecycle 이벤트가 발행됩니다.
-
-```bash
-printf 'not image' > /tmp/file-server-not-image.txt
-STAMP="$(date +%s)"
-
-curl -i -X POST http://127.0.0.1:3032/image \
-  -H "x-client-api-key: $CLIENT_API_KEY" \
-  -H "x-request-id: inspect-upload-failed-$STAMP" \
-  -F path=inspect/image \
-  -F 'file=@/tmp/file-server-not-image.txt;type=text/plain;filename=not-image.txt'
-```
-
-응답은 `400 Bad Request`가 정상이고, consumer에 아래처럼 실패 이벤트가 찍혀야 합니다.
-
-```json
-{
-	"eventType": "image.upload.failed",
-	"status": "failed",
-	"clientServiceSlug": "local-demo-...",
-	"requestId": "inspect-upload-failed-...",
-	"originalName": "not-image.txt",
-	"name": "not-image.txt",
-	"imageKey": "inspect/image/not-image.txt",
-	"errorCode": "BadRequestException"
-}
-```
+- 실제 앱 형태 consumer tester: `apps/lifecycle-consumer-tester/README.md`
+- stdout 예시 consumer: `pnpm kafka:lifecycle:consume -- --help`
 
 consumer에 이벤트가 안 찍히면 먼저 outbox 상태를 봅니다. 루트 `.env`의 `DATABASE_URL`을 export했거나 직접 DB URL을 넣은 상태에서 실행하세요.
 
@@ -592,13 +515,7 @@ limit 10;
 
 `status=PUBLISHED`면 Kafka 발행은 끝난 상태라 consumer group/filter/topic을 봐야 합니다. `FAILED`면 `last_error`를 확인하고 Kafka 복구 후 storage outbox publisher가 재시도하는지 봅니다.
 
-예시 consumer 옵션은 아래에서 볼 수 있습니다.
-
-```bash
-pnpm kafka:lifecycle:consume -- --help
-```
-
-실제 Client Service 코드에서는 예시처럼 `file.image.lifecycle.v1`을 구독하고, 메시지를 공통 계약 `@file/telemetry-contracts/lifecycle`의 `validateImageLifecycleEvent`로 검증한 뒤 `image.upload.completed` / `image.upload.failed`만 처리하면 됩니다.
+실제 Client Service 코드에서는 `file.image.lifecycle.v1`을 구독하고, 메시지를 공통 계약 `@file/telemetry-contracts/lifecycle`의 `validateImageLifecycleEvent`로 검증한 뒤 `image.upload.completed` / `image.upload.failed`만 처리하면 됩니다.
 
 ### 10-5. 수동 테스트 이벤트 넣기
 

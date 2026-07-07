@@ -54,13 +54,16 @@ const createMessagePayload = (value: unknown): EachMessagePayload => ({
 });
 
 describe('LifecycleConsumerService', () => {
+	let logSpy: jest.SpyInstance;
 	let warnSpy: jest.SpyInstance;
 
 	beforeEach(() => {
+		logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
 		warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 	});
 
 	afterEach(() => {
+		logSpy.mockRestore();
 		warnSpy.mockRestore();
 		delete process.env.CLIENT_SERVICE_SLUG;
 	});
