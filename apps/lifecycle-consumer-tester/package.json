@@ -1,0 +1,57 @@
+{
+	"name": "@file/lifecycle-consumer-tester",
+	"version": "0.0.1",
+	"private": true,
+	"description": "Local Kafka lifecycle consumer tester for the file image service",
+	"author": "",
+	"license": "MIT",
+	"scripts": {
+		"build": "nest build",
+		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+		"start": "nest start",
+		"start:dev": "nest start --watch",
+		"start:debug": "nest start --debug --watch",
+		"start:prod": "node dist/apps/lifecycle-consumer-tester/src/main",
+		"lint": "pnpm exec eslint \"src/**/*.ts\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" --fix",
+		"test": "pnpm exec jest --passWithNoTests",
+		"test:watch": "jest --watch"
+	},
+	"dependencies": {
+		"@file/nest-common": "workspace:*",
+		"@file/telemetry-contracts": "workspace:*",
+		"@nestjs/common": "^11.1.27",
+		"@nestjs/core": "^11.1.27",
+		"@nestjs/platform-express": "^11.1.27",
+		"kafkajs": "^2.2.4",
+		"reflect-metadata": "^0.2.2",
+		"rxjs": "^7.8.2"
+	},
+	"devDependencies": {
+		"@file/tsconfig": "workspace:*",
+		"@nestjs/cli": "^11.0.23"
+	},
+	"jest": {
+		"moduleFileExtensions": [
+			"js",
+			"json",
+			"ts"
+		],
+		"rootDir": "src",
+		"testRegex": ".*\\.spec\\.ts$",
+		"transform": {
+			"^.+\\.(t|j)s$": "ts-jest"
+		},
+		"collectCoverageFrom": [
+			"**/*.(t|j)s"
+		],
+		"coverageDirectory": "../coverage",
+		"testEnvironment": "node",
+		"moduleNameMapper": {
+			"^src/(.*)$": "<rootDir>/$1",
+			"^@file/nest-common$": "<rootDir>/../../../libs/nest-common/src",
+			"^@file/telemetry-contracts$": "<rootDir>/../../../libs/telemetry-contracts/src",
+			"^@file/telemetry-contracts/(.*)$": "<rootDir>/../../../libs/telemetry-contracts/src/$1"
+		}
+	}
+}

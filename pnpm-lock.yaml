@@ -216,6 +216,40 @@ importers:
         specifier: ^11.0.23
         version: 11.0.23(@types/node@20.19.43)(prettier@3.9.4)
 
+  apps/lifecycle-consumer-tester:
+    dependencies:
+      '@file/nest-common':
+        specifier: workspace:*
+        version: link:../../libs/nest-common
+      '@file/telemetry-contracts':
+        specifier: workspace:*
+        version: link:../../libs/telemetry-contracts
+      '@nestjs/common':
+        specifier: ^11.1.27
+        version: 11.1.27(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/core':
+        specifier: ^11.1.27
+        version: 11.1.27(@nestjs/common@11.1.27(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/microservices@11.1.27)(@nestjs/platform-express@11.1.27)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/platform-express':
+        specifier: ^11.1.27
+        version: 11.1.27(@nestjs/common@11.1.27(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.27)
+      kafkajs:
+        specifier: ^2.2.4
+        version: 2.2.4
+      reflect-metadata:
+        specifier: ^0.2.2
+        version: 0.2.2
+      rxjs:
+        specifier: ^7.8.2
+        version: 7.8.2
+    devDependencies:
+      '@file/tsconfig':
+        specifier: workspace:*
+        version: link:../../libs/tsconfig
+      '@nestjs/cli':
+        specifier: ^11.0.23
+        version: 11.0.23(@types/node@20.19.43)(prettier@3.9.4)
+
   apps/resize:
     dependencies:
       '@file/database':

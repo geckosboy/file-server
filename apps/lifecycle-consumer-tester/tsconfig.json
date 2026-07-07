@@ -1,0 +1,19 @@
+{
+	"extends": "@file/tsconfig/tsconfig.base.json",
+	"include": [
+		"./src/**/*.ts",
+		"../../libs/nest-common/src/**/*.ts",
+		"../../libs/telemetry-contracts/src/**/*.ts"
+	],
+	"exclude": ["node_modules", "dist", "test", "**/*.spec.ts"],
+	"compilerOptions": {
+		"declaration": false,
+		"outDir": "./dist",
+		"baseUrl": "./",
+		"paths": {
+			"@file/nest-common": ["../../libs/nest-common/src"],
+			"@file/telemetry-contracts": ["../../libs/telemetry-contracts/src"],
+			"@file/telemetry-contracts/*": ["../../libs/telemetry-contracts/src/*"]
+		}
+	}
+}

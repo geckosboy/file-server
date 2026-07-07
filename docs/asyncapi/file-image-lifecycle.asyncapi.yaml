@@ -1,0 +1,265 @@
+asyncapi: 3.1.0
+id: urn:file-server:file-image-lifecycle:v1
+info:
+  title: File Image Lifecycle Events
+  version: 1.0.0
+  description: |
+    Client Service가 이미지 업로드 완료/실패 후속 처리를 붙이기 위해 consume하는 Kafka event contract입니다.
+    실제 런타임 검증 기준은 `@file/telemetry-contracts/lifecycle`의 `validateImageLifecycleEvent`와 같아야 합니다.
+defaultContentType: application/json
+servers:
+  localKafka:
+    host: localhost:9094
+    protocol: kafka
+    description: Local Docker Kafka external listener.
+channels:
+  fileImageLifecycleV1:
+    address: file.image.lifecycle.v1
+    title: File image lifecycle topic
+    summary: Upload lifecycle events emitted by storage.
+    description: |
+      `storage`는 업로드 성공/실패를 outbox에 먼저 저장한 뒤 이 topic으로 발행합니다.
+      delivery는 at-least-once이므로 consumer는 `eventId`를 idempotency key로 사용해야 합니다.
+      모든 Client Service는 같은 topic을 각자 고유 consumer group으로 consume합니다.
+    servers:
+      - $ref: '#/servers/localKafka'
+    messages:
+      imageUploadCompleted:
+        $ref: '#/components/messages/ImageUploadCompleted'
+      imageUploadFailed:
+        $ref: '#/components/messages/ImageUploadFailed'
+operations:
+  consumeImageLifecycle:
+    action: receive
+    channel:
+      $ref: '#/channels/fileImageLifecycleV1'
+    summary: Consume upload lifecycle events.
+    description: |
+      Client Service는 `clientServiceId` 또는 `clientServiceSlug` 기준으로 자기 이벤트를 필터링하고,
+      `image.upload.completed` / `image.upload.failed`만 처리합니다.
+    messages:
+      - $ref: '#/channels/fileImageLifecycleV1/messages/imageUploadCompleted'
+      - $ref: '#/channels/fileImageLifecycleV1/messages/imageUploadFailed'
+components:
+  messages:
+    ImageUploadCompleted:
+      name: ImageUploadCompleted
+      title: Image upload completed
+      summary: Storage successfully stored an image.
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/LifecycleKafkaMessage'
+      payload:
+        $ref: '#/components/schemas/ImageUploadCompletedLifecycleEvent'
+      examples:
+        - name: UploadCompletedExample
+          payload:
+            schemaVersion: 1
+            eventId: 00000000-0000-4000-8000-000000000001
+            eventType: image.upload.completed
+            occurredAt: '2026-07-07T00:00:00.000Z'
+            sourceApp: storage
+            environment: development
+            clientServiceId: svc_123
+            clientServiceSlug: catalog-api
+            requestId: inspect-upload-123
+            path: demo/image
+            name: sample.00000000-0000-4000-8000-000000000000.png
+            originalName: sample.png
+            imageKey: demo/image/sample.00000000-0000-4000-8000-000000000000.png
+            format: png
+            inputBytes: 1024
+            outputBytes: 980
+            durationMs: 12
+            status: success
+    ImageUploadFailed:
+      name: ImageUploadFailed
+      title: Image upload failed
+      summary: Storage rejected or failed an upload after client service auth passed.
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/LifecycleKafkaMessage'
+      payload:
+        $ref: '#/components/schemas/ImageUploadFailedLifecycleEvent'
+      examples:
+        - name: UploadFailedExample
+          payload:
+            schemaVersion: 1
+            eventId: 00000000-0000-4000-8000-000000000002
+            eventType: image.upload.failed
+            occurredAt: '2026-07-07T00:00:05.000Z'
+            sourceApp: storage
+            environment: development
+            clientServiceId: svc_123
+            clientServiceSlug: catalog-api
+            requestId: inspect-upload-failed-123
+            path: inspect/image
+            name: not-image.txt
+            originalName: not-image.txt
+            imageKey: inspect/image/not-image.txt
+            format: unknown
+            inputBytes: 9
+            status: failed
+            errorCode: BadRequestException
+            errorMessage: Input buffer contains unsupported image format
+  messageTraits:
+    LifecycleKafkaMessage:
+      description: |
+        Kafka message key는 `<clientServiceSlug 또는 clientServiceId 또는 unknown-service>:<imageKey>:<eventType>` 형식입니다.
+        payload는 JSON으로 직렬화됩니다.
+      correlationId:
+        description: Request correlation id propagated from x-request-id when present.
+        location: $message.payload#/requestId
+  schemas:
+    ImageLifecycleEventBase:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - eventId
+        - eventType
+        - occurredAt
+        - sourceApp
+        - environment
+        - path
+        - name
+        - imageKey
+        - status
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        eventId:
+          type: string
+          minLength: 1
+          description: Idempotency key. Consumers must de-duplicate by this value.
+        eventType:
+          type: string
+          enum:
+            - image.upload.completed
+            - image.upload.failed
+        occurredAt:
+          type: string
+          format: date-time
+        sourceApp:
+          type: string
+          enum: [storage]
+        environment:
+          type: string
+          enum:
+            - development
+            - test
+            - production
+        clientServiceId:
+          type: string
+          minLength: 1
+        clientServiceSlug:
+          type: string
+          minLength: 1
+        requestId:
+          type: string
+          minLength: 1
+        traceId:
+          type: string
+          minLength: 1
+        imageId:
+          type: integer
+          minimum: 1
+          description: Optional external image id kept only for legacy correlation.
+        path:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          minLength: 1
+        originalName:
+          type: string
+          minLength: 1
+        imageKey:
+          type: string
+          minLength: 1
+          description: Canonical file server image key, usually `${path}/${name}`.
+        format:
+          type: string
+          enum:
+            - png
+            - jpeg
+            - jpg
+            - webp
+            - unknown
+        inputBytes:
+          type: number
+          minimum: 0
+        outputBytes:
+          type: number
+          minimum: 0
+        durationMs:
+          type: number
+          minimum: 0
+        status:
+          type: string
+          enum:
+            - success
+            - failed
+        errorCode:
+          type: string
+          minLength: 1
+        errorMessage:
+          type: string
+          minLength: 1
+    ImageUploadCompletedLifecycleEvent:
+      allOf:
+        - $ref: '#/components/schemas/ImageLifecycleEventBase'
+        - type: object
+          required:
+            - inputBytes
+            - outputBytes
+            - durationMs
+          properties:
+            schemaVersion:
+              type: integer
+              enum: [1]
+            eventType:
+              type: string
+              enum: [image.upload.completed]
+            sourceApp:
+              type: string
+              enum: [storage]
+            status:
+              type: string
+              enum: [success]
+            inputBytes:
+              type: number
+              minimum: 0
+            outputBytes:
+              type: number
+              minimum: 0
+            durationMs:
+              type: number
+              minimum: 0
+    ImageUploadFailedLifecycleEvent:
+      allOf:
+        - $ref: '#/components/schemas/ImageLifecycleEventBase'
+        - type: object
+          required:
+            - errorCode
+            - errorMessage
+          properties:
+            schemaVersion:
+              type: integer
+              enum: [1]
+            eventType:
+              type: string
+              enum: [image.upload.failed]
+            sourceApp:
+              type: string
+              enum: [storage]
+            status:
+              type: string
+              enum: [failed]
+            errorCode:
+              type: string
+              minLength: 1
+            errorMessage:
+              type: string
+              minLength: 1

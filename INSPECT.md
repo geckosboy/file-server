@@ -18,32 +18,19 @@
 ├─ cache hit → 바로 반환
 └─ cache miss → resize → storage → 결과 캐싱 → 반환
 
-3단계부터 `storage`, `resize`, `cache`의 `/image` 라우트는 모두 `x-client-api-key`가 필요합니다. API key는 PostgreSQL 서비스 레지스트리에 저장된 key만 통과하고, 세 앱과 `telemetry-api`는 같은 `CLIENT_API_KEY_PEPPER`를 써야 합니다. 요청 ID는 `x-request-id`를 주면 그대로 쓰고, 없으면 guard가 자동 생성해서 telemetry event에 넣습니다.
+현재 구조에서 `storage`, `resize`, `cache`의 `/image` 라우트는 모두 `x-client-api-key`가 필요합니다. API key는 PostgreSQL 서비스 레지스트리에 저장된 key만 통과하고, 세 앱과 `telemetry-api`는 같은 `CLIENT_API_KEY_PEPPER`를 써야 합니다. 요청 ID는 `x-request-id`를 주면 그대로 쓰고, 없으면 guard가 자동 생성해서 telemetry event에 넣습니다.
 
-4단계부터 `telemetry-api`가 Kafka `file.image.events.v1` topic을 직접 consume해서 Prisma `TelemetryEvent` 모델/DB `telemetry_events` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
+현재 `telemetry-api`는 Kafka `file.image.events.v1` topic을 직접 consume해서 Prisma `TelemetryEvent` 모델/DB `telemetry_events` 테이블에 자동 저장합니다. 자동 수집까지 보려면 Kafka를 먼저 켠 뒤 telemetry-api를 시작하세요.
 
-storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.image.lifecycle.v1`에도 발행됩니다. Client Service는 이 topic을 자기 consumer group으로 소비해서 이미지 업로드 완료 후속 처리나 실패 알림을 붙일 수 있습니다. 기존 legacy `image-topic` 발행은 제거했고, 이미지 저장 완료 전달은 lifecycle topic이 담당합니다.
+storage 업로드 성공/실패는 Client Service 소비용 Kafka topic `file.image.lifecycle.v1`에도 발행됩니다. Client Service는 이 topic을 자기 consumer group으로 소비해서 이미지 업로드 완료 후속 처리나 실패 알림을 붙일 수 있습니다. 기존 legacy `image-topic` 발행은 제거했고, 이미지 저장 완료 전달은 lifecycle topic이 담당합니다. 이 topic의 메시지 계약은 `docs/asyncapi/file-image-lifecycle.asyncapi.yaml`과 `@file/telemetry-contracts/lifecycle`가 같은 기준을 갖습니다.
 
-7단계부터 lifecycle 발행은 storage의 outbox를 거칩니다. 업로드 성공/실패 이벤트는 먼저 PostgreSQL `image_lifecycle_outbox`에 저장되고, Kafka 발행 성공 시 `PUBLISHED`로 표시됩니다. Kafka가 잠깐 죽어 발행에 실패하면 row가 `FAILED`로 남고 `LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS` 주기로 재시도합니다. 전달 보장은 at-least-once이며, 같은 이벤트가 중복 발행될 수 있으므로 Client Service consumer는 `eventId`를 idempotency key로 저장/무시해야 합니다.
+현재 lifecycle 발행은 storage의 outbox를 거칩니다. 업로드 성공/실패 이벤트는 먼저 PostgreSQL `image_lifecycle_outbox`에 저장되고, Kafka 발행 성공 시 `PUBLISHED`로 표시됩니다. Kafka가 잠깐 죽어 발행에 실패하면 row가 `FAILED`로 남고 `LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS` 주기로 재시도합니다. 전달 보장은 at-least-once이며, 같은 이벤트가 중복 발행될 수 있으므로 Client Service consumer는 `eventId`를 idempotency key로 저장/무시해야 합니다.
 
-8단계부터 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. 9단계부터 admin-web `/services`에서 이 정책을 조회/수정하고 pre-generate variant를 추가/수정/삭제할 수 있습니다. 10단계부터 `storage` 업로드 성공 시 해당 Client Service 정책이 `PRE_GENERATE`이면 활성 variant를 즉시 생성하고 `image.resize.completed` / `image.resize.failed` telemetry event를 남깁니다. `ON_DEMAND` 서비스는 기존처럼 업로드만 수행합니다.
+현재 Client Service별 이미지 리사이징 정책은 `client_service_image_resize_policies`와 `client_service_image_resize_variants`에서 관리합니다. 모드는 `ON_DEMAND` / `PRE_GENERATE`이고 variant는 `width`, `height`, `format`, 활성화 여부를 가집니다. admin-web `/services`에서 이 정책을 조회/수정하고 pre-generate variant를 추가/수정/삭제할 수 있습니다. `storage` 업로드 성공 시 해당 Client Service 정책이 `PRE_GENERATE`이면 활성 variant를 즉시 생성하고 `image.resize.completed` / `image.resize.failed` telemetry event를 남깁니다. `ON_DEMAND` 서비스는 기존처럼 업로드만 수행합니다.
 
-11단계부터 `telemetry-api`는 `image.resize.completed` 사용량을 Client Service + width/height/format 단위로 집계해서 pre-generate 추천 API를 제공합니다. 추천의 예상 절감 효과(`estimatedSavedResizeMs`)는 과거 on-demand resize 요청들의 `durationMs` 합계입니다. storage가 업로드 직후 만든 pre-generate telemetry는 `cacheKey`가 있어 추천 집계에서 제외됩니다.
-
-DB의 실제 테이블/컬럼 이름은 PostgreSQL 관례대로 snake_case입니다. Prisma 코드에서는 `ClientService`, `TelemetryEvent`처럼 모델 이름을 그대로 쓰지만 DB에는 `client_services`, `client_service_keys`, `client_service_policies`, `telemetry_events`, `telemetry_ingestion_metrics`로 생성됩니다. 이미 이전 migration으로 PascalCase 테이블을 만든 DB라면 `000002_use_snake_case_names`가 데이터를 삭제하지 않고 rename합니다.
+현재 `telemetry-api`는 `image.resize.completed` 사용량을 Client Service + width/height/format 단위로 집계해서 pre-generate 추천 API를 제공합니다. 추천의 예상 절감 효과(`estimatedSavedResizeMs`)는 과거 on-demand resize 요청들의 `durationMs` 합계입니다. storage가 업로드 직후 만든 pre-generate telemetry는 `cacheKey`가 있어 추천 집계에서 제외됩니다.
 
 ## 신규 Client Service 추가 시 재시작 기준
-
-새 서비스를 추가하는 일반 절차는 **telemetry-api admin API로 `client_services` / `client_service_keys` / `client_service_lifecycle_subscriptions`에 등록**하는 것입니다. 이 경우 기존에 떠 있는 앱들을 재시작하지 않아도 됩니다.
-
-| 대상            | 신규 서비스 등록 후 재시작 | 근거                                                                                                                                                                                                         | 재시작이 필요한 경우                                                                         |
-| --------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `storage`       | 불필요                     | `ClientServiceAuthService.authenticate()`가 요청마다 `client_service_keys.key_prefix`를 DB에서 다시 조회하고 서비스 상태/키 만료/폐기 여부를 검사합니다. 앱 메모리에 service allowlist를 들고 있지 않습니다. | `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, Kafka broker, 파일 저장 경로, 코드가 바뀐 경우      |
-| `resize`        | 불필요                     | `resize`의 `/image` guard도 같은 `ClientServiceAuthModule`을 사용하고, storage 호출 때 인증된 API key/request id를 그대로 forward합니다.                                                                     | `STORAGE_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우                  |
-| `cache`         | 불필요                     | `cache`의 `/image` guard도 같은 DB 조회 기반 인증을 쓰고, miss 시 resize 호출에 인증 header를 forward합니다.                                                                                                 | `RESIZING_SERVER`, `DATABASE_URL`, `CLIENT_API_KEY_PEPPER`, 코드가 바뀐 경우                 |
-| `telemetry-api` | 불필요                     | client service/API key/subscription/리사이징 정책 생성·수정은 admin API가 DB에 쓰고, 목록/상세 조회도 매 요청 DB에서 읽습니다.                                                                               | `.env.local`의 DB/Admin token/Kafka consumer 설정, Prisma schema migration, 코드가 바뀐 경우 |
-| `admin-web`     | 불필요                     | telemetry-api를 `cache: 'no-store'`로 호출하고, server action 후 `/services`를 revalidate합니다.                                                                                                             | `TELEMETRY_API_BASE_URL`, `TELEMETRY_ADMIN_TOKEN`, 코드가 바뀐 경우                          |
-| Kafka           | 불필요                     | 서비스별 topic을 만들지 않습니다. 모든 서비스가 공통 `file.image.lifecycle.v1` topic을 각자 consumer group으로 소비합니다.                                                                                   | topic 자체를 처음 만들 때, broker 주소/보안 설정/ACL 정책을 바꿀 때                          |
 
 즉 **새 Client Service 추가만으로는 DB 등록 + API key 발급 + lifecycle subscription 등록**이면 충분합니다. 단, API key hash 검증에 쓰는 `CLIENT_API_KEY_PEPPER`는 `telemetry-api`, `storage`, `resize`, `cache`에서 반드시 같은 값이어야 하며, 이 값을 바꾸면 기존 key를 다시 발급하거나 앱을 재시작해야 합니다.
 
@@ -58,6 +45,7 @@ cp apps/resize/.env.local.example apps/resize/.env.local
 cp apps/cache/.env.local.example apps/cache/.env.local
 cp apps/telemetry-api/.env.local.example apps/telemetry-api/.env.local
 cp apps/admin-web/.env.local.example apps/admin-web/.env.local
+cp apps/lifecycle-consumer-tester/.env.local.example apps/lifecycle-consumer-tester/.env.local
 ```
 
 이미 설치된 PostgreSQL을 쓸 때는 아래 파일들의 `DATABASE_URL`을 같은 값으로 맞춥니다. `P1000 Authentication failed`는 코드 문제가 아니라 URL의 사용자/비밀번호/DB 이름이 실제 DB와 다르다는 뜻입니다.
@@ -76,8 +64,12 @@ repo의 Docker PostgreSQL을 쓴다면 기본값 그대로 실행하면 됩니�
 
 ```bash
 docker compose -f docker/docker-compose.postgres.yml up -d
+docker compose -f docker/docker-compose.postgres.yml ps
 pnpm db:migrate:deploy
+pnpm db:generate
 ```
+
+`docker compose ... ps`에서 `postgres`가 `healthy`가 아니면 몇 초 기다린 뒤 migration을 다시 실행하세요. `pnpm db:generate`는 fresh 환경에서 Prisma Client가 아직 생성되지 않은 경우를 막기 위한 필수 준비 단계입니다.
 
 이미 5432 포트를 쓰고 있으면 포트를 바꿔 띄우고, `.env`와 앱별 `.env.local`의 `DATABASE_URL` 포트도 같이 바꿉니다.
 
@@ -85,14 +77,101 @@ pnpm db:migrate:deploy
 POSTGRES_HOST_PORT=55432 docker compose -f docker/docker-compose.postgres.yml up -d
 ```
 
-Kafka를 먼저 켠 뒤 telemetry-api를 시작합니다. telemetry-api는 이제 `apps/telemetry-api/.env.local`을 자동 로드하므로 `source`가 필요 없습니다.
+포트를 바꾼 뒤에도 `.env`와 앱별 `.env.local`을 맞춘 다음 `pnpm db:migrate:deploy && pnpm db:generate`를 실행합니다.
+
+## 1. Kafka 실행
 
 ```bash
-docker compose -f docker/docker-compose.dev.yml --profile ui up -d
+KAFKA_UI_PASSWORD=admin docker compose -f docker/docker-compose.dev.yml --profile ui up -d
+```
+
+로컬 Compose는 개발 편의를 위해 topic auto-create가 켜져 있지만, 실제 운영과 같은 조건으로 보려면 topic을 명시 생성합니다. 이 스크립트는 `file.image.events.v1`, `file.image.lifecycle.v1`을 만들고 describe까지 출력합니다.
+
+```bash
+pnpm kafka:topics:dev
+```
+
+실서버 Kafka Compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값입니다. Kafka broker 3대가 뜬 뒤 서버에서 아래를 먼저 실행해야 storage 발행과 Client Service 소비가 안정적으로 시작됩니다.
+
+```bash
+pnpm kafka:topics:prod
+```
+
+운영에서 partition/replication 값을 바꾸고 싶으면 env로 덮어씁니다.
+
+```bash
+KAFKA_TOPIC_PARTITIONS=12 \
+KAFKA_TOPIC_REPLICATION_FACTOR=3 \
+KAFKA_TOPIC_MIN_ISR=2 \
+pnpm kafka:topics:prod
+```
+
+Kafka UI는 필요하면:
+
+```txt
+http://localhost:8080
+id: admin
+password: admin
+```
+
+UI가 필요 없으면 `--profile ui`와 `KAFKA_UI_PASSWORD=admin` 없이 Kafka만 띄워도 됩니다.
+
+## 1-1. telemetry-api 실행
+
+Kafka topic을 만든 뒤 telemetry-api를 시작합니다. telemetry-api는 `apps/telemetry-api/.env.local`을 자동 로드하므로 `source`가 필요 없습니다.
+
+```bash
 pnpm file:telemetry-api start:dev
 ```
 
-다른 터미널에서 점검용 client service, API key, lifecycle subscription을 발급합니다. 이 작업은 실행 중인 `storage`/`resize`/`cache`를 재시작하지 않고 바로 반영되는지 확인하는 기준 절차입니다.
+Kafka가 먼저 떠 있으면 표준 telemetry consumer와 lifecycle consumer 연결 로그가 모두 보여야 정상입니다.
+
+```txt
+Kafka telemetry consumer connected: file.image.events.v1 group=file-telemetry-api
+Kafka lifecycle consumer connected: file.image.lifecycle.v1 group=file-telemetry-api-lifecycle
+Nest on: 127.0.0.1:3100
+```
+
+기본적으로 두 consumer 모두 `KAFKA_CLIENT_BROKERS`를 사용합니다. 별도로 조정할 때만 아래 env를 `apps/telemetry-api/.env.local`에 추가합니다.
+
+```env
+TELEMETRY_KAFKA_GROUP_ID=file-telemetry-api
+TELEMETRY_KAFKA_FROM_BEGINNING=false
+LIFECYCLE_KAFKA_GROUP_ID=file-telemetry-api-lifecycle
+LIFECYCLE_KAFKA_FROM_BEGINNING=false
+```
+
+## 2. 앱 3개 실행
+
+각 앱은 자기 `.env.local`을 자동으로 읽습니다. Turbo로 실행하면 libs build 캐시를 같이 사용합니다.
+
+한 번에 실행:
+
+```bash
+pnpm dev:apps
+```
+
+따로 보고 싶으면 터미널 3개에서 실행:
+
+```bash
+pnpm dev:storage
+pnpm dev:resize
+pnpm dev:cache
+```
+
+## 3. 헬스체크
+
+```bash
+curl http://127.0.0.1:3032/health-check
+curl http://127.0.0.1:3031/health-check
+curl http://127.0.0.1:3030/health-check
+```
+
+셋 다 OK가 나오면 됩니다.
+
+## 3-1. 실행 중 신규 Client Service / API key 발급
+
+`storage` / `resize` / `cache`가 이미 실행 중인 상태에서 점검용 client service, API key, lifecycle subscription을 발급합니다. 이 순서가 **앱 재시작 없이 DB 등록만으로 접근 권한이 반영되는지** 확인하는 기준 절차입니다.
 
 ```bash
 STAMP="$(date +%s)"
@@ -131,72 +210,31 @@ echo "CONSUMER_GROUP=$CONSUMER_GROUP"
 
 `CLIENT_API_KEY` 원문은 최초 1회만 보입니다. 새 터미널에서 curl을 실행한다면 위 값을 다시 export하세요. 이 직후 앱을 재시작하지 않고 5~8단계 요청이 성공하면 DB 등록만으로 접근 권한이 반영된 것입니다.
 
-## 1. Kafka 실행
-
-```bash
-docker compose -f docker/docker-compose.dev.yml --profile ui up -d
-```
-
-로컬 Compose는 개발 편의를 위해 topic auto-create가 켜져 있지만, 실제 운영과 같은 조건으로 보려면 topic을 명시 생성합니다. 이 스크립트는 `file.image.events.v1`, `file.image.lifecycle.v1`을 만들고 describe까지 출력합니다.
-
-```bash
-pnpm kafka:topics:dev
-```
-
-실서버 Kafka Compose는 `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`가 기본값입니다. Kafka broker 3대가 뜬 뒤 서버에서 아래를 먼저 실행해야 storage 발행과 Client Service 소비가 안정적으로 시작됩니다.
-
-```bash
-pnpm kafka:topics:prod
-```
-
-운영에서 partition/replication 값을 바꾸고 싶으면 env로 덮어씁니다.
-
-```bash
-KAFKA_TOPIC_PARTITIONS=12 \
-KAFKA_TOPIC_REPLICATION_FACTOR=3 \
-KAFKA_TOPIC_MIN_ISR=2 \
-pnpm kafka:topics:prod
-```
-
-Kafka UI는 필요하면:
-
-```txt
-http://localhost:8080
-```
-
-## 2. 앱 3개 실행
-
-각 앱은 자기 `.env.local`을 자동으로 읽습니다. Turbo로 실행하면 libs build 캐시를 같이 사용합니다.
-
-한 번에 실행:
-
-```bash
-pnpm dev:apps
-```
-
-따로 보고 싶으면 터미널 3개에서 실행:
-
-```bash
-pnpm dev:storage
-pnpm dev:resize
-pnpm dev:cache
-```
-
-## 3. 헬스체크
-
-```bash
-curl http://127.0.0.1:3032/health-check
-curl http://127.0.0.1:3031/health-check
-curl http://127.0.0.1:3030/health-check
-```
-
-셋 다 OK가 나오면 됩니다.
-
 ## 4. 샘플 이미지 생성
 
 ```bash
 pnpm --filter @file/storage exec node -e "require('sharp')({create:{width:80,height:60,channels:3,background:{r:255,g:0,b:0}}}).png().toFile('/tmp/file-server-sample.png')"
 ```
+
+## 4-1. 선택: PRE_GENERATE 정책까지 같이 점검
+
+사전 리사이징 정책까지 바로 확인하려면 업로드 전에 아래처럼 현재 Client Service를 `PRE_GENERATE`로 바꾸고 활성 variant를 등록합니다. on-demand만 볼 거면 이 단계는 건너뜁니다.
+
+```bash
+curl -s -X PATCH "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID/image-resize-policy" \
+  -H 'content-type: application/json' \
+  -H 'x-admin-token: dev-admin-token' \
+  -d '{"mode":"PRE_GENERATE"}' \
+  | python3 -m json.tool
+
+curl -s -X POST "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID/image-resize-policy/variants" \
+  -H 'content-type: application/json' \
+  -H 'x-admin-token: dev-admin-token' \
+  -d '{"width":40,"height":40,"format":"webp","isEnabled":true,"description":"로컬 점검용 40x40 webp"}' \
+  | python3 -m json.tool
+```
+
+이 설정은 **다음 업로드부터** 적용됩니다. 이미 업로드한 이미지에는 retroactive로 variant를 만들지 않습니다.
 
 ## 5. 업로드 확인
 
@@ -232,6 +270,31 @@ echo "$IMAGE_KEY"
 ```
 
 서비스 리사이징 정책이 `PRE_GENERATE`이면 업로드 직후 원본과 같은 storage 디렉터리에 사전 생성 파일이 함께 만들어집니다. 파일명은 `<저장이름>__w<width|auto>_h<height|auto>.<format>` 형식입니다. 예를 들어 응답 `name`이 `sample.<uuid>.png`이고 `400x400 webp` variant를 두면 storage 내부에는 `sample.<uuid>__w400_h400.webp`가 생성되고 telemetry에는 원본 `imageKey=demo/image/sample.<uuid>.png`, `eventType=image.resize.completed`, `sourceApp=resize`, `width=400`, `height=400`, `format=webp` 이벤트가 기록되어야 합니다. 이후 `storage`/`resize`/`cache` 조회에서 `?width=400&height=400&format=webp`를 요청하면 해당 variant 파일이 먼저 반환되고, 파일이 없으면 기존 on-demand 흐름으로 fallback합니다.
+
+4-1에서 `40x40 webp` variant를 등록했다면 업로드 직후 아래로 사전 생성 variant 우선 반환을 확인할 수 있습니다. `storage` 직접 조회는 `x-file-server-pregenerated-variant: true` 헤더가 나오면 정상입니다.
+
+```bash
+curl -f -D /tmp/storage-pregen.headers \
+  "http://127.0.0.1:3032/image/demo/$IMAGE_NAME?width=40&height=40&format=webp" \
+  -H "x-client-api-key: $CLIENT_API_KEY" \
+  -H "x-request-id: inspect-storage-pregen-$STAMP" \
+  -o /tmp/storage-pregen.webp
+grep -i 'x-file-server-pregenerated-variant' /tmp/storage-pregen.headers
+```
+
+`resize`와 `cache`는 이 header를 그대로 노출하지 않으므로, 응답 파일이 내려오는지와 로그/telemetry에서 pre-generated 경로가 사용됐는지 확인합니다.
+
+```bash
+curl -f "http://127.0.0.1:3031/image/demo/$IMAGE_NAME?width=40&height=40&format=webp" \
+  -H "x-client-api-key: $CLIENT_API_KEY" \
+  -H "x-request-id: inspect-resize-pregen-$STAMP" \
+  -o /tmp/resize-pregen.webp
+
+curl -f "http://127.0.0.1:3030/image/demo/$IMAGE_NAME?width=40&height=40&format=webp" \
+  -H "x-client-api-key: $CLIENT_API_KEY" \
+  -H "x-request-id: inspect-cache-pregen-$STAMP" \
+  -o /tmp/cache-pregen.webp
+```
 
 ## 6. 원본 조회 확인
 
@@ -293,7 +356,7 @@ curl -i "http://127.0.0.1:3032/image/demo/$IMAGE_NAME" \
 
 ## 10. telemetry-api / admin-web 점검
 
-4단계부터 `telemetry-api`는 Kafka `file.image.events.v1` topic을 직접 consume합니다. storage/resize/cache가 Kafka에 발행한 표준 이벤트는 기존 `IngestionService`를 거쳐 PostgreSQL의 Prisma `TelemetryEvent` 모델, 실제 `telemetry_events` 테이블에 자동 저장됩니다. `POST /api/ingestion/events`는 Kafka 없이 수동으로 이벤트를 넣어보는 보조 점검용으로 계속 사용할 수 있습니다. 테스트 모드(`NODE_ENV=test`)나 `TELEMETRY_STORAGE_DRIVER=memory`를 명시한 경우에만 메모리 저장소를 씁니다.
+현재 `telemetry-api`는 Kafka `file.image.events.v1` topic을 직접 consume합니다. storage/resize/cache가 Kafka에 발행한 표준 이벤트는 기존 `IngestionService`를 거쳐 PostgreSQL의 Prisma `TelemetryEvent` 모델, 실제 `telemetry_events` 테이블에 자동 저장됩니다. `POST /api/ingestion/events`는 Kafka 없이 수동으로 이벤트를 넣어보는 보조 점검용으로 계속 사용할 수 있습니다. 테스트 모드(`NODE_ENV=test`)나 `TELEMETRY_STORAGE_DRIVER=memory`를 명시한 경우에만 메모리 저장소를 씁니다.
 
 ### 10-0. PostgreSQL 실행 및 Prisma migration
 
@@ -302,6 +365,7 @@ curl -i "http://127.0.0.1:3032/image/demo/$IMAGE_NAME" \
 ```bash
 docker compose -f docker/docker-compose.postgres.yml up -d
 pnpm db:migrate:deploy
+pnpm db:generate
 ```
 
 이미 설치된 PostgreSQL을 쓰면 Docker는 건너뛰고 `.env` / 앱별 `.env.local`의 `DATABASE_URL`만 본인 DB 계정으로 맞춥니다.
@@ -314,16 +378,18 @@ pnpm db:migrate:deploy
 cp apps/telemetry-api/.env.local.example apps/telemetry-api/.env.local
 ```
 
-`apps/telemetry-api/.env.local`에서 `DATABASE_URL`, `TELEMETRY_ADMIN_TOKEN`, `CLIENT_API_KEY_PEPPER`, `KAFKA_CLIENT_BROKERS`를 확인한 뒤 실행합니다. 별도 `source`는 필요 없습니다.
+`apps/telemetry-api/.env.local`에서 `DATABASE_URL`, `TELEMETRY_ADMIN_TOKEN`, `CLIENT_API_KEY_PEPPER`, `KAFKA_CLIENT_BROKERS`를 확인한 뒤 실행합니다. 별도 `source`는 필요 없습니다. 1-1에서 이미 실행 중이면 다시 켜지 않아도 됩니다.
 
 ```bash
+pnpm kafka:topics:dev
 pnpm file:telemetry-api start:dev
 ```
 
-Kafka가 먼저 떠 있으면 consumer 연결 로그와 HTTP 기동 로그가 함께 나오면 정상입니다.
+Kafka가 먼저 떠 있고 topic이 생성되어 있으면 consumer 연결 로그와 HTTP 기동 로그가 함께 나오면 정상입니다.
 
 ```txt
 Kafka telemetry consumer connected: file.image.events.v1 group=file-telemetry-api
+Kafka lifecycle consumer connected: file.image.lifecycle.v1 group=file-telemetry-api-lifecycle
 Nest on: 127.0.0.1:3100
 ```
 
@@ -333,6 +399,7 @@ Nest on: 127.0.0.1:3100
 
 ```bash
 cp apps/admin-web/.env.local.example apps/admin-web/.env.local
+cp apps/lifecycle-consumer-tester/.env.local.example apps/lifecycle-consumer-tester/.env.local
 ```
 
 `apps/admin-web/.env.local`의 `TELEMETRY_API_BASE_URL`과 `TELEMETRY_ADMIN_TOKEN`을 telemetry-api와 맞춘 뒤 실행합니다. 관리자 토큰은 `NEXT_PUBLIC_`으로 노출하지 않습니다.
@@ -377,6 +444,13 @@ curl -s http://127.0.0.1:3100/api/admin/health \
 		"consumerLag": null,
 		"topic": "file.image.events.v1",
 		"groupId": "file-telemetry-api"
+	},
+	"lifecycleKafka": {
+		"enabled": true,
+		"connected": true,
+		"consumerLag": null,
+		"topic": "file.image.lifecycle.v1",
+		"groupId": "file-telemetry-api-lifecycle"
 	}
 }
 ```
@@ -397,9 +471,23 @@ curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limi
   | python3 -m json.tool
 ```
 
-이벤트가 없다면 Kafka UI에서 `file.image.events.v1` topic에 메시지가 있는지, telemetry-api 헬스체크의 `kafka.connected`가 `true`인지 확인하세요. Kafka를 telemetry-api보다 나중에 켰다면 telemetry-api를 재시작하세요.
+이벤트가 없다면 Kafka UI에서 `file.image.events.v1` topic에 메시지가 있는지, telemetry-api 헬스체크의 `kafka.connected`가 `true`인지 확인하세요. lifecycle 이벤트가 DB에 안 보이면 `file.image.lifecycle.v1` topic과 `lifecycleKafka.connected`도 같이 확인합니다. Kafka를 telemetry-api보다 나중에 켰다면 telemetry-api를 재시작하세요.
 
-### 10-4-1. Client Service lifecycle 이벤트 소비 확인
+### 10-4-1. AsyncAPI lifecycle 계약 확인
+
+`file.image.lifecycle.v1`의 메시지 계약은 `docs/asyncapi/file-image-lifecycle.asyncapi.yaml`에 있습니다. 문서와 런타임 검증은 `@file/telemetry-contracts/lifecycle` 기준으로 맞춰져 있어야 합니다.
+
+```bash
+cat docs/asyncapi/file-image-lifecycle.asyncapi.yaml
+```
+
+GUI로 보고 싶으면 [AsyncAPI Studio](https://studio.asyncapi.com/)에 YAML을 붙여 넣어 확인합니다. CLI 검증이 필요하면 아래 명령을 선택적으로 실행합니다.
+
+```bash
+pnpm dlx @asyncapi/cli validate docs/asyncapi/file-image-lifecycle.asyncapi.yaml
+```
+
+### 10-4-2. Client Service lifecycle 이벤트 소비 확인
 
 `file.image.lifecycle.v1`은 telemetry 저장용이 아니라 Client Service가 후속 업무를 붙이기 위한 topic입니다. 각 Client Service는 자기 consumer group을 사용해야 서로 offset을 빼앗지 않습니다.
 
@@ -411,7 +499,36 @@ curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limi
 pnpm kafka:topics:dev
 ```
 
-새 터미널에서 예시 consumer를 켭니다. `CLIENT_SERVICE_SLUG`를 넣으면 해당 서비스 이벤트만 출력합니다. 신규 서비스 점검은 위에서 등록한 `CONSUMER_GROUP`을 그대로 쓰면 됩니다. 과거 메시지까지 다시 보려면 임시 점검용 group을 새로 쓰세요. 현재 단계에서는 DB subscription이 운영 관리 기준이고 실제 Kafka ACL 강제는 아직 붙이지 않았습니다.
+실제 앱 형태로 확인하려면 `apps/lifecycle-consumer-tester/.env.local`을 맞춘 뒤 새 터미널에서 consumer tester를 켭니다. 이 앱은 Kafka event를 메모리에 저장하고 HTTP로 상태를 확인합니다.
+
+```bash
+cat > apps/lifecycle-consumer-tester/.env.local <<EOF
+NODE_ENV=development
+HOST=127.0.0.1
+PORT=3110
+KAFKA_CLIENT_BROKERS=localhost:9094
+LIFECYCLE_KAFKA_CLIENT_ID=lifecycle-consumer-tester
+LIFECYCLE_KAFKA_GROUP_ID=$CONSUMER_GROUP
+LIFECYCLE_KAFKA_TOPIC=file.image.lifecycle.v1
+LIFECYCLE_KAFKA_FROM_BEGINNING=true
+LIFECYCLE_CONSUMER_TESTER_MAX_EVENTS=200
+CLIENT_SERVICE_SLUG=$SERVICE_SLUG
+KAFKA_LIFECYCLE_EVENT_TYPES=image.upload.completed,image.upload.failed
+EOF
+
+pnpm dev:lifecycle-consumer-tester
+```
+
+consumer tester 확인 API는 아래와 같습니다.
+
+```bash
+curl -s http://127.0.0.1:3110/health | python3 -m json.tool
+curl -s http://127.0.0.1:3110/consumer/status | python3 -m json.tool
+curl -s "http://127.0.0.1:3110/events?limit=20&clientServiceSlug=$SERVICE_SLUG" | python3 -m json.tool
+curl -s -X DELETE http://127.0.0.1:3110/events | python3 -m json.tool
+```
+
+더 가벼운 stdout 예시 consumer만 쓰고 싶으면 새 터미널에서 아래처럼 실행합니다. `CLIENT_SERVICE_SLUG`를 넣으면 해당 서비스 이벤트만 출력합니다. 신규 서비스 점검은 위에서 등록한 `CONSUMER_GROUP`을 그대로 쓰면 됩니다. 과거 메시지까지 다시 보려면 임시 점검용 group을 새로 쓰세요. 현재 단계에서는 DB subscription이 운영 관리 기준이고 실제 Kafka ACL 강제는 아직 붙이지 않았습니다.
 
 ```bash
 KAFKA_CLIENT_BROKERS=localhost:9094 \
@@ -462,6 +579,19 @@ curl -i -X POST http://127.0.0.1:3032/image \
 }
 ```
 
+consumer에 이벤트가 안 찍히면 먼저 outbox 상태를 봅니다. 루트 `.env`의 `DATABASE_URL`을 export했거나 직접 DB URL을 넣은 상태에서 실행하세요.
+
+```bash
+psql "$DATABASE_URL" -c "
+select event_id, status, attempts, last_error, next_attempt_at, published_at
+from image_lifecycle_outbox
+order by created_at desc
+limit 10;
+"
+```
+
+`status=PUBLISHED`면 Kafka 발행은 끝난 상태라 consumer group/filter/topic을 봐야 합니다. `FAILED`면 `last_error`를 확인하고 Kafka 복구 후 storage outbox publisher가 재시도하는지 봅니다.
+
 예시 consumer 옵션은 아래에서 볼 수 있습니다.
 
 ```bash
@@ -474,28 +604,28 @@ pnpm kafka:lifecycle:consume -- --help
 
 Kafka 없이 대시보드에 실제 데이터가 보이도록 이벤트를 직접 넣을 수도 있습니다.
 
-먼저 이 이벤트를 어느 서비스가 사용한 것인지 구분할 수 있게 client service를 등록합니다. 위 0단계에서 이미 등록했다면 기존 `SERVICE_ID`, `SERVICE_SLUG`, `CLIENT_API_KEY`를 재사용해도 됩니다.
+먼저 이 이벤트를 어느 서비스가 사용한 것인지 구분할 수 있게 client service를 등록합니다. 3-1에서 이미 등록한 실제 업로드 점검용 서비스와 분리하려면 아래처럼 `MANUAL_SERVICE_ID`를 새로 만들고, 기존 서비스를 재사용하려면 `$SERVICE_ID`, `$SERVICE_SLUG`를 넣어도 됩니다.
 
 ```bash
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 STAMP="$(date +%s)"
-SERVICE_SLUG="local-demo-$STAMP"
-SERVICE_ID="$(
+MANUAL_SERVICE_SLUG="manual-demo-$STAMP"
+MANUAL_SERVICE_ID="$(
   curl -s -X POST http://127.0.0.1:3100/api/admin/client-services \
     -H 'content-type: application/json' \
     -H 'x-admin-token: dev-admin-token' \
-    -d "{\"slug\":\"$SERVICE_SLUG\",\"name\":\"Local Demo\",\"owner\":\"local\"}" \
+    -d "{\"slug\":\"$MANUAL_SERVICE_SLUG\",\"name\":\"Manual Demo\",\"owner\":\"local\"}" \
     | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])'
 )"
 
-curl -s -X POST "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID/keys" \
+curl -s -X POST "http://127.0.0.1:3100/api/admin/client-services/$MANUAL_SERVICE_ID/keys" \
   -H 'content-type: application/json' \
   -H 'x-admin-token: dev-admin-token' \
   -d '{"name":"local test key","scopes":{"telemetry":"write"}}' \
   | python3 -m json.tool
 ```
 
-응답의 `apiKey`는 최초 1회만 보이므로 필요하면 따로 저장하세요. `key.keyHash`는 응답에 노출되지 않는 것이 정상입니다.
+응답의 `apiKey`는 최초 1회만 보이므로 필요하면 따로 저장하세요. `key.keyHash`는 응답에 노출되지 않는 것이 정상입니다. 실제 업로드 점검에서 쓰는 `$SERVICE_ID`와 수동 이벤트용 `$MANUAL_SERVICE_ID`를 섞지 마세요.
 수동 이벤트도 실제 업로드 흐름처럼 클라이언트 제공 id 대신 `imageKey`와 저장 파일명 기준으로 넣습니다.
 
 ```bash
@@ -512,8 +642,8 @@ curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   "occurredAt": "$NOW",
   "sourceApp": "storage",
   "environment": "development",
-  "clientServiceId": "$SERVICE_ID",
-  "clientServiceSlug": "$SERVICE_SLUG",
+  "clientServiceId": "$MANUAL_SERVICE_ID",
+  "clientServiceSlug": "$MANUAL_SERVICE_SLUG",
   "path": "demo/image",
   "name": "$MANUAL_IMAGE_NAME",
   "originalName": "sample.png",
@@ -536,8 +666,8 @@ curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   "occurredAt": "$NOW",
   "sourceApp": "cache",
   "environment": "development",
-  "clientServiceId": "$SERVICE_ID",
-  "clientServiceSlug": "$SERVICE_SLUG",
+  "clientServiceId": "$MANUAL_SERVICE_ID",
+  "clientServiceSlug": "$MANUAL_SERVICE_SLUG",
   "path": "demo/image",
   "name": "$MANUAL_IMAGE_NAME",
   "imageKey": "$MANUAL_IMAGE_KEY",
@@ -560,8 +690,8 @@ curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   "occurredAt": "$NOW",
   "sourceApp": "resize",
   "environment": "development",
-  "clientServiceId": "$SERVICE_ID",
-  "clientServiceSlug": "$SERVICE_SLUG",
+  "clientServiceId": "$MANUAL_SERVICE_ID",
+  "clientServiceSlug": "$MANUAL_SERVICE_SLUG",
   "path": "demo/image",
   "name": "$MANUAL_IMAGE_NAME",
   "imageKey": "$MANUAL_IMAGE_KEY",
@@ -571,6 +701,31 @@ curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
   "inputBytes": 800,
   "outputBytes": 300,
   "durationMs": 18,
+  "status": "success"
+}
+EOF_EVENT
+
+curl -i -X POST http://127.0.0.1:3100/api/ingestion/events \
+  -H 'content-type: application/json' \
+  -d @- <<EOF_EVENT
+{
+  "schemaVersion": 1,
+  "eventId": "manual-resize-2-$STAMP",
+  "eventType": "image.resize.completed",
+  "occurredAt": "$NOW",
+  "sourceApp": "resize",
+  "environment": "development",
+  "clientServiceId": "$MANUAL_SERVICE_ID",
+  "clientServiceSlug": "$MANUAL_SERVICE_SLUG",
+  "path": "demo/image",
+  "name": "$MANUAL_IMAGE_NAME",
+  "imageKey": "$MANUAL_IMAGE_KEY",
+  "width": 40,
+  "height": 40,
+  "format": "png",
+  "inputBytes": 820,
+  "outputBytes": 310,
+  "durationMs": 21,
   "status": "success"
 }
 EOF_EVENT
@@ -616,6 +771,11 @@ curl -s 'http://127.0.0.1:3100/api/admin/events?limit=10' \
 curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$SERVICE_ID&limit=10" \
   -H 'x-admin-token: dev-admin-token' \
   | python3 -m json.tool
+
+# 10-5 수동 이벤트를 넣었다면 수동 이벤트용 서비스 ID로도 확인합니다.
+curl -s "http://127.0.0.1:3100/api/admin/events?clientServiceId=$MANUAL_SERVICE_ID&limit=10" \
+  -H 'x-admin-token: dev-admin-token' \
+  | python3 -m json.tool
 ```
 
 서비스 레지스트리:
@@ -632,6 +792,8 @@ curl -s "http://127.0.0.1:3100/api/admin/client-services/$SERVICE_ID" \
 
 이미지 집계:
 
+`image-resize-recommendations`는 같은 Client Service + width/height/format 조합의 on-demand `image.resize.completed` 이벤트가 `minRequests` 이상 있어야 추천으로 표시됩니다. 10-5의 수동 이벤트 절차는 같은 `40x40 png` resize 이벤트를 2건 넣으므로 `MANUAL_SERVICE_ID` 기준으로 바로 확인할 수 있습니다.
+
 ```bash
 curl -s 'http://127.0.0.1:3100/api/admin/images?limit=10&sort=reads&order=desc' \
   -H 'x-admin-token: dev-admin-token' \
@@ -640,9 +802,13 @@ curl -s 'http://127.0.0.1:3100/api/admin/images?limit=10&sort=reads&order=desc' 
 curl -s "http://127.0.0.1:3100/api/admin/image-resize-recommendations?clientServiceId=$SERVICE_ID&minRequests=2&limit=10" \
   -H 'x-admin-token: dev-admin-token' \
   | python3 -m json.tool
+
+curl -s "http://127.0.0.1:3100/api/admin/image-resize-recommendations?clientServiceId=$MANUAL_SERVICE_ID&minRequests=2&limit=10" \
+  -H 'x-admin-token: dev-admin-token' \
+  | python3 -m json.tool
 ```
 
-특정 이미지 상세는 `/`를 URL 인코딩해서 조회합니다.
+특정 이미지 상세는 `/`를 URL 인코딩해서 조회합니다. 실제 업로드 이미지를 보려면 `$IMAGE_KEY`, 수동 이벤트 이미지를 보려면 `$MANUAL_IMAGE_KEY`를 넣습니다.
 
 ```bash
 ENCODED_IMAGE_KEY=$(python3 -c 'import sys,urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$MANUAL_IMAGE_KEY")
@@ -719,16 +885,18 @@ pnpm all:test:e2e
 
 - `telemetry-api`는 기본적으로 PostgreSQL 저장소를 사용합니다. DB 없이 잠깐만 확인하려면 `TELEMETRY_STORAGE_DRIVER=memory`를 명시하세요.
 - `storage/resize/cache → Kafka` 이벤트가 DB에 안 보이면 `telemetry-api`를 Kafka보다 먼저 켠 상태일 수 있습니다. Kafka를 켠 뒤 telemetry-api를 재시작하세요.
-- upload lifecycle 이벤트가 consumer에 안 보이면 먼저 PostgreSQL의 `image_lifecycle_outbox`에서 해당 `event_id` row의 `status`, `attempts`, `last_error`, `next_attempt_at`을 확인하세요. `FAILED`면 Kafka 복구 후 storage outbox publisher가 재시도합니다.
+- upload lifecycle 이벤트가 consumer에 안 보이면 먼저 PostgreSQL의 `image_lifecycle_outbox`에서 해당 `event_id` row의 `status`, `attempts`, `last_error`, `next_attempt_at`을 확인하세요. 위 10-4-2의 `psql` 명령으로 바로 볼 수 있습니다. `FAILED`면 Kafka 복구 후 storage outbox publisher가 재시도합니다.
 - admin-web이 API를 못 불러오면 에러로 죽지 않고 fixture를 보여줍니다. 실제 연동 확인 시 fallback 경고 문구가 없는지 꼭 보세요.
 - admin API는 `x-admin-token` 헤더가 필요합니다.
 - admin-web은 기본 API 주소가 `http://localhost:3001/api/admin`이라, 로컬 telemetry-api 포트 `3100`을 쓰려면 `apps/admin-web/.env.local`의 `TELEMETRY_API_BASE_URL` 설정이 필요합니다.
+- Kafka UI를 `--profile ui`로 띄우면 기본 인증이 켜져 있으므로 `KAFKA_UI_PASSWORD=admin`처럼 비밀번호 env를 같이 넘기거나 본인 값으로 설정하세요.
+- `PRE_GENERATE` variant 확인은 업로드 전에 정책/variant를 등록해야 합니다. 이미 올라간 이미지에는 자동으로 retroactive 생성되지 않습니다.
 
 ## 11. 전체 end-to-end 완료 기준
 
 아래가 한 번에 이어지면 현재 구조의 핵심 플로우가 정상입니다.
 
-1. PostgreSQL migration 적용 후 `telemetry-api`가 health check에서 PostgreSQL/Kafka connected 상태를 보입니다.
+1. PostgreSQL migration/client generate 적용 후 `telemetry-api`가 health check에서 PostgreSQL, `kafka`, `lifecycleKafka` connected 상태를 보입니다.
 2. admin API 또는 `/services`에서 신규 Client Service를 등록하고 API key를 발급합니다.
 3. 앱 재시작 없이 그 API key로 `storage`, `resize`, `cache` `/image` 요청이 통과합니다.
 4. 업로드 성공/실패 lifecycle event가 `file.image.lifecycle.v1` consumer와 `/lifecycle-events` 양쪽에서 같은 `eventId`로 확인됩니다.
