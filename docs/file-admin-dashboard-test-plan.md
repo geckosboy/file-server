@@ -320,8 +320,7 @@ pnpm ignored-builds
 ```json
 {
   "file:telemetry-api": "pnpm --filter @file/telemetry-api",
-  "file:admin-web": "pnpm --filter @file/admin-web",
-  "file:telemetry-contracts": "pnpm --filter @file/telemetry-contracts"
+  "file:admin-web": "pnpm --filter @file/admin-web"
 }
 ```
 
