@@ -69,7 +69,7 @@ pnpm kafka:topics:dev
 tester 앱 실행:
 
 ```bash
-pnpm dev:lifecycle-consumer-tester
+pnpm dev:lc-tester
 ```
 
 또는 패키지 직접 실행:

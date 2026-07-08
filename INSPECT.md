@@ -144,15 +144,13 @@ LIFECYCLE_KAFKA_FROM_BEGINNING=false
 한 번에 실행:
 
 ```bash
-pnpm dev:apps
+pnpm dev:files
 ```
 
 따로 보고 싶으면 터미널 3개에서 실행:
 
 ```bash
-pnpm dev:storage
-pnpm dev:resize
-pnpm dev:cache
+pnpm dev:files
 ```
 
 ## 3. 헬스체크

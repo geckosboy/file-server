@@ -115,7 +115,7 @@ $ pnpm file:resize {command}
 $ pnpm file:cache {command}
 
 # Run storage/resize/cache through Turborepo
-$ pnpm dev:apps
+$ pnpm dev:files
 
 # Docker Dev Server
 $ docker compose -f docker/apps/docker-compose.dev.yml up -d
