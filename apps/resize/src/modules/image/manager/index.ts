@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { ImageEntity } from '@file/image-contracts';
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 
 @Injectable()
 export class ImageManager {

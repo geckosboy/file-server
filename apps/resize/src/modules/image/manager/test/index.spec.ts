@@ -1,4 +1,4 @@
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 import { ImageManager } from '.././index';
 
 describe('리사이즈 이미지 매니저', () => {

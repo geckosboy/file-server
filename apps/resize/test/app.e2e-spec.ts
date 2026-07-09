@@ -18,7 +18,7 @@ import {
 } from '@file/database';
 import { of } from 'rxjs';
 import * as request from 'supertest';
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageManager } from '../src/modules/image/manager';

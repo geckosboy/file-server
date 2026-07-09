@@ -8,12 +8,20 @@
 		"../../libs/database/src/**/*.ts",
 		"../../libs/telemetry-contracts/src/**/*.ts"
 	],
-	"exclude": ["node_modules", "dist", "test", "**/*.spec.ts"],
+	"exclude": [
+		"node_modules",
+		"dist",
+		"test",
+		"**/*.spec.ts",
+		"../../libs/**/src/**/test/**/*.ts",
+		"../../libs/**/*.spec.ts"
+	],
 	"compilerOptions": {
 		"declaration": false,
 		"outDir": "./dist",
-		"baseUrl": "./",
+		"rootDir": "../../",
 		"paths": {
+			"src/*": ["./src/*"],
 			"@file/global": ["../../libs/global/src"],
 			"@file/nest-common": ["../../libs/nest-common/src"],
 			"@file/image-contracts": ["../../libs/image-contracts/src"],

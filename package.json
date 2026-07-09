@@ -22,6 +22,7 @@
 		"all:lint:fix": "turbo run lint:fix",
 		"all:test": "turbo run test",
 		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache --filter=@file/telemetry-api",
+		"typecheck:ts7": "node scripts/typecheck-ts7.mjs",
 		"dev:files": "turbo run start:dev --filter=@file/storage --filter=@file/resize --filter=@file/cache",
 		"dev:admin": "turbo run start:dev --filter=@file/telemetry-api  --filter=@file/admin-web",
 		"dev:lc-tester": "turbo run start:dev --filter=@file/lifecycle-consumer-tester",

@@ -1,7 +1,6 @@
 {
 	"extends": "@file/tsconfig/tsconfig.base.json",
 	"compilerOptions": {
-		"baseUrl": "./src",
 		"declaration": false,
 		"incremental": true,
 		"isolatedModules": true,
@@ -12,7 +11,7 @@
 		"noEmit": true,
 		"outDir": "./.next/types",
 		"paths": {
-			"@/*": ["./*"]
+			"@/*": ["./src/*"]
 		},
 		"plugins": [
 			{

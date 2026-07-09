@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import * as NodeCache from 'node-cache';
+import NodeCache from 'node-cache';
 
 export interface CachedImage {
 	imageBuffer: Buffer;

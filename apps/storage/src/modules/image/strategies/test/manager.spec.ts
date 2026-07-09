@@ -1,7 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { copyFile, mkdir, rm, stat, writeFile } from 'fs/promises';
 import * as path from 'path';
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 import { Root } from 'src/enum';
 import { SharpStrategy } from '.././sharp';
 import { createPreGeneratedVariantName, ImageManager } from '.././manager';

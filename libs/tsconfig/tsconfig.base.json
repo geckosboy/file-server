@@ -2,7 +2,7 @@
 	"compilerOptions": {
 		// "composite": true,
 		"module": "CommonJS",
-		// "esModuleInterop": true,
+		"esModuleInterop": true,
 		"declaration": true,
 		"removeComments": true,
 		"emitDecoratorMetadata": true,
@@ -11,7 +11,6 @@
 		"target": "ESNext",
 		"sourceMap": true,
 		"outDir": "./dist",
-		"baseUrl": "./",
 		"incremental": true,
 		"skipLibCheck": true,
 		"strict": true

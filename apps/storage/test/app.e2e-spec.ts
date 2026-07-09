@@ -12,7 +12,7 @@ import { rm } from 'fs/promises';
 import * as path from 'path';
 import { of } from 'rxjs';
 import * as request from 'supertest';
-import * as sharp from 'sharp';
+import sharp from 'sharp';
 import { Root } from '../src/enum';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
