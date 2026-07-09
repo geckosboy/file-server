@@ -12,6 +12,8 @@ services:
     build:
       context: ${BASE_PATH}
       dockerfile: docker/apps/Dockerfile.storage.dev
+      additional_contexts:
+        base_modules: service:base_modules
     platform: linux/x86_64
     volumes:
       - image_dump:/usr/index/apps/storage/dist/apps/storage/assets
@@ -24,6 +26,8 @@ services:
     build:
       context: ${BASE_PATH}
       dockerfile: docker/apps/Dockerfile.cache.dev
+      additional_contexts:
+        base_modules: service:base_modules
     platform: linux/x86_64
     ports:
       - '3030:3030'
@@ -34,6 +38,8 @@ services:
     build:
       context: ${BASE_PATH}
       dockerfile: docker/apps/Dockerfile.resize.dev
+      additional_contexts:
+        base_modules: service:base_modules
     platform: linux/x86_64
     ports:
       - '3031:3031'

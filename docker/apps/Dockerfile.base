@@ -1,6 +1,7 @@
 FROM node:20-alpine
 WORKDIR /usr/index
-COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ./
+COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ../../prisma.config.ts ./
 COPY ../../apps ./apps
 COPY ../../libs ./libs
+COPY ../../prisma ./prisma
 RUN corepack enable && pnpm install --frozen-lockfile

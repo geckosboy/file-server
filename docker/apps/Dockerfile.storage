@@ -1,15 +1,17 @@
 FROM node:20-alpine AS ts-compiler
 WORKDIR /usr/index
-COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ./
+COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ../../prisma.config.ts ./
 COPY ../../apps ./apps
 COPY ../../libs ./libs
+COPY ../../prisma ./prisma
 RUN corepack enable && pnpm install --frozen-lockfile
+RUN pnpm db:generate
 RUN pnpm --filter @file/storage build
 
 FROM node:20-alpine AS prod-deps
 WORKDIR /usr/index
 COPY --from=ts-compiler /usr/index ./
-RUN corepack enable && pnpm prune --prod
+RUN corepack enable && CI=true pnpm prune --prod
 
 FROM keymetrics/pm2:18-alpine
 WORKDIR /usr/index
