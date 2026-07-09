@@ -23,7 +23,7 @@
 		"all:test": "turbo run test",
 		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache --filter=@file/telemetry-api",
 		"dev:files": "turbo run start:dev --filter=@file/storage --filter=@file/resize --filter=@file/cache",
-    "dev:admin": "turbo run start:dev --filter=@file/telemetry-api  --filter=@file/admin-web",
+		"dev:admin": "turbo run start:dev --filter=@file/telemetry-api  --filter=@file/admin-web",
 		"dev:lc-tester": "turbo run start:dev --filter=@file/lifecycle-consumer-tester",
 		"db:generate": "prisma generate",
 		"db:migrate:dev": "prisma migrate dev",
@@ -66,7 +66,7 @@
 		"turbo": "^2.10.2",
 		"typescript": "^5.7.3",
 		"typescript-eslint": "^8.61.1",
-		"webpack": "^5.104.0"
+		"webpack": "^5.108.3"
 	},
 	"pnpm": {
 		"onlyBuiltDependencies": [
