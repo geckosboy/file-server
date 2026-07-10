@@ -1,7 +1,9 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import {
+	createBoundedImageVariantName,
 	DeleteImageDto,
+	getMaxImageFileNameLengthForPath,
 	ImageQueryDto,
 	UploadImageDto,
 	matchesClientServicePathPattern,
@@ -96,6 +98,33 @@ describe('이미지 계약 DTO', () => {
 			path.resolve(root, 'tenant/image/file.png'),
 		);
 		expect(() => resolveInside(root, '../outside')).toThrow();
+	});
+
+	it('긴 source 이름의 variant도 name/imageKey 상한 안에서 고유하게 만든다', () => {
+		const storagePath = `${'p'.repeat(250)}/image`;
+		const firstSource = `${'a'.repeat(90)}.${'1'.repeat(32)}.png`;
+		const secondSource = `${'a'.repeat(90)}.${'2'.repeat(32)}.png`;
+		const first = createBoundedImageVariantName({
+			path: storagePath,
+			name: firstSource,
+			width: 4096,
+			height: 4096,
+			format: 'webp',
+		});
+		const second = createBoundedImageVariantName({
+			path: storagePath,
+			name: secondSource,
+			width: 4096,
+			height: 4096,
+			format: 'webp',
+		});
+
+		expect(first).not.toBe(second);
+		expect(first.length).toBeLessThanOrEqual(
+			getMaxImageFileNameLengthForPath(storagePath),
+		);
+		expect(`${storagePath}/${first}`).toHaveLength(384);
+		expect(first).toMatch(/__w4096_h4096\.webp$/);
 	});
 
 	it('제한된 segment glob으로 tenant 경로를 판정한다', () => {

@@ -159,8 +159,59 @@ describe('PostgreSQL 관리자 analytics repository', () => {
 		).resolves.toEqual({
 			items: [topImageItem()],
 		});
-		expect(sqlText(prisma)).toContain('GROUP BY "image_key"');
+		expect(sqlText(prisma)).toContain('FROM "image_assets"');
+		expect(sqlText(prisma)).toContain(
+			'"status" <> \'Deleted\'::"ImageAssetState"',
+		);
+		expect(sqlText(prisma)).toContain('FROM "telemetry_events"');
 		expect(sqlText(prisma)).toContain('LIMIT ?');
+	});
+
+	it('authoritative image 목록은 owner를 직접 제한하고 기간 내 usage가 있는 asset만 포함한다', async () => {
+		const clientServiceId = "service-a' OR 1=1 --";
+		const clientServiceSlug = "catalog-api' OR 1=1 --";
+		prisma.$queryRaw.mockResolvedValue([
+			topImageRow({
+				assetId: 'asset-a',
+				assetStatus: 'Ready',
+			}),
+		]);
+
+		await expect(
+			repository.listTopImages({
+				...range,
+				clientServiceId,
+				clientServiceSlug,
+				limit: 10,
+			}),
+		).resolves.toEqual({
+			items: [
+				{
+					...topImageItem(),
+					assetId: 'asset-a',
+					assetStatus: 'Ready',
+				},
+			],
+		});
+
+		const sql = lastSql(prisma);
+		const text = sql.strings.join('?');
+		expect(text).toContain('FROM "image_assets" AS "asset"');
+		expect(text).toContain('JOIN "client_services" AS "owner"');
+		expect(text).toContain('"asset"."client_service_id" = ?');
+		expect(text).toContain('"owner"."slug" = ?');
+		expect(text).toContain('FROM "filtered_events" AS "membership_event"');
+		expect(text).toContain(
+			'"membership_event"."client_service_id" = "asset"."client_service_id"',
+		);
+		expect(text).not.toContain(clientServiceId);
+		expect(text).not.toContain(clientServiceSlug);
+		expect(
+			sql.values.filter((value) => value === clientServiceId),
+		).toHaveLength(2);
+		expect(
+			sql.values.filter((value) => value === clientServiceSlug),
+		).toHaveLength(2);
 	});
 
 	it('top image page는 sort-aware opaque cursor와 legacy offset을 모두 지원한다', async () => {
@@ -317,6 +368,13 @@ function sqlText(prisma: PrismaMock): string {
 	const sql = prisma.$queryRaw.mock.calls.at(-1)?.[0] as
 		{ strings: string[] } | undefined;
 	return sql?.strings.join('?') ?? '';
+}
+
+function lastSql(prisma: PrismaMock): { strings: string[]; values: unknown[] } {
+	return prisma.$queryRaw.mock.calls.at(-1)?.[0] as {
+		strings: string[];
+		values: unknown[];
+	};
 }
 
 function emptySummaryRow() {

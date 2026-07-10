@@ -21,6 +21,8 @@ const baseEvent = {
 };
 
 describe('관리자 조회 서비스', () => {
+	const originalReconciliationCompatFlag =
+		process.env.IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED;
 	let ingestionService: IngestionService;
 	let lifecycleIngestionService: LifecycleIngestionService;
 	let queryService: AdminQueryService;
@@ -38,6 +40,15 @@ describe('관리자 조회 서비스', () => {
 			new InMemoryAdminAnalyticsRepository(repository),
 		);
 		await seedFixture();
+	});
+
+	afterEach(() => {
+		if (originalReconciliationCompatFlag === undefined) {
+			delete process.env.IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED;
+		} else {
+			process.env.IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED =
+				originalReconciliationCompatFlag;
+		}
 	});
 
 	it('대시보드 요약에서 캐시 hit율을 계산한다', async () => {
@@ -123,6 +134,88 @@ describe('관리자 조회 서비스', () => {
 			retryCount: 7,
 			oldestUnpublishedAgeMs: expect.any(Number),
 		});
+	});
+
+	it('이미지 lifecycle admin health는 DB 상태별 age와 variant job lag를 반환한다', async () => {
+		delete process.env.IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED;
+		const repository = new InMemoryTelemetryRepository();
+		const lifecycleRepository = new InMemoryLifecycleRepository();
+		const prisma = createImageLifecycleMetricsPrisma();
+
+		const health = await new AdminQueryService(
+			repository,
+			lifecycleRepository,
+			new InMemoryAdminAnalyticsRepository(repository),
+			undefined,
+			undefined,
+			prisma,
+		).getHealth();
+
+		expect(health.operationalMetrics.imageLifecycle).toMatchObject({
+			available: true,
+			assets: {
+				pending: 2,
+				deleting: 1,
+				failed: 1,
+				oldestPendingAgeMs: 120_000,
+				oldestDeletingAgeMs: 60_000,
+			},
+			variants: {
+				pending: 3,
+				deleting: 2,
+				failed: 2,
+				oldestPendingAgeMs: 90_000,
+				oldestDeletingAgeMs: 45_000,
+			},
+			jobs: {
+				pending: 4,
+				processing: 1,
+				failed: 3,
+				oldestActiveAgeMs: 75_000,
+				lagMs: 75_000,
+			},
+			reconciliation: {
+				supported: true,
+				orphanCount: 7,
+				repairedCount: 8,
+				failedCount: 2,
+			},
+		});
+		expect(health.operationalMetrics.reconciliation).toMatchObject({
+			supported: true,
+			orphanCount: 7,
+		});
+	});
+
+	it('Stage 4 admin reconciliation shape를 flag 기간에는 유지하면서 실제 값을 보존한다', async () => {
+		process.env.IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED = 'true';
+		const repository = new InMemoryTelemetryRepository();
+		const lifecycleRepository = new InMemoryLifecycleRepository();
+		const prisma = createImageLifecycleMetricsPrisma();
+
+		const health = await new AdminQueryService(
+			repository,
+			lifecycleRepository,
+			new InMemoryAdminAnalyticsRepository(repository),
+			undefined,
+			undefined,
+			prisma,
+		).getHealth();
+
+		expect(health.operationalMetrics.reconciliation).toMatchObject({
+			supported: false,
+			orphanCount: null,
+			repairedCount: 8,
+			failedCount: 2,
+			transition: {
+				imageLifecycleSupported: true,
+				imageLifecycleOrphanCount: 7,
+				legacyCompatEnabled: true,
+			},
+		});
+		expect(health.operationalMetrics.imageLifecycle.reconciliation).toEqual(
+			health.operationalMetrics.reconciliation,
+		);
 	});
 
 	it('캐시 이벤트가 없으면 hit율을 null로 반환한다', async () => {
@@ -640,6 +733,67 @@ describe('관리자 조회 서비스', () => {
 		});
 	}
 });
+
+function createImageLifecycleMetricsPrisma(): PrismaService {
+	const queryRaw = jest
+		.fn()
+		.mockResolvedValueOnce([
+			{
+				pending: 2,
+				ready: 10,
+				deleting: 1,
+				deleted: 5,
+				failed: 1,
+				oldestPendingAgeMs: 120_000,
+				oldestDeletingAgeMs: 60_000,
+			},
+		])
+		.mockResolvedValueOnce([
+			{
+				pending: 3,
+				ready: 20,
+				deleting: 2,
+				deleted: 6,
+				failed: 2,
+				oldestPendingAgeMs: 90_000,
+				oldestDeletingAgeMs: 45_000,
+			},
+		])
+		.mockResolvedValueOnce([
+			{
+				pending: 4,
+				processing: 1,
+				completed: 30,
+				failed: 3,
+				cancelled: 2,
+				oldestActiveAgeMs: 75_000,
+			},
+		])
+		.mockResolvedValueOnce([
+			{
+				orphanCount: 7,
+				repairedCount: 8,
+				failedCount: 2,
+				oldestPendingAgeMs: 120_000,
+				oldestDeletingAgeMs: 60_000,
+				durationMs: 25,
+				lastRunAt: new Date('2026-07-11T00:00:00.000Z'),
+				lastSuccessAt: new Date('2026-07-11T00:00:00.000Z'),
+				lastError: null,
+			},
+		]);
+
+	return {
+		$queryRaw: queryRaw,
+		imageLifecycleOutbox: {
+			count: jest.fn().mockResolvedValue(0),
+			aggregate: jest.fn().mockResolvedValue({
+				_sum: { attempts: 0 },
+				_min: { createdAt: null },
+			}),
+		},
+	} as unknown as PrismaService;
+}
 
 function testRange() {
 	return {

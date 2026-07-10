@@ -11,11 +11,35 @@ import { readKafkaClientSecurityOptions } from '@file/nest-common';
 import { envConfig } from 'src/config';
 import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
 import { ImagePregenerationService } from './image-pregeneration.service';
+import { ImageCacheInvalidationPublisher } from './image-cache-invalidation.publisher';
+import { ImageLifecycleMetricsService } from './image-lifecycle-metrics.service';
+import {
+	IMAGE_RECONCILIATION_METRICS_SOURCE,
+	IMAGE_LIFECYCLE_HEALTH_METRICS,
+	ImageLifecycleHealthService,
+} from './image-lifecycle-health.service';
+import { ImageVariantJobDispatcher } from './image-variant-job.dispatcher';
+import { ImageVariantJobPublisher } from './image-variant-job.publisher';
+import { ImageVariantJobWorker } from './image-variant-job.worker';
+import { IMAGE_VARIANT_JOB_REPOSITORY } from './image-variant-job.repository';
 import { PolicyAwareImageUploadInterceptor } from './policy-aware-image-upload.interceptor';
 import {
 	IMAGE_TELEMETRY_KAFKA_RETRY_OPTIONS,
 	IMAGE_TELEMETRY_KAFKA_SEND_OPTIONS,
 } from '@file/telemetry-contracts/events';
+import { ImageFilesystemStore } from './image-filesystem.store';
+import {
+	IMAGE_ASSET_LIFECYCLE_METADATA,
+	IMAGE_CACHE_INVALIDATION_PORT,
+	ImageAssetLifecycleService,
+} from './image-asset-lifecycle.service';
+import { ImageReconciliationScheduler } from './image-reconciliation.scheduler';
+import {
+	ImageAssetLifecycleMetadataAdapter,
+	ImageCacheInvalidationAdapter,
+	ImageVariantJobRepositoryAdapter,
+} from './image-lifecycle.adapters';
+import { ImageLifecycleFailpointService } from './image-lifecycle.failpoints';
 
 const strategyList = [JpegStrategy, PngStrategy, ImageManager];
 const KafkaModule = ClientsModule.register([
@@ -46,8 +70,47 @@ const KafkaModule = ClientsModule.register([
 		ImageService,
 		ImageLifecycleOutboxService,
 		ImagePregenerationService,
+		ImageLifecycleMetricsService,
+		ImageLifecycleHealthService,
+		ImageCacheInvalidationPublisher,
+		ImageVariantJobPublisher,
+		ImageVariantJobDispatcher,
+		ImageVariantJobWorker,
+		ImageFilesystemStore,
+		ImageLifecycleFailpointService,
+		ImageAssetLifecycleService,
+		ImageReconciliationScheduler,
+		ImageAssetLifecycleMetadataAdapter,
+		ImageCacheInvalidationAdapter,
+		ImageVariantJobRepositoryAdapter,
+		{
+			provide: IMAGE_ASSET_LIFECYCLE_METADATA,
+			useExisting: ImageAssetLifecycleMetadataAdapter,
+		},
+		{
+			provide: IMAGE_CACHE_INVALIDATION_PORT,
+			useExisting: ImageCacheInvalidationAdapter,
+		},
+		{
+			provide: IMAGE_VARIANT_JOB_REPOSITORY,
+			useExisting: ImageVariantJobRepositoryAdapter,
+		},
+		{
+			provide: IMAGE_RECONCILIATION_METRICS_SOURCE,
+			useExisting: ImageAssetLifecycleMetadataAdapter,
+		},
+		{
+			provide: IMAGE_LIFECYCLE_HEALTH_METRICS,
+			useExisting: ImageLifecycleHealthService,
+		},
 		PolicyAwareImageUploadInterceptor,
 		...strategyList,
+	],
+	exports: [
+		IMAGE_LIFECYCLE_HEALTH_METRICS,
+		ImageCacheInvalidationPublisher,
+		ImageVariantJobDispatcher,
+		ImageAssetLifecycleService,
 	],
 })
 export class ImageModule {}

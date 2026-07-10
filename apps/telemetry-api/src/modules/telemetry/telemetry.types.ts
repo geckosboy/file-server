@@ -47,6 +47,10 @@ export interface ImageAssetSummary {
 }
 
 export interface ImageVariantSummary {
+	variantId?: string;
+	status?: string;
+	storageKey?: string;
+	checksum?: string;
 	variantKey: string;
 	imageKey: string;
 	width?: number;

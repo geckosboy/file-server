@@ -1,3 +1,5 @@
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 import {
 	IMAGE_LIFECYCLE_TOPIC,
 	ImageLifecycleEnvironment,
@@ -89,5 +91,21 @@ describe('이미지 lifecycle 이벤트 계약', () => {
 		expect(createLifecycleImageKey('/products/images/', 'sample.png')).toBe(
 			'products/images/sample.png',
 		);
+	});
+
+	it('canonical lifecycle AsyncAPI가 runtime의 upload/delete event type을 모두 문서화한다', () => {
+		const document = readFileSync(
+			resolve(
+				__dirname,
+				'../../../../docs/asyncapi/file-image-lifecycle.asyncapi.yaml',
+			),
+			'utf8',
+		);
+
+		for (const eventType of Object.values(ImageLifecycleEventType)) {
+			expect(document).toContain(eventType);
+		}
+		expect(document).toContain('ImageDeleteCompletedLifecycleEvent');
+		expect(document).toContain('ImageDeleteFailedLifecycleEvent');
 	});
 });

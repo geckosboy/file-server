@@ -14,8 +14,10 @@ import {
 } from '@file/telemetry-contracts/events';
 import {
 	CACHE_HEALTH_METRICS,
+	CACHE_INVALIDATION_HEALTH_METRICS,
 	CACHE_SINGLEFLIGHT_HEALTH_METRICS,
 } from '../../app-health.metrics';
+import { CacheInvalidationConsumerService } from './cache-invalidation-consumer.service';
 
 const KafkaModule = ClientsModule.register([
 	{
@@ -43,12 +45,21 @@ const KafkaModule = ClientsModule.register([
 	controllers: [ImageController],
 	providers: [
 		ImageService,
+		CacheInvalidationConsumerService,
 		{ provide: CACHE_HEALTH_METRICS, useExisting: CacheService },
 		{
 			provide: CACHE_SINGLEFLIGHT_HEALTH_METRICS,
 			useExisting: ImageService,
 		},
+		{
+			provide: CACHE_INVALIDATION_HEALTH_METRICS,
+			useExisting: CacheInvalidationConsumerService,
+		},
 	],
-	exports: [CACHE_HEALTH_METRICS, CACHE_SINGLEFLIGHT_HEALTH_METRICS],
+	exports: [
+		CACHE_HEALTH_METRICS,
+		CACHE_SINGLEFLIGHT_HEALTH_METRICS,
+		CACHE_INVALIDATION_HEALTH_METRICS,
+	],
 })
 export class ImageModule {}

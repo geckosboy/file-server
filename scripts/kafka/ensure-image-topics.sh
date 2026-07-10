@@ -14,6 +14,10 @@ Default topics:
   file.image.events.v1.dlq
   file.image.lifecycle.v1
   file.image.lifecycle.v1.dlq
+  file.image.variant.jobs.v1
+  file.image.variant.jobs.v1.dlq
+  file.image.cache-invalidation.v1
+  file.image.cache-invalidation.v1.dlq
 
 Environment overrides:
   KAFKA_COMPOSE_FILE              Docker compose file path
@@ -69,6 +73,10 @@ if [[ ${#topics[@]} -eq 0 ]]; then
     file.image.events.v1.dlq
     file.image.lifecycle.v1
     file.image.lifecycle.v1.dlq
+    file.image.variant.jobs.v1
+    file.image.variant.jobs.v1.dlq
+    file.image.cache-invalidation.v1
+    file.image.cache-invalidation.v1.dlq
   )
 fi
 

@@ -29,6 +29,8 @@ import {
 const lifecycleEventTypes = [
 	'image.upload.completed',
 	'image.upload.failed',
+	'image.delete.completed',
+	'image.delete.failed',
 ] as const;
 
 const lifecycleStatuses = ['success', 'failed'] as const;
@@ -69,7 +71,7 @@ export function LifecycleEventsPageContent({
 				<div>
 					<h1>이미지 lifecycle 이벤트</h1>
 					<p>
-						Client Service가 소비할 upload completed/failed 업무 이벤트를
+						Client Service가 소비할 upload/delete completed/failed 업무 이벤트를
 						서비스, 이벤트 타입, status, imageKey, 기간별로 조회합니다.
 					</p>
 				</div>
@@ -103,6 +105,10 @@ export function LifecycleEventsPageContent({
 								image.upload.completed
 							</option>
 							<option value="image.upload.failed">image.upload.failed</option>
+							<option value="image.delete.completed">
+								image.delete.completed
+							</option>
+							<option value="image.delete.failed">image.delete.failed</option>
 						</select>
 					</label>
 					<label>

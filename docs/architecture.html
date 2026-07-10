@@ -190,7 +190,18 @@
 			}
 
 			.mermaid {
-				min-width: 760px;
+				min-width: 0;
+			}
+
+			.diagram svg {
+				display: block;
+				max-width: 100% !important;
+				height: auto;
+				margin: 0 auto;
+			}
+
+			.diagram + h3 {
+				margin-top: 26px;
 			}
 
 			table {
@@ -217,446 +228,742 @@
 			tr:last-child td {
 				border-bottom: 0;
 			}
+
+			@media (max-width: 720px) {
+				.mermaid {
+					min-width: 620px;
+				}
+			}
 		</style>
 	</head>
 	<body>
 		<header>
 			<div class="hero">
-				<h1>File Server 구조 정리</h1>
+				<h1>File Server Architecture</h1>
 				<p class="subtitle">
-					여러 Client Service가 공용으로 사용하는 이미지 서버의 현재 구조입니다.
-					DB 기반 서비스 레지스트리, API key guard, Kafka telemetry/lifecycle,
-					outbox, pre-generate 리사이징 정책과 admin-web 운영 흐름까지 포함합니다.
+					공용 이미지 서버의 현재 구조를 기능 경계 기준으로 설명합니다.
+					<code>ImageAsset</code>/<code>ImageVariant</code> 권위 메타데이터,
+					staged upload, 비동기 variant job, filesystem reconciliation, Kafka
+					outbox와 복제 cache invalidation까지 포함합니다.
 				</p>
 				<div class="meta">
+					<span class="badge">2026-07-11 기준</span>
 					<span class="badge">Storage / Resize / Cache</span>
-					<span class="badge">Telemetry API</span>
-					<span class="badge">Admin Web</span>
 					<span class="badge">PostgreSQL + Prisma</span>
-					<span class="badge">Kafka</span>
-					<span class="badge">AsyncAPI</span>
-					<span class="badge">Lifecycle Consumer Tester</span>
+					<span class="badge">Kafka + Outbox</span>
+					<span class="badge">Authoritative Image Metadata</span>
+					<span class="badge">Filesystem Adapter</span>
 				</div>
 			</div>
 		</header>
 
 		<main>
 			<section class="card">
-				<h2>1. 전체 런타임 구조</h2>
+				<h2>1. 이번 구조 변경의 핵심</h2>
 				<p>
-					외부 Client Service의 이미지 조회 진입점은 <code>cache</code>입니다.
-					<code>storage</code>는 업로드/삭제만 <code>x-client-api-key</code>로 받고,
-					<code>resize</code> GET과 <code>storage</code> GET은 내부 전용
-					<code>x-internal-api-key</code>와 서명된 client context로만 호출됩니다. 표준
-					telemetry는 <code>file.image.events.v1</code>로, Client Service 후속
-					업무용 lifecycle은 <code>file.image.lifecycle.v1</code>로 나뉩니다.
-					기존 legacy <code>image-topic</code> 발행은 제거했고 이미지 저장 완료 전달은 lifecycle topic이 담당합니다.
-				</p>
-				<div class="diagram">
-					<pre class="mermaid">
-flowchart TB
-	Client["Client Service"]
-	AdminUser["운영자"]
-	DevUser["개발자"]
-
-	subgraph Runtime["이미지 런타임 앱"]
-		Storage["storage<br/>업로드 삭제 내부조회"]
-		Resize["resize<br/>내부 전용 sharp 리사이징"]
-		Cache["cache<br/>외부 조회 진입점"]
-	end
-
-	subgraph Control["관리와 관측"]
-		Telemetry["telemetry-api<br/>registry ingestion query"]
-		AdminWeb["admin-web<br/>운영 화면"]
-	end
-
-	subgraph TestTool["로컬 점검 도구"]
-		Tester["lifecycle-consumer-tester<br/>Kafka consume and HTTP status"]
-		AsyncApi["AsyncAPI contract<br/>file-image-lifecycle"]
-	end
-
-	subgraph Infra["인프라"]
-		Database["PostgreSQL<br/>Prisma"]
-		EventsTopic["Kafka topic<br/>file.image.events.v1"]
-		LifecycleTopic["Kafka topic<br/>file.image.lifecycle.v1"]
-		Volume["Docker volume<br/>file_dump_volume"]
-	end
-
-	Client -->|"upload/delete x-client-api-key"| Storage
-	Client -->|"image read x-client-api-key"| Cache
-	Storage -->|"원본/variant 파일 저장"| Volume
-	Cache -->|"cache miss x-internal-api-key + signed context"| Resize
-	Resize -->|"x-internal-api-key + signed context"| Storage
-	Storage -->|"telemetry"| EventsTopic
-	Resize -->|"telemetry"| EventsTopic
-	Cache -->|"telemetry"| EventsTopic
-	Storage -->|"upload lifecycle outbox publish"| LifecycleTopic
-	Telemetry -->|"consume telemetry"| EventsTopic
-	Telemetry -->|"consume lifecycle"| LifecycleTopic
-	Telemetry -->|"DB read/write"| Database
-	Storage -->|"API key, outbox, resize policy lookup"| Database
-	Cache -->|"API key lookup"| Database
-	AdminUser --> AdminWeb
-	AdminWeb -->|"x-admin-token"| Telemetry
-	Client -->|"own consumer group"| LifecycleTopic
-	DevUser --> Tester
-	AsyncApi --> Tester
-	Tester -->|"consume for local check"| LifecycleTopic
-					</pre>
-				</div>
-			</section>
-
-			<section class="card">
-				<h2>2. 앱별 책임</h2>
-				<div class="grid">
-					<div class="info">
-						<strong>storage</strong>
-						원본 업로드/삭제, 내부 원본/variant 조회, telemetry 발행,
-						lifecycle outbox 저장/재시도, pre-generate variant 생성을 담당합니다.
-					</div>
-					<div class="info">
-						<strong>resize</strong>
-						cache miss 때 내부 호출로만 진입하며, storage에서 원본/variant를 가져와
-						on-demand 리사이징 또는 pre-generated pass-through를 수행합니다.
-					</div>
-					<div class="info">
-						<strong>cache</strong>
-						외부 Client Service의 이미지 조회 진입점입니다. on-demand resize 결과를
-						NodeCache 메모리에 저장하며 서버 재시작 시 캐시는 사라집니다.
-					</div>
-					<div class="info">
-						<strong>telemetry-api</strong>
-						Client Service/API key/subscription/resize policy 관리, Kafka consumer,
-						event 저장, dashboard와 추천 API를 제공합니다.
-					</div>
-					<div class="info">
-						<strong>admin-web</strong>
-						서비스 레지스트리, API key, lifecycle subscription, 리사이징 정책,
-						추천 반영, dashboard/events/images/lifecycle 조회 화면을 제공합니다.
-					</div>
-					<div class="info">
-						<strong>lifecycle-consumer-tester</strong>
-						<code>file.image.lifecycle.v1</code>을 실제 Client Service처럼 consume하고
-						수신 이벤트를 메모리에 저장해 <code>/health</code>, <code>/consumer/status</code>,
-						<code>/events</code>로 확인하는 로컬 점검 앱입니다.
-					</div>
-					<div class="info">
-						<strong>docs / AsyncAPI</strong>
-						<code>docs/asyncapi/file-image-lifecycle.asyncapi.yaml</code>이
-						Client Service 소비용 lifecycle payload 계약을 문서화합니다.
-					</div>
-					<div class="info">
-						<strong>libs</strong>
-						PrismaService, API key hash/verify, Client Service guard, internal guard, request context,
-						telemetry/lifecycle event contract를 공유합니다.
-					</div>
-				</div>
-			</section>
-
-			<section class="card">
-				<h2>3. 공통 계약과 로그 기준</h2>
-				<p>
-					표준 telemetry payload는 <code>@file/telemetry-contracts/events</code>,
-					Client Service 소비용 lifecycle payload는 <code>@file/telemetry-contracts/lifecycle</code>이
-					런타임 검증 기준입니다. lifecycle Kafka 계약은
-					<code>docs/asyncapi/file-image-lifecycle.asyncapi.yaml</code>로도 문서화하며,
-					contract drift 테스트로 핵심 topic/event/schema 값이 어긋나지 않게 확인합니다.
-				</p>
-				<div class="grid">
-					<div class="info">
-						<strong>Request logging</strong>
-						<code>storage</code>, <code>resize</code>, <code>cache</code>,
-						<code>telemetry-api</code>, <code>lifecycle-consumer-tester</code>는
-						<code>@file/nest-common</code>의 <code>LoggerModule</code>을 사용합니다.
-					</div>
-					<div class="info">
-						<strong>Lifecycle tester log</strong>
-						tester는 lifecycle event 저장/필터 스킵 시 <code>eventId</code>,
-						<code>eventType</code>, <code>clientService</code>, <code>imageKey</code>,
-						Kafka offset을 콘솔에 남깁니다.
-					</div>
-					<div class="info">
-						<strong>Tester docs</strong>
-						consumer tester의 env, 실행 명령, 확인 API, 로그 확인법은
-						<code>apps/lifecycle-consumer-tester/README.md</code>에 둡니다.
-					</div>
-				</div>
-			</section>
-
-			<section class="card">
-				<h2>4. 신규 Client Service 추가와 재시작 기준</h2>
-				<p>
-					새 서비스는 admin API 또는 admin-web에서 DB에 등록하고 API key를 발급하면
-					됩니다. 외부 진입점인 <code>storage</code> 업로드/삭제와 <code>cache</code> 조회는
-					요청마다 key prefix와 hash를 DB에서 조회하므로 서비스 추가만으로는 재시작이 필요 없습니다.
-					<code>resize</code> GET과 <code>storage</code> GET은 내부 호출만 허용하며, cache가 전달한
-					서명된 client context로 서비스 식별자를 이어받습니다.
+					이미지 파일 자체만 저장하고 telemetry에서 현재 이미지를 추론하던
+					구조를, PostgreSQL metadata와 filesystem object를 함께 관리하는 명시적
+					수명주기로 변경했습니다. 작업 단계 번호는 계획 문서의 이력에만 남기고
+					운영 코드·명령·환경변수·metric은 기능명으로 통일합니다.
 				</p>
 				<table>
 					<thead>
 						<tr>
-							<th>대상</th>
-							<th>신규 서비스 후 재시작</th>
-							<th>재시작이 필요한 경우</th>
+							<th>영역</th>
+							<th>이전</th>
+							<th>현재</th>
 						</tr>
 					</thead>
 					<tbody>
 						<tr>
-							<td>storage / resize / cache</td>
-							<td>불필요</td>
-							<td><code>DATABASE_URL</code>, <code>CLIENT_API_KEY_PEPPER</code>, <code>INTERNAL_API_KEY</code>, 서버 URL, Kafka broker, 코드 변경</td>
+							<td>이미지 원장</td>
+							<td>telemetry/lifecycle event에서 활성 이미지를 추론</td>
+							<td>
+								<code>ImageAsset</code>이 원본의 권위 source,
+								<code>ImageVariant</code>가 파생 파일 상태를 관리
+							</td>
 						</tr>
 						<tr>
-							<td>telemetry-api</td>
-							<td>불필요</td>
-							<td>DB/Admin token/Kafka 설정, Prisma migration, 코드 변경</td>
+							<td>업로드</td>
+							<td>파일 저장 후 후속 작업을 직접 수행</td>
+							<td>
+								Pending metadata → stage write → 검증 → atomic rename →
+								Ready/outbox transaction
+							</td>
 						</tr>
 						<tr>
-							<td>admin-web</td>
-							<td>불필요</td>
-							<td><code>TELEMETRY_API_BASE_URL</code>, <code>TELEMETRY_ADMIN_TOKEN</code>, 코드 변경</td>
+							<td>PRE_GENERATE</td>
+							<td>업로드 요청 안에서 동기 Sharp 처리</td>
+							<td>
+								Ready 이후 durable variant job을 Kafka로 전달하고 worker가
+								비동기 생성
+							</td>
 						</tr>
 						<tr>
-							<td>Kafka</td>
-							<td>불필요</td>
-							<td>topic 최초 생성, broker/보안/ACL 정책 변경</td>
+							<td>삭제</td>
+							<td>filesystem/cache 인스턴스에 즉시 삭제 요청</td>
+							<td>
+								Deleting → Deleted 상태 전이, 모든 variant와 Kafka cache
+								invalidation을 하나의 eventId로 추적
+							</td>
+						</tr>
+						<tr>
+							<td>복구</td>
+							<td>운영자가 파일과 DB를 수동 비교</td>
+							<td>
+								lease 기반 reconciliation이 stale Pending, orphan, missing file,
+								Deleting, checksum 불일치를 반복 복구
+							</td>
+						</tr>
+						<tr>
+							<td>운영 명칭</td>
+							<td>구현 단계 번호가 파일·환경변수·metric에 노출</td>
+							<td>
+								<code>image-lifecycle</code>, <code>image-asset</code>,
+								<code>imageLifecycle</code>처럼 기능 중심 이름 사용
+							</td>
+						</tr>
+					</tbody>
+				</table>
+				<div class="ok">
+					현재 추적 파일과 런타임 식별자에는 단계 번호 기반 이름이 없습니다.
+					계획 문서의 “단계 5” 표현은 구현 순서를 설명하는 이력일 뿐 런타임
+					계약이 아닙니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>2. 전체 런타임 구조</h2>
+				<p>
+					외부 조회 진입점은 <code>cache</code>, 업로드·삭제 진입점은
+					<code>storage</code>입니다. <code>resize</code>와 storage 내부 GET은
+					내부 API key와 서명된 tenant context로만 호출됩니다. variant worker와
+					reconciliation scheduler는 현재 storage 프로세스에 함께 배치되지만, DB
+					lease/CAS와 Kafka consumer group으로 중복 실행을 제어합니다.
+				</p>
+				<h3>전체 플로우 한눈에 보기</h3>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart TB
+Client["Client Service"]
+Operator["Operator"]
+AdminWeb["admin-web"]
+Cache["cache"]
+Resize["resize"]
+Storage["storage"]
+Kafka["Kafka<br/>— events · lifecycle · jobs · invalidation"]
+Telemetry["telemetry-api"]
+VariantWorker["variant worker"]
+CacheConsumer["cache invalidation consumer"]
+Reconciler["reconciler"]
+DB[("PostgreSQL<br/>— metadata · outbox · jobs")]
+FS[("filesystem<br/>— source · variants")]
+CacheMemory[("cache memory")]
+Client -->|"GET"| Cache -->|"miss"| Resize -->|"internal GET"| Storage
+Client -->|"upload / delete"| Storage
+Cache --> CacheMemory
+Storage --> DB
+Storage --> FS
+Storage --> Kafka
+Kafka --> Telemetry --> DB
+Kafka --> VariantWorker
+Kafka --> CacheConsumer --> CacheMemory
+VariantWorker --> DB
+VariantWorker --> FS
+Reconciler --> DB
+Reconciler --> FS
+Operator --> AdminWeb --> Telemetry
+</pre>
+				</div>
+				<h3>동기 HTTP 경로</h3>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart LR
+Client["Client Service"]
+Cache["cache"]
+Resize["resize"]
+Storage["storage"]
+DB[("PostgreSQL")]
+FS[("filesystem")]
+Client -->|"GET"| Cache
+Cache -->|"cache miss"| Resize
+Resize -->|"internal GET"| Storage
+Client -->|"upload / delete"| Storage
+Cache -->|"API key"| DB
+Storage -->|"metadata"| DB
+Storage -->|"object I/O"| FS
+</pre>
+				</div>
+				<h3>비동기 전달과 복구 경로</h3>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart TB
+Storage["storage transaction"]
+Outbox["Lifecycle outbox"]
+Lifecycle["Lifecycle topic"]
+Telemetry["telemetry-api"]
+Ledger["Variant job ledger"]
+Jobs["Variant job topic"]
+Worker["Variant worker"]
+FS[("filesystem")]
+Invalidation["Invalidation topic"]
+Caches["Cache replicas"]
+Reconciler["Reconciler"]
+Storage --> Outbox --> Lifecycle --> Telemetry
+Storage --> Ledger --> Jobs --> Worker
+Worker --> FS
+Worker --> Invalidation --> Caches
+Reconciler --> Ledger
+Reconciler --> FS
+</pre>
+				</div>
+				<div class="warn">
+					filesystem이 첫 storage adapter입니다. Object storage, CDN, 분산
+					cache/lock은 현재 구조에 포함하지 않습니다. 따라서 여러 storage
+					호스트가 서로 다른 로컬 디스크를 사용하는 구성은 지원하지 않습니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>3. 계속 보존되는 공통 계약</h2>
+				<div class="grid">
+					<div class="info">
+						<strong>Tenant namespace</strong>
+						모든 image path는 <code>clientServiceId</code> 정책과 namespace
+						검증을 통과해야 합니다. 다른 tenant의 path/imageKey 접근은
+						403입니다.
+					</div>
+					<div class="info">
+						<strong>Signed internal context</strong>
+						cache → resize → storage 내부 호출은 internal API key와 서명된
+						tenant context를 함께 전달합니다.
+					</div>
+					<div class="info">
+						<strong>Multipart path-before-file</strong>
+						업로드 parser는 path field가 file part보다 먼저 도착해야만 파일을
+						수락합니다.
+					</div>
+					<div class="info">
+						<strong>Event delivery</strong>
+						공용 event contract, <code>eventId</code> 멱등성, manual offset
+						commit, retry/DLQ/terminal failure 의미를 유지합니다.
+					</div>
+					<div class="info">
+						<strong>Query contract</strong>
+						PostgreSQL filtering/aggregation, opaque keyset cursor, bounded
+						take와 legacy numeric cursor adapter를 유지합니다.
+					</div>
+					<div class="info">
+						<strong>HTTP resilience</strong>
+						기본 2초 timeout, AbortSignal, GET-only bounded retry와
+						401/403/404/502/503/504 status 보존을 유지합니다.
+					</div>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>4. 앱과 모듈의 책임</h2>
+				<div class="grid">
+					<div class="info">
+						<strong>storage</strong>
+						staged upload/delete, authoritative metadata transaction, filesystem
+						adapter, lifecycle outbox, variant job publish/consume,
+						reconciliation과 내부 Ready object 조회를 담당합니다.
+					</div>
+					<div class="info">
+						<strong>resize</strong>
+						cache miss에서만 내부 호출되며 Ready source/variant를 읽어
+						pass-through 또는 on-demand Sharp 처리를 수행합니다.
+					</div>
+					<div class="info">
+						<strong>cache</strong>
+						외부 GET 진입점입니다. tenant/image/variant singleflight, 총 byte
+						budget eviction과 Kafka invalidation consumer를 가집니다.
+					</div>
+					<div class="info">
+						<strong>telemetry-api</strong>
+						telemetry/lifecycle Kafka consumer, PostgreSQL query/aggregation,
+						authoritative admin image 목록, retention과 운영 health를
+						제공합니다.
+					</div>
+					<div class="info">
+						<strong>admin-web</strong>
+						서비스/API key/subscription/resize policy 관리와 dashboard, event,
+						active image, lifecycle 상태를 표시합니다.
+					</div>
+					<div class="info">
+						<strong>공유 library</strong>
+						<code>@file/database</code>가 metadata repository를,
+						<code>@file/telemetry-contracts</code>가
+						lifecycle/variant/invalidation payload를,
+						<code>@file/image-contracts</code>가 path와 storage key 규칙을
+						제공합니다.
+					</div>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>5. Staged upload와 성공 시점</h2>
+				<p>
+					같은 <code>(clientServiceId, logicalPath, name)</code>은 하나의
+					asset으로 수렴합니다. HTTP 201은 source가 Ready가 되고 lifecycle
+					outbox·variant job ledger가 같은 DB transaction에서 commit된 뒤에만
+					반환됩니다. variant 생성과 Kafka/cache 전파 완료까지 의미하지는
+					않습니다.
+				</p>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart TB
+Request["1. Upload request"]
+Pending["2. ImageAsset Pending"]
+Stage["3. Stage file write"]
+Verify["4. Checksum + metadata validation"]
+Promote["5. Atomic rename"]
+Commit["6. Ready + outbox + jobs transaction"]
+Response["7. HTTP 201"]
+Async["Lifecycle / variant async delivery"]
+Request --> Pending --> Stage --> Verify --> Promote --> Commit --> Response
+Commit --> Async
+</pre>
+				</div>
+				<div class="note">
+					동일 idempotency key 재시도는 같은
+					<code>assetId</code>/<code>imageKey</code>와 성공
+					<code>eventId</code>로 수렴합니다. 아직 업로드되지 않은 다른 byte
+					payload를 같은 key로 보내는 경우에는 호출자가 idempotency key를 새로
+					발급해야 합니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>6. Asset / Variant / Job 상태 기계</h2>
+				<div class="diagram">
+					<pre class="mermaid">
+stateDiagram-v2
+state "ImageAsset" as Asset {
+[*] --> Pending
+Pending --> Ready: promote + DB transaction
+Pending --> Failed: validation/storage/transaction failure
+Ready --> Deleting: delete requested
+Failed --> Deleting: delete requested
+Deleting --> Deleted: source + variants removed
+Deleting --> Deleting: retry/reconciliation
+}
+state "ImageVariant" as Variant {
+[*] --> VariantPending
+VariantPending --> VariantReady: checksum-valid write + CAS
+VariantPending --> VariantFailed: terminal generation failure
+VariantReady --> VariantDeleting
+VariantFailed --> VariantDeleting
+VariantDeleting --> VariantDeleted
+}
+state "ImageVariantJob" as Job {
+[*] --> JobPending
+JobPending --> Processing: worker claim
+Processing --> Completed: variant Ready
+Processing --> JobFailed: bounded attempts exhausted
+JobPending --> Cancelled: source deleted/checksum changed
+Processing --> Cancelled: stale completion fence
+}
+</pre>
+				</div>
+				<table>
+					<thead>
+						<tr>
+							<th>식별자/상태</th>
+							<th>계약</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td><code>assetId</code></td>
+							<td>metadata의 안정적인 권위 식별자입니다.</td>
+						</tr>
+						<tr>
+							<td><code>imageKey</code></td>
+							<td>
+								기존 HTTP/Kafka consumer가 사용하는 논리적 storage 주소이며 전환
+								기간 동안 계속 제공됩니다.
+							</td>
+						</tr>
+						<tr>
+							<td><code>sourceChecksum</code></td>
+							<td>
+								variant가 어느 source version에서 생성됐는지 고정합니다. 불일치
+								variant는 제공하지 않습니다.
+							</td>
+						</tr>
+						<tr>
+							<td><code>Deleted</code></td>
+							<td>admin active image 목록과 내부 GET에서 제외됩니다.</td>
+						</tr>
+						<tr>
+							<td>job key</td>
+							<td>
+								<code>assetId + width + height + format + sourceChecksum</code>
+								조합으로 멱등 처리합니다.
+							</td>
 						</tr>
 					</tbody>
 				</table>
 			</section>
 
 			<section class="card">
-				<h2>5. 업로드와 lifecycle outbox 플로우</h2>
-				<p>
-					업로드 성공/실패 lifecycle event는 먼저 <code>image_lifecycle_outbox</code>에
-					저장된 뒤 Kafka로 발행됩니다. 발행 실패 시 scheduled publisher가 재시도하고,
-					전달 보장은 at-least-once입니다. Client Service는 <code>eventId</code>를
-					idempotency key로 처리해야 합니다.
-				</p>
-				<div class="diagram">
-					<pre class="mermaid">
-sequenceDiagram
-	autonumber
-	participant C as ClientService
-	participant S as Storage
-	participant DB as PostgreSQL
-	participant K as Kafka
-	participant T as TelemetryAPI
-	participant CS as ClientConsumer
-
-	C->>S: POST /image with x-client-api-key
-	S->>DB: API key and service status lookup
-	S->>S: temp file write and sharp normalize
-	S->>S: save original to assets volume
-	S->>DB: insert image_lifecycle_outbox
-	S->>K: publish file.image.events.v1
-	S-->>C: 201 Created
-	S->>DB: read pre-generate policy
-	alt mode is PRE_GENERATE
-		S->>S: create active resize variants
-		S->>K: publish image.resize.completed or failed telemetry
-	else mode is ON_DEMAND
-		S->>S: keep upload-only flow
-	end
-	S->>K: outbox publisher sends file.image.lifecycle.v1
-	T->>K: consume telemetry and lifecycle topics
-	T->>DB: save telemetry_events and image_lifecycle_events
-	CS->>K: consume lifecycle with own consumer group
-					</pre>
-				</div>
-				<div class="note">
-					현재 pre-generate 파일명은 원본과 같은 directory에
-					<code>&lt;원본&gt;__w&lt;width|auto&gt;_h&lt;height|auto&gt;.&lt;format&gt;</code>
-					형태로 저장됩니다. Client Service는 cache로 조회하고, 내부 storage 조회에서
-					같은 width/height/format의 variant 파일을 먼저 반환합니다. 없으면 resize가 기존 on-demand 흐름으로 fallback합니다.
-				</div>
-			</section>
-
-			<section class="card">
-				<h2>6. 조회 / resize / cache 플로우</h2>
-				<div class="diagram">
-					<pre class="mermaid">
-sequenceDiagram
-	autonumber
-	participant C as ClientService
-	participant Ca as Cache
-	participant R as Resize
-	participant S as Storage
-	participant K as Kafka
-	participant T as TelemetryAPI
-	participant DB as PostgreSQL
-
-	C->>Ca: GET image with x-client-api-key and width height format
-	Ca->>DB: API key lookup
-	Ca->>Ca: cache key lookup
-	alt cache hit
-		Ca->>K: image.cache.hit
-		Ca-->>C: cached image buffer
-	else cache miss
-		Ca->>K: image.cache.miss
-		Ca->>R: x-internal-api-key + signed client context
-		R->>R: verify internal key and context signature
-		R->>S: x-internal-api-key + signed context + variant params
-		S->>S: verify internal key and context signature
-		S->>DB: pre-generate policy lookup
-		alt matching pre-generated variant file exists
-			S-->>R: variant image buffer with variant headers
-			R->>K: image.resize.completed as pre-generated pass-through
-			R-->>Ca: variant image buffer without sharp resize
-		else no variant file
-			S-->>R: original image buffer
-			R->>R: sharp on-demand resize
-			R->>K: image.resize.completed or failed
-			R-->>Ca: resized image buffer
-		end
-		Ca->>Ca: store in memory cache
-		Ca->>K: image.cache.stored
-		Ca-->>C: image buffer
-	end
-	T->>K: consume file.image.events.v1
-	T->>DB: save telemetry_events
-					</pre>
-				</div>
-			</section>
-
-			<section class="card">
-				<h2>7. 주요 DB 테이블</h2>
-				<div class="diagram">
-					<pre class="mermaid">
-erDiagram
-	CLIENT_SERVICES ||--o{ CLIENT_SERVICE_KEYS : has
-	CLIENT_SERVICES ||--o{ CLIENT_SERVICE_POLICIES : has
-	CLIENT_SERVICES ||--o{ CLIENT_SERVICE_LIFECYCLE_SUBSCRIPTIONS : has
-	CLIENT_SERVICES ||--|| CLIENT_SERVICE_IMAGE_RESIZE_POLICIES : has
-	CLIENT_SERVICE_IMAGE_RESIZE_POLICIES ||--o{ CLIENT_SERVICE_IMAGE_RESIZE_VARIANTS : has
-	CLIENT_SERVICES ||--o{ TELEMETRY_EVENTS : emits
-	CLIENT_SERVICES ||--o{ IMAGE_LIFECYCLE_EVENTS : emits
-
-	CLIENT_SERVICES {
-		string id PK
-		string slug UK
-		string name
-		string status
-		string owner
-	}
-
-	CLIENT_SERVICE_KEYS {
-		string id PK
-		string client_service_id FK
-		string key_prefix UK
-		string key_hash UK
-		datetime revoked_at
-		datetime expires_at
-	}
-
-	CLIENT_SERVICE_LIFECYCLE_SUBSCRIPTIONS {
-		string id PK
-		string client_service_id FK
-		string event_type
-		string consumer_group
-		boolean is_enabled
-	}
-
-	CLIENT_SERVICE_IMAGE_RESIZE_POLICIES {
-		string id PK
-		string client_service_id UK
-		string mode
-	}
-
-	CLIENT_SERVICE_IMAGE_RESIZE_VARIANTS {
-		string id PK
-		string policy_id FK
-		int width
-		int height
-		string format
-		boolean is_enabled
-	}
-
-	TELEMETRY_EVENTS {
-		string event_id UK
-		string event_type
-		string source_app
-		string client_service_id FK
-		string image_key
-		int width
-		int height
-		float duration_ms
-		string cache_key
-	}
-
-	IMAGE_LIFECYCLE_EVENTS {
-		string event_id UK
-		string event_type
-		string client_service_id FK
-		string image_key
-		string status
-	}
-
-	IMAGE_LIFECYCLE_OUTBOX {
-		string event_id UK
-		string topic
-		string kafka_key
-		json payload
-		string status
-		int attempts
-		datetime next_attempt_at
-	}
-					</pre>
-				</div>
-				<p>
-					DB 물리 이름은 PostgreSQL 관례에 맞춰 <code>snake_case</code>입니다.
-					Prisma 모델명은 타입 친화적인 PascalCase를 사용하지만 실제 테이블은
-					<code>client_services</code>, <code>telemetry_events</code>처럼 생성됩니다.
-				</p>
-			</section>
-
-			<section class="card">
-				<h2>8. 리사이징 정책과 추천</h2>
-				<p>
-					Client Service별 정책은 <code>ON_DEMAND</code> 또는 <code>PRE_GENERATE</code>입니다.
-					<code>PRE_GENERATE</code>에서는 업로드 직후 활성 variant(width/height/format)를
-					미리 생성하고, 결과는 telemetry event로 남깁니다. 추천 API는 과거
-					on-demand resize 성공 이벤트 중 <code>cacheKey</code>가 없는 요청만 집계하여
-					pre-generate 후보를 보여줍니다.
-				</p>
+				<h2>7. 조회, resize와 cache 복원력</h2>
+				<h3>Cache hit/miss와 singleflight</h3>
 				<div class="diagram">
 					<pre class="mermaid">
 flowchart LR
-	Events["telemetry_events<br/>image.resize.completed"]
-	Filter["exclude pre-generated telemetry<br/>cacheKey is empty"]
-	Aggregate["group by clientService + width + height + format"]
-	Score["requestCount imageCount duration sum"]
-	API["telemetry-api<br/>image-resize-recommendations"]
-	Admin["admin-web<br/>resize recommendations"]
-	Policy["DB policy<br/>PRE_GENERATE variant"]
-
-	Events --> Filter
-	Filter --> Aggregate
-	Aggregate --> Score
-	Score --> API
-	API --> Admin
-	Admin -->|"운영자 클릭"| Policy
-					</pre>
+Client["Client"]
+Lookup["Cache lookup"]
+Return["Return bytes"]
+Flight["Join singleflight"]
+Resize["Call resize"]
+Store["Byte-budget store"]
+Client --> Lookup
+Lookup -->|"hit"| Return
+Lookup -->|"miss"| Flight --> Resize --> Store --> Return
+</pre>
 				</div>
-			</section>
-
-			<section class="card">
-				<h2>9. admin-web 운영 화면</h2>
+				<h3>Storage의 source 선택</h3>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart TB
+Request["Internal GET"]
+Asset["Query Ready asset"]
+Variant{"Matching Ready variant?"}
+VariantFile["Read variant"]
+SourceFile["Read source"]
+Pass["Pass through"]
+Sharp["On-demand Sharp"]
+Request --> Asset --> Variant
+Variant -->|"yes"| VariantFile --> Pass
+Variant -->|"no"| SourceFile --> Sharp
+</pre>
+				</div>
 				<ul>
-					<li><code>/dashboard</code>: 서비스별 KPI, cache hit/miss, resize/upload 추이</li>
-					<li><code>/events</code>: 표준 telemetry event 조회와 필터</li>
-					<li><code>/lifecycle-events</code>: upload completed/failed 업무 이벤트 조회</li>
-					<li><code>/images</code>: imageKey별 요청/resize/cache/failure 집계</li>
-					<li><code>/services</code>: 서비스, API key, lifecycle subscription, 리사이징 정책 관리</li>
-					<li><code>/resize-recommendations</code>: pre-generate 후보 조회와 정책 반영</li>
+					<li>
+						cache → resize → storage 기본 deadline은 2초이며 모두
+						<code>AbortSignal</code>을 전달합니다.
+					</li>
+					<li>
+						자동 retry는 멱등 GET에만 1~2회 bounded backoff로 적용합니다.
+						upload/delete에는 적용하지 않습니다.
+					</li>
+					<li>
+						401/403, 404, timeout 504, upstream 5xx의 502/503 의미를 404로
+						덮어쓰지 않습니다.
+					</li>
+					<li>
+						singleflight pending entry는 성공·실패 모두 <code>finally</code>에서
+						제거하며 자체 timeout을 가집니다.
+					</li>
+					<li>
+						response bytes, image pixel 수와 Sharp concurrency에 상한이
+						있습니다.
+					</li>
 				</ul>
 			</section>
 
 			<section class="card">
-				<h2>10. 실서버 저장 위치</h2>
+				<h2>8. Delete, cache invalidation과 reconciliation</h2>
 				<p>
-					<code>.github/workflows/storage.yml</code> 기준 production storage 컨테이너는
-					Docker named volume <code>file_dump_volume</code>을 assets 경로에 mount합니다.
+					삭제는 filesystem HTTP 호출 하나의 성공 여부가 아니라 metadata state
+					machine으로 관리합니다. 하나의 delete <code>eventId</code>가 source,
+					모든 variant, cache key, metadata와 lifecycle outbox를 연결합니다.
+				</p>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart TB
+Request["Delete request"]
+Deleting["CAS asset to Deleting"]
+Remove["Remove source + variants"]
+Commit["Commit Deleted + outbox"]
+Success["HTTP success"]
+Invalidate["Kafka invalidation"]
+Caches["All cache replicas"]
+Retry["Keep Deleting"]
+Reconcile["Lease-based reconciliation"]
+Request --> Deleting --> Remove --> Commit --> Success
+Commit --> Invalidate --> Caches
+Remove -->|"failure"| Retry --> Reconcile --> Remove
+</pre>
+				</div>
+				<div class="grid">
+					<div class="info">
+						<strong>탐지 대상</strong>오래된 staging/temp, stale Pending,
+						metadata 없는 file, file 없는 Ready, 미완료 Deleting, source
+						checksum 불일치 variant
+					</div>
+					<div class="info">
+						<strong>동시성</strong>DB lease, lock timeout, bounded batch/sleep과
+						CAS로 여러 scheduler가 실행돼도 같은 결과로 수렴
+					</div>
+					<div class="info">
+						<strong>SLA</strong>기본 5분 안에 stale state를 탐지하며
+						주기·SLA·batch·sleep·lease는 환경변수로 조정
+					</div>
+					<div class="info">
+						<strong>Metric</strong><code>supported=true</code>,
+						orphan/repaired/failed count, oldest Pending/Deleting age, lastRunAt
+					</div>
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>9. 주요 PostgreSQL 모델</h2>
+				<h3>권위 metadata와 관측 데이터의 관계</h3>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart LR
+Service["ClientService"]
+Asset["ImageAsset"]
+Variant["ImageVariant"]
+Job["ImageVariantJob"]
+Outbox["Lifecycle Outbox"]
+Telemetry["TelemetryEvent"]
+Lifecycle["LifecycleEvent"]
+Admin["Admin image view"]
+Service --> Asset --> Variant --> Job
+Asset --> Outbox
+Service --> Telemetry
+Service --> Lifecycle
+Asset --> Admin
+Telemetry -. "usage / performance" .-> Admin
+</pre>
+				</div>
+				<ul>
+					<li>
+						<code>(clientServiceId, logicalPath, name)</code>은 unique입니다.
+					</li>
+					<li>
+						variant specification은 asset, width, height, format, sourceChecksum
+						조합으로 중복을 막습니다.
+					</li>
+					<li>
+						admin 이미지 목록은 <code>ImageAsset</code>을 먼저 조회하고
+						telemetry는 사용량·성능 정보만 결합합니다.
+					</li>
+					<li>
+						event/lifecycle 목록, dashboard, time series, top images와 추천은
+						PostgreSQL filtering/aggregation을 사용합니다.
+					</li>
+				</ul>
+			</section>
+
+			<section class="card">
+				<h2>10. Kafka topic, outbox와 실패 의미</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>Topic</th>
+							<th>책임</th>
+							<th>실패 처리</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td><code>file.image.events.v1</code></td>
+							<td>요청량, latency, cache/resize/upload telemetry</td>
+							<td>manual commit, bounded retry, telemetry DLQ</td>
+						</tr>
+						<tr>
+							<td><code>file.image.lifecycle.v1</code></td>
+							<td>upload/delete completed/failed 업무 이벤트</td>
+							<td>
+								destination별 outbox 상태, retry, dead-letter; consumer는
+								eventId 멱등 처리
+							</td>
+						</tr>
+						<tr>
+							<td><code>file.image.variant.jobs.v1</code></td>
+							<td>Ready source의 비동기 variant 생성</td>
+							<td>job CAS, retry/DLQ, terminal Failed/Cancelled</td>
+						</tr>
+						<tr>
+							<td><code>file.image.cache-invalidation.v1</code></td>
+							<td>delete/variant-ready를 모든 cache replica에 반영</td>
+							<td>outbox at-least-once, replica consumer DLQ</td>
+						</tr>
+					</tbody>
+				</table>
+				<div class="note">
+					Lifecycle public contract는 <code>image.upload.completed</code>,
+					<code>image.upload.failed</code>, <code>image.delete.completed</code>,
+					<code>image.delete.failed</code> 네 종류입니다. Telemetry는 권위
+					상태가 아니라 사용량과 성능 관측용입니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>11. Health, metric과 DB 조회</h2>
+				<div class="grid">
+					<div class="info">
+						<strong><code>/health/live</code></strong>
+						프로세스 event loop와 HTTP server가 살아 있는지만 나타냅니다. 외부
+						의존성 장애로 false가 되지 않습니다.
+					</div>
+					<div class="info">
+						<strong><code>/health/ready</code></strong>
+						PostgreSQL, Kafka, 필수 upstream, filesystem/storage probe와 image
+						lifecycle backlog 기준을 반영합니다.
+					</div>
+					<div class="info">
+						<strong>Kafka</strong>
+						broker end offset과 consumer group committed offset으로 실제 lag를
+						계산합니다. reconnect 중에는 ready=false입니다.
+					</div>
+					<div class="info">
+						<strong><code>operationalMetrics.imageLifecycle</code></strong>
+						asset/variant/job 상태 count, oldest active age, reconciliation과
+						runtime job/invalidation/delete metric을 제공합니다.
+					</div>
+				</div>
+				<p>
+					telemetry/lifecycle 목록은 <code>(occurredAt, eventId)</code> opaque
+					keyset cursor와 bounded take를 사용합니다. filter, sort, pagination과
+					dashboard aggregation은 Node memory가 아니라 PostgreSQL에서
+					수행합니다. Retention은 telemetry 90일, published outbox 30일
+					기본값으로 batch/sleep/lock timeout을 적용하며 unpublished outbox는
+					삭제하지 않습니다.
+				</p>
+				<div class="warn">
+					readiness 실패는 이미지 404가 아닙니다. 호출자는 503/timeout을 재시도
+					가능한 가용성 장애로 처리하고, 권한 오류와 실제 404를 구분해야 합니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>12. 기능 중심 이름과 전환 명령</h2>
+				<p>
+					단계 번호는 일시적인 계획 정보이므로 영구 파일명이나 API contract에
+					사용하지 않습니다. 다른 프로젝트는 아래의 현재 이름만 사용해야 합니다.
+				</p>
+				<table>
+					<thead>
+						<tr>
+							<th>구분</th>
+							<th>폐기된 단계명</th>
+							<th>현재 기능명</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr>
+							<td>health module</td>
+							<td><code>image-stage5.health.ts</code></td>
+							<td><code>image-lifecycle-health.service.ts</code></td>
+						</tr>
+						<tr>
+							<td>metrics module</td>
+							<td><code>image-stage5.metrics.ts</code></td>
+							<td><code>image-lifecycle-metrics.service.ts</code></td>
+						</tr>
+						<tr>
+							<td>backfill</td>
+							<td><code>stage5-backfill-assets.mjs</code></td>
+							<td><code>image-asset-backfill.mjs</code></td>
+						</tr>
+						<tr>
+							<td>system E2E</td>
+							<td><code>stage5-system-e2e.mjs</code></td>
+							<td><code>image-lifecycle-system-e2e.mjs</code></td>
+						</tr>
+						<tr>
+							<td>runtime flag</td>
+							<td><code>STAGE5_ASSET_*</code></td>
+							<td><code>IMAGE_ASSET_*</code></td>
+						</tr>
+						<tr>
+							<td>runtime metric</td>
+							<td><code>operationalMetrics.stage5</code></td>
+							<td><code>operationalMetrics.imageLifecycle</code></td>
+						</tr>
+					</tbody>
+				</table>
+				<pre class="code">
+# Expand migration
+pnpm db:migrate:deploy
+
+# Idempotent asset backfill
+IMAGE_ASSET_BACKFILL_ENABLED=true pnpm db:backfill:image-assets
+
+# PostgreSQL/Kafka lifecycle system E2E
+pnpm test:image-lifecycle:system:e2e</pre>
+				<p>
+					현재 migration 이름은
+					<code>000010_add_authoritative_image_assets</code>,
+					<code>000011_add_image_asset_backfill_indexes</code>입니다. 이전
+					단계명 migration을 이미 적용한 DB에는 새 migration을 그대로 재적용하지
+					말고 migration ledger를 먼저 조정해야 합니다.
+				</p>
+			</section>
+
+			<section class="card">
+				<h2>13. 배포, rollback과 검증 순서</h2>
+				<ol>
+					<li>
+						두 expand migration을 적용하고 backfill index의
+						<code>indisvalid/indisready=true</code>를 확인합니다.
+					</li>
+					<li>
+						<code>IMAGE_ASSET_METADATA_WRITES_ENABLED=true</code>, dual-read
+						enabled 상태로 storage를 배포합니다.
+					</li>
+					<li>
+						dry-run 후 batch backfill을 반복 실행하고 snapshot이 완료됐는지
+						확인합니다.
+					</li>
+					<li>
+						variant worker와 reconciliation을 활성화하고 health/lag/DLQ를
+						관찰합니다.
+					</li>
+					<li>
+						writer와 inflight 요청을 drain하고 outbox backlog 0, Kafka high
+						watermark 도달과 consumer lag 0을 확인합니다.
+					</li>
+					<li>
+						ingestion drain confirmation을 설정한 final cutover audit에서 gap
+						0을 확인합니다.
+					</li>
+					<li>
+						storage와 telemetry-api의 dual-read를 함께 끄고 authoritative read로
+						전환합니다.
+					</li>
+					<li>
+						전환 기간이 끝난 뒤에만 legacy adapter/flag 제거를 별도 contract
+						작업으로 수행합니다.
+					</li>
+				</ol>
+				<div class="note">
+					Rollback은 schema나 backfilled row를 삭제하지 않습니다. dual-read를
+					다시 켜고 필요한 경우 metadata write를 잠시 끈 뒤, variant
+					worker/reconciliation을 중지해 기존 HTTP path로 복귀합니다.
+				</div>
+				<h3>검증 명령</h3>
+				<pre class="code">
+pnpm all:lint
+pnpm all:test
+pnpm test:component:e2e
+pnpm all:build
+pnpm test:image-lifecycle:system:e2e
+pnpm test:kafka:acl:e2e
+pnpm docker:build
+pnpm test:docker:smoke</pre>
+				<div class="ok">
+					상세 운영 절차는 <code>docs/image-asset-lifecycle-runbook.md</code>,
+					다른 프로젝트의 연동 계약은
+					<code>docs/file-server-integration-handoff.md</code>를 기준으로
+					합니다.
+				</div>
+			</section>
+
+			<section class="card">
+				<h2>14. Production filesystem 위치</h2>
+				<p>
+					현재 production storage 컨테이너는 Docker named volume
+					<code>file_dump_volume</code>을 assets 경로에 mount합니다. 컨테이너를
+					재생성해도 volume은 유지되지만 DB metadata와 filesystem backup/restore
+					시점을 함께 맞춰야 합니다.
 				</p>
 				<pre class="code">
 docker run -d \
@@ -664,28 +971,13 @@ docker run -d \
   -v file_dump_volume:/usr/index/apps/storage/dist/apps/storage/assets \
   -p ${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }} \
   --name file_server_storage \
-  --restart always ghcr.io/.../storage:latest</pre>
-				<div class="ok">
-					컨테이너를 삭제/재생성해도 <code>file_dump_volume</code>은 유지됩니다.
-					호스트 실제 경로는 <code>docker volume inspect file_dump_volume</code>으로 확인합니다.
-				</div>
-			</section>
+  --restart always ghcr.io/.../storage:latest
 
-			<section class="card">
-				<h2>11. end-to-end 점검 순서</h2>
-				<ol>
-					<li>PostgreSQL/Kafka topic을 준비하고 Prisma migration을 적용합니다.</li>
-					<li>telemetry-api를 켜고 Client Service를 등록한 뒤 API key를 발급합니다.</li>
-					<li>storage/resize/cache를 켜고 같은 <code>CLIENT_API_KEY_PEPPER</code>, <code>INTERNAL_API_KEY</code>와 DB를 보게 합니다.</li>
-					<li>API key로 storage 업로드/삭제와 cache 원본/리사이즈/cache hit/miss를 수행하고, resize/storage 직접 GET은 거부되는지 확인합니다.</li>
-					<li>Client Service consumer group 또는 <code>lifecycle-consumer-tester</code>로 <code>file.image.lifecycle.v1</code> 이벤트를 소비합니다.</li>
-					<li>admin-web에서 dashboard/events/lifecycle/images/services/recommendations를 확인합니다.</li>
-					<li><code>PRE_GENERATE</code> 정책을 켠 서비스 업로드에서 variant 생성과 resize telemetry를 확인합니다.</li>
-					<li>같은 width/height/format cache 조회가 pre-generated variant를 우선 반환하는지 확인합니다.</li>
-				</ol>
-				<div class="note">
-					명령어 기반 전체 점검은 repository 루트의 <code>INSPECT.md</code>,
-					lifecycle consumer tester 세부 실행법은 <code>apps/lifecycle-consumer-tester/README.md</code>를 기준으로 점검합니다.
+docker volume inspect file_dump_volume</pre>
+				<div class="warn">
+					다중 호스트 shared-filesystem failover와 운영 규모 장시간 soak/restart
+					검증은 아직 남아 있습니다. Object storage 전환 전까지 DB
+					backup만으로는 이미지 복구가 완결되지 않습니다.
 				</div>
 			</section>
 		</main>
@@ -694,9 +986,15 @@ docker run -d \
 			import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
 
 			mermaid.initialize({
-				startOnLoad: true,
+				startOnLoad: false,
 				theme: 'base',
 				securityLevel: 'loose',
+				flowchart: {
+					curve: 'linear',
+					nodeSpacing: 42,
+					rankSpacing: 54,
+					useMaxWidth: true,
+				},
 				themeVariables: {
 					primaryColor: '#eaf1ff',
 					primaryTextColor: '#172033',
@@ -708,6 +1006,19 @@ docker run -d \
 						'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 				},
 			});
+
+			const diagrams = [...document.querySelectorAll('.mermaid')];
+			for (const [index, diagram] of diagrams.entries()) {
+				const definition = diagram.textContent ?? '';
+				const { svg, bindFunctions } = await mermaid.render(
+					`architecture-diagram-${index + 1}`,
+					definition,
+				);
+				diagram.innerHTML = svg;
+				diagram.dataset.processed = 'true';
+				bindFunctions?.(diagram);
+			}
+			document.documentElement.dataset.mermaidReady = 'true';
 		</script>
 	</body>
 </html>

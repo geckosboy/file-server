@@ -18,7 +18,7 @@ export default function HomePage() {
 				</a>
 				<a className="panel" href="/lifecycle-events">
 					<h2>Lifecycle Events</h2>
-					<p>서비스 소비용 upload completed/failed 이벤트를 검색합니다.</p>
+					<p>서비스 소비용 upload/delete lifecycle 이벤트를 검색합니다.</p>
 				</a>
 				<a className="panel" href="/images">
 					<h2>Images</h2>

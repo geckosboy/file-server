@@ -120,7 +120,9 @@ describe('스토리지 앱 e2e', () => {
 	let imagePregenerationService: jest.Mocked<
 		Pick<
 			ImagePregenerationService,
-			'preGenerateForUpload' | 'findPreGeneratedVariantForRequest'
+			| 'preGenerateForUpload'
+			| 'assertSourceReadable'
+			| 'findPreGeneratedVariantForRequest'
 		>
 	>;
 	let authService: ReturnType<typeof createAuthService>;
@@ -154,6 +156,7 @@ describe('스토리지 앱 e2e', () => {
 		};
 		imagePregenerationService = {
 			preGenerateForUpload: jest.fn().mockResolvedValue([]),
+			assertSourceReadable: jest.fn().mockResolvedValue(null),
 			findPreGeneratedVariantForRequest: jest.fn().mockResolvedValue(null),
 		};
 		authService = createAuthService();

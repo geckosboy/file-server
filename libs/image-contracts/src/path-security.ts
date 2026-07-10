@@ -1,7 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
+import { createHash } from 'crypto';
 import * as path from 'path';
 
 const MAX_PATH_LENGTH = 256;
+export const MAX_SAFE_FILE_NAME_LENGTH = 128;
+export const MAX_IMAGE_STORAGE_KEY_LENGTH = 384;
 const encodedTokenPattern = /%[0-9a-f]{2}/i;
 const windowsAbsolutePathPattern = /^[a-z]:/i;
 
@@ -73,7 +76,7 @@ export const normalizeSafeFileName = (value: string, label = 'name') => {
 
 	const safeName = unicodeNormalized
 		.replace(/[^A-Za-z0-9._-]/g, '_')
-		.slice(0, 128);
+		.slice(0, MAX_SAFE_FILE_NAME_LENGTH);
 	if (!safeName) {
 		throw new BadRequestException(`${label} 파일명이 비어 있습니다.`);
 	}
@@ -88,6 +91,45 @@ export const normalizeImageStoragePath = (value: string) => {
 		throw new BadRequestException('image path는 /image로 끝나야 합니다.');
 	}
 	return normalized;
+};
+
+export const getMaxImageFileNameLengthForPath = (value: string) => {
+	const normalizedPath = normalizeImageStoragePath(value);
+	return Math.min(
+		MAX_SAFE_FILE_NAME_LENGTH,
+		MAX_IMAGE_STORAGE_KEY_LENGTH - normalizedPath.length - 1,
+	);
+};
+
+export const createBoundedImageVariantName = (input: {
+	name: string;
+	path: string;
+	width?: number | null;
+	height?: number | null;
+	format: 'png' | 'jpeg' | 'webp';
+}) => {
+	const maximumLength = getMaxImageFileNameLengthForPath(input.path);
+	const extensionIndex = input.name.lastIndexOf('.');
+	const baseName =
+		extensionIndex > 0 ? input.name.slice(0, extensionIndex) : input.name;
+	const variantSuffix = `__w${input.width ?? 'auto'}_h${input.height ?? 'auto'}.${input.format}`;
+	if (baseName.length + variantSuffix.length <= maximumLength) {
+		return `${baseName}${variantSuffix}`;
+	}
+
+	const identity = createHash('sha256')
+		.update(input.name)
+		.digest('hex')
+		.slice(0, 12);
+	const identitySegment = `__${identity}`;
+	const maximumBaseLength =
+		maximumLength - identitySegment.length - variantSuffix.length;
+	if (maximumBaseLength < 1) {
+		throw new BadRequestException(
+			'variant filename 상한이 variant specification보다 작습니다.',
+		);
+	}
+	return `${baseName.slice(0, maximumBaseLength)}${identitySegment}${variantSuffix}`;
 };
 
 /** cache/resize/read API의 public path를 실제 storage/policy 경로로 변환한다. */

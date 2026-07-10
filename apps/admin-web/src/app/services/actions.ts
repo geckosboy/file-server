@@ -311,10 +311,12 @@ function readLifecycleEventType(formData: FormData): LifecycleEventType {
 	const eventType = readRequiredFormString(formData, 'eventType');
 	if (
 		eventType !== 'image.upload.completed' &&
-		eventType !== 'image.upload.failed'
+		eventType !== 'image.upload.failed' &&
+		eventType !== 'image.delete.completed' &&
+		eventType !== 'image.delete.failed'
 	) {
 		throw new Error(
-			'eventType은 image.upload.completed 또는 image.upload.failed만 가능합니다.',
+			'eventType은 지원되는 image upload/delete lifecycle type이어야 합니다.',
 		);
 	}
 	return eventType;

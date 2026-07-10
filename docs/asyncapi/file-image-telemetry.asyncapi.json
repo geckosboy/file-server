@@ -77,6 +77,40 @@
             }
           },
           {
+            "name": "image.delete.completed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-delete-completed",
+              "eventType": "image.delete.completed",
+              "sourceApp": "storage",
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.delete.failed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-delete-failed",
+              "eventType": "image.delete.failed",
+              "sourceApp": "storage",
+              "status": "failed",
+              "errorCode": "DeleteError",
+              "errorMessage": "delete failed"
+            }
+          },
+          {
             "name": "image.resize.requested",
             "payload": {
               "schemaVersion": 1,
@@ -255,6 +289,8 @@
             "enum": [
               "image.upload.completed",
               "image.upload.failed",
+              "image.delete.completed",
+              "image.delete.failed",
               "image.resize.requested",
               "image.resize.completed",
               "image.resize.failed",
@@ -422,6 +458,55 @@
                 "type": "string",
                 "enum": [
                   "image.upload.failed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "storage"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "required": [],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.delete.completed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "storage"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "errorCode",
+              "errorMessage"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.delete.failed"
                 ]
               },
               "sourceApp": {

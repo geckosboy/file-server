@@ -33,6 +33,8 @@ describe('서비스 레지스트리 페이지', () => {
 		expect(html).toContain('Lifecycle subscriptions');
 		expect(html).toContain('image.upload.completed');
 		expect(html).toContain('image.upload.failed');
+		expect(html).toContain('image.delete.completed');
+		expect(html).toContain('image.delete.failed');
 		expect(html).toContain('catalog-image-consumer');
 		expect(html).toContain('활성 subscription');
 	});

@@ -69,11 +69,16 @@ interface TimeseriesRow {
 }
 
 interface TopImageRow {
+	assetId: string | null;
+	assetStatus: string | null;
 	imageKey: string;
 	imageId: number | null;
 	path: string;
 	name: string;
 	format: string | null;
+	originalName: string | null;
+	bytes: number | null;
+	checksum: string | null;
 	totalReads: unknown;
 	totalResizes: unknown;
 	totalCacheHits: unknown;
@@ -102,6 +107,10 @@ interface ResizeRecommendationRow {
 }
 
 interface ImageVariantRow {
+	variantId: string | null;
+	status: string | null;
+	storageKey: string | null;
+	checksum: string | null;
 	variantKey: string;
 	imageKey: string;
 	width: number | null;
@@ -111,7 +120,7 @@ interface ImageVariantRow {
 	resizeCount: unknown;
 	avgDurationMs: unknown;
 	p95DurationMs: unknown;
-	lastResizedAt: Date | string;
+	lastResizedAt: Date | string | null;
 }
 
 @Injectable()
@@ -291,61 +300,127 @@ export class PrismaAdminAnalyticsRepository implements AdminAnalyticsRepository 
 				? Prisma.sql``
 				: Prisma.sql`OFFSET ${parsedCursor.offset}`;
 		const limit = parseLimit(query.limit);
+		const dualRead = isAssetDualReadEnabled();
+		const authoritativeAssetWhere = buildAuthoritativeAssetWhere(query, range);
 
 		const rows = await this.prisma.$queryRaw<TopImageRow[]>(Prisma.sql`
-			WITH "grouped" AS (
+			WITH "filtered_events" AS (
+				SELECT * FROM "telemetry_events" ${where}
+			),
+			"authoritative_assets" AS (
 				SELECT
-					"image_key" AS "imageKey",
-					(array_agg(
-						"image_id" ORDER BY "occurred_at" DESC, "event_id" DESC
-					) FILTER (WHERE "image_id" IS NOT NULL))[1] AS "imageId",
-					(array_agg(
-						"path" ORDER BY "occurred_at" DESC, "event_id" DESC
-					))[1] AS "path",
-					(array_agg(
-						"name" ORDER BY "occurred_at" DESC, "event_id" DESC
-					))[1] AS "name",
-					(array_agg(
-						"format" ORDER BY "occurred_at" DESC, "event_id" DESC
-					) FILTER (WHERE "format" IS NOT NULL))[1] AS "format",
-					COUNT(*) FILTER (
-						WHERE "event_type" IN (
-							'image.cache.hit',
-							'image.cache.miss',
-							'image.read.completed',
-							'image.read.failed'
+					"asset"."asset_id" AS "assetId",
+					"asset"."status"::text AS "assetStatus",
+					"asset"."storage_key" AS "imageKey",
+					"asset"."external_image_id" AS "imageId",
+					"asset"."logical_path" AS "path",
+					"asset"."name",
+					"asset"."original_name" AS "originalName",
+					"asset"."format",
+					"asset"."bytes",
+					"asset"."checksum",
+					"asset"."updated_at" AS "assetUpdatedAt"
+				FROM "image_assets" AS "asset"
+				JOIN "client_services" AS "owner"
+					ON "owner"."id" = "asset"."client_service_id"
+				${authoritativeAssetWhere}
+			),
+			"legacy_assets" AS (
+				SELECT DISTINCT ON ("event"."image_key")
+					NULL::text AS "assetId",
+					'Legacy'::text AS "assetStatus",
+					"event"."image_key" AS "imageKey",
+					"event"."image_id" AS "imageId",
+					"event"."path",
+					"event"."name",
+					COALESCE("event"."raw_payload"->>'originalName', "event"."name") AS "originalName",
+					"event"."format",
+					"event"."output_bytes" AS "bytes",
+					NULL::text AS "checksum",
+					"event"."occurred_at" AS "assetUpdatedAt"
+				FROM "filtered_events" AS "event"
+				WHERE ${dualRead}
+					AND "event"."event_type" = 'image.upload.completed'
+					AND "event"."status" = 'success'
+						AND NOT EXISTS (
+							SELECT 1 FROM "image_assets" AS "asset"
+							WHERE "asset"."storage_key" = "event"."image_key"
+						)
+						AND NOT EXISTS (
+							SELECT 1 FROM "telemetry_events" AS "deleted"
+							WHERE "deleted"."event_type" = 'image.delete.completed'
+								AND "deleted"."status" = 'success'
+								AND "deleted"."client_service_id" = "event"."client_service_id"
+								AND "deleted"."image_key" = "event"."image_key"
+								AND ("deleted"."occurred_at", "deleted"."event_id") >
+									("event"."occurred_at", "event"."event_id")
+						)
+						AND NOT EXISTS (
+							SELECT 1 FROM "image_lifecycle_events" AS "deleted"
+							WHERE "deleted"."event_type" = 'image.delete.completed'
+								AND "deleted"."status" = 'success'
+								AND "deleted"."client_service_id" = "event"."client_service_id"
+								AND "deleted"."image_key" = "event"."image_key"
+								AND ("deleted"."occurred_at", "deleted"."event_id") >
+									("event"."occurred_at", "event"."event_id")
+						)
+				ORDER BY "event"."image_key", "event"."occurred_at" DESC, "event"."event_id" DESC
+			),
+			"assets" AS (
+				SELECT * FROM "authoritative_assets"
+				UNION ALL
+				SELECT * FROM "legacy_assets"
+			),
+			"grouped" AS (
+				SELECT
+					"assets"."assetId",
+					"assets"."assetStatus",
+					"assets"."imageKey",
+					"assets"."imageId",
+					"assets"."path",
+					"assets"."name",
+					"assets"."originalName",
+					"assets"."format",
+					"assets"."bytes",
+					"assets"."checksum",
+					COUNT("events"."id") FILTER (
+						WHERE "events"."event_type" IN (
+							'image.cache.hit', 'image.cache.miss',
+							'image.read.completed', 'image.read.failed'
 						)
 					)::bigint AS "totalReads",
-					COUNT(*) FILTER (
-						WHERE "event_type" = 'image.resize.completed'
+					COUNT("events"."id") FILTER (
+						WHERE "events"."event_type" = 'image.resize.completed'
 					)::bigint AS "totalResizes",
-					COUNT(*) FILTER (
-						WHERE "event_type" = 'image.cache.hit'
+					COUNT("events"."id") FILTER (
+						WHERE "events"."event_type" = 'image.cache.hit'
 					)::bigint AS "totalCacheHits",
-					COUNT(*) FILTER (
-						WHERE "event_type" = 'image.cache.miss'
+					COUNT("events"."id") FILTER (
+						WHERE "events"."event_type" = 'image.cache.miss'
 					)::bigint AS "totalCacheMisses",
-					COUNT(*) FILTER (
-						WHERE "status" = 'failed'
+					COUNT("events"."id") FILTER (
+						WHERE "events"."status" = 'failed'
 					)::bigint AS "totalFailures",
-					AVG("duration_ms") AS "avgDurationMs",
+					AVG("events"."duration_ms") AS "avgDurationMs",
 					percentile_disc(0.95) WITHIN GROUP (
-						ORDER BY "duration_ms"
+						ORDER BY "events"."duration_ms"
 					) FILTER (
-						WHERE "duration_ms" IS NOT NULL
+						WHERE "events"."duration_ms" IS NOT NULL
 					) AS "p95DurationMs",
-					MAX("occurred_at") AS "lastSeenAt"
-				FROM "telemetry_events"
-				${where}
-				GROUP BY "image_key"
+					COALESCE(MAX("events"."occurred_at"), "assets"."assetUpdatedAt") AS "lastSeenAt"
+				FROM "assets"
+				LEFT JOIN "filtered_events" AS "events"
+					ON "events"."image_key" = "assets"."imageKey"
+				GROUP BY
+					"assets"."assetId", "assets"."assetStatus", "assets"."imageKey",
+					"assets"."imageId", "assets"."path", "assets"."name",
+					"assets"."originalName", "assets"."format", "assets"."bytes",
+					"assets"."checksum", "assets"."assetUpdatedAt"
+			),
+			"searched" AS (
+				SELECT * FROM "grouped" ${search}
 			)
-			, "searched" AS (
-				SELECT *
-				FROM "grouped"
-				${search}
-			)
-			SELECT *
-			FROM "searched"
+			SELECT * FROM "searched"
 			${cursor}
 			ORDER BY ${sort} ${order}, "imageKey" ${order}
 			LIMIT ${limit + 1}
@@ -364,51 +439,92 @@ export class PrismaAdminAnalyticsRepository implements AdminAnalyticsRepository 
 	}
 
 	async getImage(imageKey: string): Promise<ImageListItem | undefined> {
+		const dualRead = isAssetDualReadEnabled();
 		const [row] = await this.prisma.$queryRaw<TopImageRow[]>(Prisma.sql`
+			WITH "asset" AS (
+				SELECT
+					"asset_id" AS "assetId",
+					"status"::text AS "assetStatus",
+					"storage_key" AS "imageKey",
+					"external_image_id" AS "imageId",
+					"logical_path" AS "path",
+					"name", "original_name" AS "originalName", "format", "bytes", "checksum",
+					"updated_at" AS "assetUpdatedAt"
+				FROM "image_assets"
+				WHERE "storage_key" = ${imageKey}
+					AND "status" <> 'Deleted'::"ImageAssetState"
+				UNION ALL
+				SELECT
+					NULL::text, 'Legacy'::text, "event"."image_key", "event"."image_id",
+					"event"."path", "event"."name",
+					COALESCE("event"."raw_payload"->>'originalName', "event"."name"),
+					"event"."format", "event"."output_bytes", NULL::text, "event"."occurred_at"
+				FROM "telemetry_events" AS "event"
+				WHERE ${dualRead}
+					AND "event"."image_key" = ${imageKey}
+					AND "event"."event_type" = 'image.upload.completed'
+					AND "event"."status" = 'success'
+					AND NOT EXISTS (
+						SELECT 1 FROM "image_assets" WHERE "storage_key" = ${imageKey}
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM "telemetry_events" AS "deleted"
+						WHERE "deleted"."event_type" = 'image.delete.completed'
+							AND "deleted"."status" = 'success'
+							AND "deleted"."client_service_id" = "event"."client_service_id"
+							AND "deleted"."image_key" = "event"."image_key"
+							AND ("deleted"."occurred_at", "deleted"."event_id") >
+								("event"."occurred_at", "event"."event_id")
+					)
+					AND NOT EXISTS (
+						SELECT 1 FROM "image_lifecycle_events" AS "deleted"
+						WHERE "deleted"."event_type" = 'image.delete.completed'
+							AND "deleted"."status" = 'success'
+							AND "deleted"."client_service_id" = "event"."client_service_id"
+							AND "deleted"."image_key" = "event"."image_key"
+							AND ("deleted"."occurred_at", "deleted"."event_id") >
+								("event"."occurred_at", "event"."event_id")
+					)
+				ORDER BY "assetUpdatedAt" DESC
+				LIMIT 1
+			)
 			SELECT
-				"image_key" AS "imageKey",
-				(array_agg(
-					"image_id" ORDER BY "occurred_at" DESC, "event_id" DESC
-				) FILTER (WHERE "image_id" IS NOT NULL))[1] AS "imageId",
-				(array_agg(
-					"path" ORDER BY "occurred_at" DESC, "event_id" DESC
-				))[1] AS "path",
-				(array_agg(
-					"name" ORDER BY "occurred_at" DESC, "event_id" DESC
-				))[1] AS "name",
-				(array_agg(
-					"format" ORDER BY "occurred_at" DESC, "event_id" DESC
-				) FILTER (WHERE "format" IS NOT NULL))[1] AS "format",
-				COUNT(*) FILTER (
-					WHERE "event_type" IN (
-						'image.cache.hit',
-						'image.cache.miss',
-						'image.read.completed',
-						'image.read.failed'
+				"asset"."assetId", "asset"."assetStatus", "asset"."imageKey",
+				"asset"."imageId", "asset"."path", "asset"."name",
+				"asset"."originalName", "asset"."format", "asset"."bytes", "asset"."checksum",
+				COUNT("event"."id") FILTER (
+					WHERE "event"."event_type" IN (
+						'image.cache.hit', 'image.cache.miss',
+						'image.read.completed', 'image.read.failed'
 					)
 				)::bigint AS "totalReads",
-				COUNT(*) FILTER (
-					WHERE "event_type" = 'image.resize.completed'
+				COUNT("event"."id") FILTER (
+					WHERE "event"."event_type" = 'image.resize.completed'
 				)::bigint AS "totalResizes",
-				COUNT(*) FILTER (
-					WHERE "event_type" = 'image.cache.hit'
+				COUNT("event"."id") FILTER (
+					WHERE "event"."event_type" = 'image.cache.hit'
 				)::bigint AS "totalCacheHits",
-				COUNT(*) FILTER (
-					WHERE "event_type" = 'image.cache.miss'
+				COUNT("event"."id") FILTER (
+					WHERE "event"."event_type" = 'image.cache.miss'
 				)::bigint AS "totalCacheMisses",
-				COUNT(*) FILTER (
-					WHERE "status" = 'failed'
+				COUNT("event"."id") FILTER (
+					WHERE "event"."status" = 'failed'
 				)::bigint AS "totalFailures",
-				AVG("duration_ms") AS "avgDurationMs",
+				AVG("event"."duration_ms") AS "avgDurationMs",
 				percentile_disc(0.95) WITHIN GROUP (
-					ORDER BY "duration_ms"
+					ORDER BY "event"."duration_ms"
 				) FILTER (
-					WHERE "duration_ms" IS NOT NULL
+					WHERE "event"."duration_ms" IS NOT NULL
 				) AS "p95DurationMs",
-				MAX("occurred_at") AS "lastSeenAt"
-			FROM "telemetry_events"
-			WHERE "image_key" = ${imageKey}
-			GROUP BY "image_key"
+				COALESCE(MAX("event"."occurred_at"), "asset"."assetUpdatedAt") AS "lastSeenAt"
+			FROM "asset"
+			LEFT JOIN "telemetry_events" AS "event"
+				ON "event"."image_key" = "asset"."imageKey"
+			GROUP BY
+				"asset"."assetId", "asset"."assetStatus", "asset"."imageKey",
+				"asset"."imageId", "asset"."path", "asset"."name",
+				"asset"."originalName", "asset"."format", "asset"."bytes",
+				"asset"."checksum", "asset"."assetUpdatedAt"
 			LIMIT 1
 		`);
 		return row ? toImageListItem(row) : undefined;
@@ -417,46 +533,63 @@ export class PrismaAdminAnalyticsRepository implements AdminAnalyticsRepository 
 	async listVariants(imageKey: string): Promise<ImageVariantSummary[]> {
 		const rows = await this.prisma.$queryRaw<ImageVariantRow[]>(Prisma.sql`
 			SELECT
-				"image_key" || ':' ||
-				COALESCE("width"::text, 'auto') || 'x' ||
-				COALESCE("height"::text, 'auto') || ':' ||
-				COALESCE("format", 'unknown') AS "variantKey",
-				"image_key" AS "imageKey",
-				"width",
-				"height",
-				"format",
-				(array_agg(
-					"output_bytes" ORDER BY "occurred_at" DESC, "event_id" DESC
-				) FILTER (WHERE "output_bytes" IS NOT NULL))[1] AS "outputBytes",
-				COUNT(*)::bigint AS "resizeCount",
-				AVG("duration_ms") AS "avgDurationMs",
+				"variant"."variant_id" AS "variantId",
+				"variant"."status"::text AS "status",
+				"variant"."storage_key" AS "storageKey",
+				"variant"."checksum",
+				"variant"."spec_key" AS "variantKey",
+				"asset"."storage_key" AS "imageKey",
+				"variant"."width", "variant"."height", "variant"."format",
+				"variant"."bytes" AS "outputBytes",
+				COUNT("event"."id")::bigint AS "resizeCount",
+				AVG("event"."duration_ms") AS "avgDurationMs",
 				percentile_disc(0.95) WITHIN GROUP (
-					ORDER BY "duration_ms"
+					ORDER BY "event"."duration_ms"
 				) FILTER (
-					WHERE "duration_ms" IS NOT NULL
+					WHERE "event"."duration_ms" IS NOT NULL
 				) AS "p95DurationMs",
+				MAX("event"."occurred_at") AS "lastResizedAt"
+			FROM "image_assets" AS "asset"
+			JOIN "image_variants" AS "variant" ON "variant"."asset_id" = "asset"."asset_id"
+			LEFT JOIN "telemetry_events" AS "event"
+				ON "event"."image_key" = "asset"."storage_key"
+				AND "event"."event_type" = 'image.resize.completed'
+				AND "event"."width" IS NOT DISTINCT FROM "variant"."width"
+				AND "event"."height" IS NOT DISTINCT FROM "variant"."height"
+				AND "event"."format" = "variant"."format"
+			WHERE "asset"."storage_key" = ${imageKey}
+				AND "asset"."status" <> 'Deleted'::"ImageAssetState"
+				AND "variant"."status" <> 'Deleted'::"ImageVariantState"
+			GROUP BY "asset"."asset_id", "variant"."variant_id"
+			ORDER BY "lastResizedAt" DESC NULLS LAST, "variantKey" DESC
+			LIMIT ${MAX_VARIANTS_PER_IMAGE}
+		`);
+		if (rows.length || !isAssetDualReadEnabled()) {
+			return rows.map(toImageVariantSummary);
+		}
+
+		const legacyRows = await this.prisma.$queryRaw<
+			ImageVariantRow[]
+		>(Prisma.sql`
+			SELECT
+				NULL::text AS "variantId", 'Legacy'::text AS "status",
+				NULL::text AS "storageKey", NULL::text AS "checksum",
+				"image_key" || ':' || COALESCE("width"::text, 'auto') || 'x' ||
+				COALESCE("height"::text, 'auto') || ':' || COALESCE("format", 'unknown') AS "variantKey",
+				"image_key" AS "imageKey", "width", "height", "format",
+				(array_agg("output_bytes" ORDER BY "occurred_at" DESC, "event_id" DESC)
+					FILTER (WHERE "output_bytes" IS NOT NULL))[1] AS "outputBytes",
+				COUNT(*)::bigint AS "resizeCount", AVG("duration_ms") AS "avgDurationMs",
+				percentile_disc(0.95) WITHIN GROUP (ORDER BY "duration_ms")
+					FILTER (WHERE "duration_ms" IS NOT NULL) AS "p95DurationMs",
 				MAX("occurred_at") AS "lastResizedAt"
 			FROM "telemetry_events"
-			WHERE
-				"image_key" = ${imageKey}
-				AND "event_type" = 'image.resize.completed'
+			WHERE "image_key" = ${imageKey} AND "event_type" = 'image.resize.completed'
 			GROUP BY "image_key", "width", "height", "format"
 			ORDER BY "lastResizedAt" DESC, "variantKey" DESC
 			LIMIT ${MAX_VARIANTS_PER_IMAGE}
 		`);
-
-		return rows.map((row) => ({
-			variantKey: row.variantKey,
-			imageKey: row.imageKey,
-			width: row.width ?? undefined,
-			height: row.height ?? undefined,
-			format: (row.format ?? undefined) as ImageVariantSummary['format'],
-			outputBytes: row.outputBytes ?? undefined,
-			resizeCount: numberValue(row.resizeCount),
-			avgDurationMs: optionalNumber(row.avgDurationMs),
-			p95DurationMs: optionalNumber(row.p95DurationMs),
-			lastResizedAt: isoValue(row.lastResizedAt),
-		}));
+		return legacyRows.map(toImageVariantSummary);
 	}
 
 	async listResizeRecommendations(
@@ -523,6 +656,35 @@ export class PrismaAdminAnalyticsRepository implements AdminAnalyticsRepository 
 			items: rows.map((row) => toResizeRecommendationItem(row, minRequests)),
 		};
 	}
+}
+
+function buildAuthoritativeAssetWhere(
+	query: TopImageQuery,
+	range: ParsedRange,
+): Prisma.Sql {
+	const conditions: Prisma.Sql[] = [
+		Prisma.sql`"asset"."status" <> 'Deleted'::"ImageAssetState"`,
+	];
+	if (query.clientServiceId) {
+		conditions.push(
+			Prisma.sql`"asset"."client_service_id" = ${query.clientServiceId}`,
+		);
+	}
+	if (query.clientServiceSlug) {
+		conditions.push(Prisma.sql`"owner"."slug" = ${query.clientServiceSlug}`);
+	}
+	if (range.from || range.to) {
+		conditions.push(Prisma.sql`
+			EXISTS (
+				SELECT 1
+				FROM "filtered_events" AS "membership_event"
+				WHERE "membership_event"."image_key" = "asset"."storage_key"
+					AND "membership_event"."client_service_id" = "asset"."client_service_id"
+			)
+		`);
+	}
+
+	return Prisma.sql`WHERE ${Prisma.join(conditions, ' AND ')}`;
 }
 
 function buildTelemetryWhere(
@@ -729,11 +891,16 @@ function toImageListItem(row: TopImageRow): ImageListItem {
 	const totalCacheHits = numberValue(row.totalCacheHits);
 	const totalCacheMisses = numberValue(row.totalCacheMisses);
 	return {
+		assetId: row.assetId ?? undefined,
+		assetStatus: row.assetStatus ?? undefined,
 		imageKey: row.imageKey,
 		imageId: row.imageId ?? undefined,
 		path: row.path,
 		name: row.name,
 		format: row.format ?? undefined,
+		originalName: row.originalName ?? undefined,
+		bytes: row.bytes ?? undefined,
+		checksum: row.checksum ?? undefined,
 		totalReads: numberValue(row.totalReads),
 		totalResizes: numberValue(row.totalResizes),
 		totalCacheHits,
@@ -744,6 +911,29 @@ function toImageListItem(row: TopImageRow): ImageListItem {
 		p95DurationMs: optionalNumber(row.p95DurationMs),
 		lastSeenAt: isoValue(row.lastSeenAt),
 	};
+}
+
+function toImageVariantSummary(row: ImageVariantRow): ImageVariantSummary {
+	return {
+		variantId: row.variantId ?? undefined,
+		status: row.status ?? undefined,
+		storageKey: row.storageKey ?? undefined,
+		checksum: row.checksum ?? undefined,
+		variantKey: row.variantKey,
+		imageKey: row.imageKey,
+		width: row.width ?? undefined,
+		height: row.height ?? undefined,
+		format: (row.format ?? undefined) as ImageVariantSummary['format'],
+		outputBytes: row.outputBytes ?? undefined,
+		resizeCount: numberValue(row.resizeCount),
+		avgDurationMs: optionalNumber(row.avgDurationMs),
+		p95DurationMs: optionalNumber(row.p95DurationMs),
+		lastResizedAt: row.lastResizedAt ? isoValue(row.lastResizedAt) : undefined,
+	};
+}
+
+function isAssetDualReadEnabled() {
+	return process.env.IMAGE_ASSET_DUAL_READ_ENABLED !== 'false';
 }
 
 function toResizeRecommendationItem(

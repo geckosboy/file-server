@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { Kafka, logLevel } from 'kafkajs';
 import {
 	getClientServiceAuthMetricsSnapshot,
@@ -12,10 +12,12 @@ import { getImageTelemetryProducerStatus } from '@file/telemetry-contracts';
 import { AppConfig } from './config/env.schema';
 import {
 	CACHE_HEALTH_METRICS,
+	CACHE_INVALIDATION_HEALTH_METRICS,
 	CACHE_SINGLEFLIGHT_HEALTH_METRICS,
 	CacheHealthMetricsSource,
 	CacheSingleflightHealthMetricsSource,
 } from './app-health.metrics';
+import { CacheInvalidationConsumerMetrics } from './modules/image/cache-invalidation-consumer.service';
 
 interface DependencyHealth {
 	ok: boolean;
@@ -36,6 +38,11 @@ export class AppHealthService {
 		private readonly cacheMetrics: CacheHealthMetricsSource,
 		@Inject(CACHE_SINGLEFLIGHT_HEALTH_METRICS)
 		private readonly singleflightMetrics: CacheSingleflightHealthMetricsSource,
+		@Optional()
+		@Inject(CACHE_INVALIDATION_HEALTH_METRICS)
+		private readonly invalidationMetrics?: {
+			getMetrics(): CacheInvalidationConsumerMetrics;
+		},
 	) {}
 
 	getLive() {
@@ -55,8 +62,13 @@ export class AppHealthService {
 				this.config,
 			),
 		]);
+		const cacheInvalidation = this.invalidationMetrics?.getMetrics();
 		return {
-			ok: database.ok && kafka.ok && resize.ok,
+			ok:
+				database.ok &&
+				kafka.ok &&
+				resize.ok &&
+				(cacheInvalidation?.ready ?? true),
 			service: 'cache',
 			checkedAt: new Date().toISOString(),
 			dependencies: { database, kafka, resize },
@@ -73,6 +85,11 @@ export class AppHealthService {
 						typeof this.singleflightMetrics.getSingleflightMetrics ===
 						'function',
 					...(this.singleflightMetrics.getSingleflightMetrics?.() ?? {}),
+				},
+				cacheInvalidation: cacheInvalidation ?? {
+					enabled: false,
+					ready: true,
+					available: false,
 				},
 			},
 		};

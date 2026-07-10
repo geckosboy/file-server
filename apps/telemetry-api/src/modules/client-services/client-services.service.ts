@@ -804,7 +804,7 @@ function readOptionalLifecycleEventType(
 		)
 	) {
 		throw new BadRequestException(
-			`${key} must be image.upload.completed or image.upload.failed`,
+			`${key} must be image.upload.completed, image.upload.failed, image.delete.completed, or image.delete.failed`,
 		);
 	}
 	return value as ClientServiceLifecycleEventType;

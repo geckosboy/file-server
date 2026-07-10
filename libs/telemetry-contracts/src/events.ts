@@ -8,6 +8,8 @@ export const IMAGE_TELEMETRY_SCHEMA_VERSION = 1 as const;
 export const ImageTelemetryEventType = {
 	UploadCompleted: 'image.upload.completed',
 	UploadFailed: 'image.upload.failed',
+	DeleteCompleted: 'image.delete.completed',
+	DeleteFailed: 'image.delete.failed',
 	ResizeRequested: 'image.resize.requested',
 	ResizeCompleted: 'image.resize.completed',
 	ResizeFailed: 'image.resize.failed',
@@ -121,6 +123,20 @@ export type ImageUploadFailedEvent = ImageTelemetryEventBase & {
 	errorMessage: string;
 };
 
+export type ImageDeleteCompletedEvent = ImageTelemetryEventBase & {
+	eventType: typeof ImageTelemetryEventType.DeleteCompleted;
+	sourceApp: typeof ImageTelemetrySourceApp.Storage;
+	status: typeof ImageTelemetryStatus.Success;
+};
+
+export type ImageDeleteFailedEvent = ImageTelemetryEventBase & {
+	eventType: typeof ImageTelemetryEventType.DeleteFailed;
+	sourceApp: typeof ImageTelemetrySourceApp.Storage;
+	status: typeof ImageTelemetryStatus.Failed;
+	errorCode: string;
+	errorMessage: string;
+};
+
 export type ImageResizeRequestedEvent = ImageTelemetryEventBase & {
 	eventType: typeof ImageTelemetryEventType.ResizeRequested;
 	sourceApp: typeof ImageTelemetrySourceApp.Resize;
@@ -185,6 +201,8 @@ export type ImageReadFailedEvent = ImageTelemetryEventBase & {
 export type ImageTelemetryEvent =
 	| ImageUploadCompletedEvent
 	| ImageUploadFailedEvent
+	| ImageDeleteCompletedEvent
+	| ImageDeleteFailedEvent
 	| ImageResizeRequestedEvent
 	| ImageResizeCompletedEvent
 	| ImageResizeFailedEvent
@@ -228,6 +246,16 @@ export const IMAGE_TELEMETRY_EVENT_RULES = {
 		requiredFields: ['inputBytes', 'outputBytes', 'durationMs'],
 	},
 	[ImageTelemetryEventType.UploadFailed]: {
+		sourceApps: [ImageTelemetrySourceApp.Storage],
+		status: ImageTelemetryStatus.Failed,
+		requiredFields: ['errorCode', 'errorMessage'],
+	},
+	[ImageTelemetryEventType.DeleteCompleted]: {
+		sourceApps: [ImageTelemetrySourceApp.Storage],
+		status: ImageTelemetryStatus.Success,
+		requiredFields: [],
+	},
+	[ImageTelemetryEventType.DeleteFailed]: {
 		sourceApps: [ImageTelemetrySourceApp.Storage],
 		status: ImageTelemetryStatus.Failed,
 		requiredFields: ['errorCode', 'errorMessage'],
@@ -719,6 +747,22 @@ export const IMAGE_TELEMETRY_EVENT_EXAMPLES: Readonly<
 		status: ImageTelemetryStatus.Failed,
 		errorCode: 'UploadError',
 		errorMessage: 'upload failed',
+	}),
+	[ImageTelemetryEventType.DeleteCompleted]: assertImageTelemetryEvent({
+		...exampleBase,
+		eventId: 'telemetry-delete-completed',
+		eventType: ImageTelemetryEventType.DeleteCompleted,
+		sourceApp: ImageTelemetrySourceApp.Storage,
+		status: ImageTelemetryStatus.Success,
+	}),
+	[ImageTelemetryEventType.DeleteFailed]: assertImageTelemetryEvent({
+		...exampleBase,
+		eventId: 'telemetry-delete-failed',
+		eventType: ImageTelemetryEventType.DeleteFailed,
+		sourceApp: ImageTelemetrySourceApp.Storage,
+		status: ImageTelemetryStatus.Failed,
+		errorCode: 'DeleteError',
+		errorMessage: 'delete failed',
 	}),
 	[ImageTelemetryEventType.ResizeRequested]: assertImageTelemetryEvent({
 		...exampleBase,

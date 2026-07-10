@@ -37,12 +37,21 @@ export interface ImageSingleflightMetrics {
 	coalescedRequests: number;
 }
 
+interface ImageInvalidationGeneration {
+	activeOrigins: number;
+	value: number;
+}
+
 @Injectable()
 export class ImageService {
 	private readonly logger = new Logger(ImageService.name);
 	private readonly singleflight = new Map<
 		string,
 		Promise<{ imageBuffer: Buffer; contentType: string }>
+	>();
+	private readonly invalidationGenerations = new Map<
+		string,
+		ImageInvalidationGeneration
 	>();
 	private readonly singleflightTimeoutMs = readPositiveInteger(
 		process.env.CACHE_SINGLEFLIGHT_TIMEOUT_MS,
@@ -107,6 +116,16 @@ export class ImageService {
 		].join('|');
 	}
 
+	private convertToImageIdentityKey({
+		clientServiceId,
+		name,
+		path,
+	}: Pick<ImageEntity, 'path' | 'name'> & { clientServiceId: string }) {
+		return [clientServiceId, path, name]
+			.map((part) => encodeURIComponent(part))
+			.join('|');
+	}
+
 	private getImageUrl({ name, path, ...size }: ImageEntity) {
 		const queryStr = this.objectToQueryString(size);
 		const encodedPath = encodeURIComponent(path);
@@ -153,6 +172,11 @@ export class ImageService {
 		const cacheKey = this.convertToCacheKey({
 			...params,
 			clientServiceId: clientServiceContext.clientServiceId,
+		});
+		const imageIdentityKey = this.convertToImageIdentityKey({
+			clientServiceId: clientServiceContext.clientServiceId,
+			path: params.path,
+			name: params.name,
 		});
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
@@ -201,34 +225,43 @@ export class ImageService {
 
 		/** 없다면 리사이징 서버로부터 데이터 가져옴 */
 		try {
-			return await this.singleflightCacheMiss(cacheKey, async () => {
-				const { imageBuffer, contentType } = await this.getImageFromMain(
-					params,
-					clientServiceContext,
-				);
-				/** 리사이징 결과물 캐싱 */
-				this.cacheService.cacheImage(cacheKey, { imageBuffer, contentType });
+			return await this.singleflightCacheMiss(
+				cacheKey,
+				imageIdentityKey,
+				async (isGenerationCurrent) => {
+					const { imageBuffer, contentType } = await this.getImageFromMain(
+						params,
+						clientServiceContext,
+					);
+					if (isGenerationCurrent()) {
+						/** 무효화 이후 완료된 오래된 리사이징 결과는 캐시에 쓰지 않음 */
+						this.cacheService.cacheImage(cacheKey, {
+							imageBuffer,
+							contentType,
+						});
 
-				this.publishTelemetryEvent(
-					createImageTelemetryEvent({
-						eventType: ImageTelemetryEventType.CacheStored,
-						sourceApp: 'cache',
-						path,
-						name,
-						cacheKey,
-						width,
-						height,
-						format,
-						outputBytes: imageBuffer.byteLength,
-						durationMs: performance.now() - startedAt,
-						status: 'success',
-						...telemetryContext,
-					}),
-				);
+						this.publishTelemetryEvent(
+							createImageTelemetryEvent({
+								eventType: ImageTelemetryEventType.CacheStored,
+								sourceApp: 'cache',
+								path,
+								name,
+								cacheKey,
+								width,
+								height,
+								format,
+								outputBytes: imageBuffer.byteLength,
+								durationMs: performance.now() - startedAt,
+								status: 'success',
+								...telemetryContext,
+							}),
+						);
+					}
 
-				this.logger.log(`cache not hit: ${JSON.stringify(params)}`);
-				return { imageBuffer, contentType };
-			});
+					this.logger.log(`cache not hit: ${JSON.stringify(params)}`);
+					return { imageBuffer, contentType };
+				},
+			);
 		} catch (err) {
 			this.logger.error(err);
 			this.publishTelemetryEvent(
@@ -254,9 +287,15 @@ export class ImageService {
 
 	private singleflightCacheMiss(
 		cacheKey: string,
-		loader: () => Promise<{ imageBuffer: Buffer; contentType: string }>,
+		imageIdentityKey: string,
+		loader: (
+			isGenerationCurrent: () => boolean,
+		) => Promise<{ imageBuffer: Buffer; contentType: string }>,
 	): Promise<{ imageBuffer: Buffer; contentType: string }> {
-		const existing = this.singleflight.get(cacheKey);
+		const generation = this.acquireInvalidationGeneration(imageIdentityKey);
+		const generationValue = generation.value;
+		const singleflightKey = `${generationValue}:${cacheKey}`;
+		const existing = this.singleflight.get(singleflightKey);
 		if (existing) {
 			this.coalescedRequests += 1;
 			this.singleflightWaiters += 1;
@@ -265,14 +304,47 @@ export class ImageService {
 			});
 		}
 
-		const origin = Promise.resolve().then(loader);
+		generation.activeOrigins += 1;
+		const origin = Promise.resolve().then(() =>
+			loader(() => generation.value === generationValue),
+		);
+		void origin.then(
+			() => this.releaseInvalidationGeneration(imageIdentityKey, generation),
+			() => this.releaseInvalidationGeneration(imageIdentityKey, generation),
+		);
 		const tracked = this.withSingleflightTimeout(origin).finally(() => {
-			if (this.singleflight.get(cacheKey) === tracked) {
-				this.singleflight.delete(cacheKey);
+			if (this.singleflight.get(singleflightKey) === tracked) {
+				this.singleflight.delete(singleflightKey);
 			}
 		});
-		this.singleflight.set(cacheKey, tracked);
+		this.singleflight.set(singleflightKey, tracked);
 		return tracked;
+	}
+
+	private acquireInvalidationGeneration(
+		imageIdentityKey: string,
+	): ImageInvalidationGeneration {
+		const existing = this.invalidationGenerations.get(imageIdentityKey);
+		if (existing) {
+			return existing;
+		}
+
+		const created = { activeOrigins: 0, value: 0 };
+		this.invalidationGenerations.set(imageIdentityKey, created);
+		return created;
+	}
+
+	private releaseInvalidationGeneration(
+		imageIdentityKey: string,
+		generation: ImageInvalidationGeneration,
+	): void {
+		generation.activeOrigins = Math.max(0, generation.activeOrigins - 1);
+		if (
+			generation.activeOrigins === 0 &&
+			this.invalidationGenerations.get(imageIdentityKey) === generation
+		) {
+			this.invalidationGenerations.delete(imageIdentityKey);
+		}
 	}
 
 	private withSingleflightTimeout<T>(promise: Promise<T>): Promise<T> {
@@ -299,6 +371,11 @@ export class ImageService {
 	deleteCacheImage(
 		params: Pick<ImageEntity, 'path' | 'name'> & { clientServiceId: string },
 	) {
+		const imageIdentityKey = this.convertToImageIdentityKey(params);
+		const generation = this.invalidationGenerations.get(imageIdentityKey);
+		if (generation) {
+			generation.value += 1;
+		}
 		const deletedCount = this.cacheService.deleteCachedImagesForImage(params);
 
 		this.logger.log(

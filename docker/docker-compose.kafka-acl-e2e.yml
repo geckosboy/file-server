@@ -17,7 +17,7 @@ services:
       KAFKA_EARLY_START_LISTENERS: CONTROLLER
       KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
       KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
-      KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-secret" user_admin="admin-secret" user_client_a="client-a-secret" user_client_b="client-b-secret";
+      KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-secret" user_admin="admin-secret" user_client_a="client-a-secret" user_client_b="client-b-secret" user_storage="storage-secret" user_cache="cache-secret";
       KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
       KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: 'false'
       KAFKA_SUPER_USERS: User:admin;User:ANONYMOUS

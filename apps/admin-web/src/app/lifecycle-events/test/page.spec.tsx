@@ -36,12 +36,14 @@ describe('lifecycle 이벤트 페이지', () => {
 		expect(html).toContain('client service');
 		expect(html).toContain('image.upload.completed');
 		expect(html).toContain('image.upload.failed');
+		expect(html).toContain('image.delete.completed');
+		expect(html).toContain('image.delete.failed');
 		expect(html).toContain('status');
 		expect(html).toContain('imageKey');
 		expect(html).toContain('Catalog API');
 	});
 
-	it('upload completed/failed 상세 정보를 details로 표시한다', () => {
+	it('upload/delete lifecycle 상세 정보를 details로 표시한다', () => {
 		const html = renderLifecycleEvents(lifecycleEventListFixture);
 
 		expect(html).toContain('상세 보기');

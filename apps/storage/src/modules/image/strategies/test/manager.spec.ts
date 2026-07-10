@@ -3,7 +3,7 @@ import {
 	NotFoundException,
 	PayloadTooLargeException,
 } from '@nestjs/common';
-import { copyFile, mkdir, rm, stat, writeFile } from 'fs/promises';
+import { copyFile, mkdir, readdir, rm, stat, writeFile } from 'fs/promises';
 import * as path from 'path';
 import sharp from 'sharp';
 import { Root } from 'src/enum';
@@ -129,6 +129,44 @@ describe('스토리지 이미지 매니저', () => {
 		expect(metadata.format).toBe('webp');
 		expect(metadata.width).toBe(4);
 		expect(metadata.height).toBe(4);
+		await expect(
+			readdir(path.resolve(assetRoot, 'image', '.staging')),
+		).resolves.toEqual([]);
+	});
+
+	it('겹치는 variant 생성도 staging 후 canonical 파일 하나로 원자적으로 publish한다', async () => {
+		const source = await sharp({
+			create: {
+				width: 12,
+				height: 8,
+				channels: 3,
+				background: '#123456',
+			},
+		})
+			.png()
+			.toBuffer();
+		await mkdir(path.resolve(assetRoot, 'image'), { recursive: true });
+		await writeFile(path.resolve(assetRoot, 'image', 'main.png'), source);
+
+		const results = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				manager.createPreGeneratedVariant({
+					path: 'unit-manager/image',
+					name: 'main.png',
+					width: 4,
+					height: 4,
+					format: 'webp',
+				}),
+			),
+		);
+
+		expect(new Set(results.map(({ checksum }) => checksum)).size).toBe(1);
+		await expect(
+			readdir(path.resolve(assetRoot, 'image', '.staging')),
+		).resolves.toEqual([]);
+		await expect(
+			stat(path.resolve(assetRoot, 'image', 'main__w4_h4.webp')),
+		).resolves.toBeDefined();
 	});
 
 	it('사전 생성 파일명을 원본 이름과 사이즈 기준으로 만든다', () => {
@@ -139,6 +177,20 @@ describe('스토리지 이미지 매니저', () => {
 				format: 'jpeg',
 			}),
 		).toBe('hero.banner__w320_hauto.jpeg');
+	});
+
+	it('긴 source 이름의 variant 파일명은 storage key 계약 안에서 bounded 된다', () => {
+		const storagePath = `${'p'.repeat(250)}/image`;
+		const variantName = createPreGeneratedVariantName({
+			path: storagePath,
+			name: `${'a'.repeat(90)}.${'1'.repeat(32)}.png`,
+			width: 4096,
+			height: 4096,
+			format: 'webp',
+		});
+
+		expect(variantName.length).toBeLessThanOrEqual(127);
+		expect(`${storagePath}/${variantName}`).toHaveLength(384);
 	});
 
 	it('storage Sharp concurrency와 input pixel 한도를 강제한다', async () => {

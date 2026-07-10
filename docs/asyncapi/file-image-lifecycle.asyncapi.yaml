@@ -4,7 +4,7 @@ info:
   title: File Image Lifecycle Events
   version: 1.0.0
   description: |
-    Client Service가 이미지 업로드 완료/실패 후속 처리를 붙이기 위해 consume하는 Kafka event contract입니다.
+    Client Service가 이미지 업로드·삭제 완료/실패 후속 처리를 붙이기 위해 consume하는 Kafka event contract입니다.
     실제 런타임 검증 기준은 `@file/telemetry-contracts/lifecycle`의 `validateImageLifecycleEvent`와 같아야 합니다.
 defaultContentType: application/json
 servers:
@@ -16,9 +16,9 @@ channels:
   fileImageLifecycleV1:
     address: file.image.lifecycle.v1
     title: File image lifecycle topic
-    summary: Upload lifecycle events emitted by storage.
+    summary: Image upload/delete lifecycle events emitted by storage.
     description: |
-      `storage`는 업로드 성공/실패를 outbox에 먼저 저장한 뒤 이 topic으로 발행합니다.
+      `storage`는 업로드·삭제 성공/실패를 outbox에 먼저 저장한 뒤 이 topic으로 발행합니다.
       delivery는 at-least-once이므로 consumer는 `eventId`를 idempotency key로 사용해야 합니다.
       모든 Client Service는 같은 topic을 각자 고유 consumer group으로 consume합니다.
     servers:
@@ -28,18 +28,24 @@ channels:
         $ref: '#/components/messages/ImageUploadCompleted'
       imageUploadFailed:
         $ref: '#/components/messages/ImageUploadFailed'
+      imageDeleteCompleted:
+        $ref: '#/components/messages/ImageDeleteCompleted'
+      imageDeleteFailed:
+        $ref: '#/components/messages/ImageDeleteFailed'
 operations:
   consumeImageLifecycle:
     action: receive
     channel:
       $ref: '#/channels/fileImageLifecycleV1'
-    summary: Consume upload lifecycle events.
+    summary: Consume image lifecycle events.
     description: |
       Client Service는 `clientServiceId` 또는 `clientServiceSlug` 기준으로 자기 이벤트를 필터링하고,
-      `image.upload.completed` / `image.upload.failed`만 처리합니다.
+      `image.upload.completed`, `image.upload.failed`, `image.delete.completed`, `image.delete.failed`를 처리합니다.
     messages:
       - $ref: '#/channels/fileImageLifecycleV1/messages/imageUploadCompleted'
       - $ref: '#/channels/fileImageLifecycleV1/messages/imageUploadFailed'
+      - $ref: '#/channels/fileImageLifecycleV1/messages/imageDeleteCompleted'
+      - $ref: '#/channels/fileImageLifecycleV1/messages/imageDeleteFailed'
 components:
   messages:
     ImageUploadCompleted:
@@ -102,6 +108,60 @@ components:
             status: failed
             errorCode: BadRequestException
             errorMessage: Input buffer contains unsupported image format
+    ImageDeleteCompleted:
+      name: ImageDeleteCompleted
+      title: Image delete completed
+      summary: Storage durably completed the image delete state transition.
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/LifecycleKafkaMessage'
+      payload:
+        $ref: '#/components/schemas/ImageDeleteCompletedLifecycleEvent'
+      examples:
+        - name: DeleteCompletedExample
+          payload:
+            schemaVersion: 1
+            eventId: 00000000-0000-4000-8000-000000000003
+            eventType: image.delete.completed
+            occurredAt: '2026-07-07T00:01:00.000Z'
+            sourceApp: storage
+            environment: development
+            clientServiceId: svc_123
+            clientServiceSlug: catalog-api
+            requestId: delete-123
+            path: demo/image
+            name: sample.00000000-0000-4000-8000-000000000000.png
+            imageKey: demo/image/sample.00000000-0000-4000-8000-000000000000.png
+            format: png
+            status: success
+    ImageDeleteFailed:
+      name: ImageDeleteFailed
+      title: Image delete failed
+      summary: Storage could not complete an image delete attempt.
+      contentType: application/json
+      traits:
+        - $ref: '#/components/messageTraits/LifecycleKafkaMessage'
+      payload:
+        $ref: '#/components/schemas/ImageDeleteFailedLifecycleEvent'
+      examples:
+        - name: DeleteFailedExample
+          payload:
+            schemaVersion: 1
+            eventId: 00000000-0000-4000-8000-000000000004
+            eventType: image.delete.failed
+            occurredAt: '2026-07-07T00:01:05.000Z'
+            sourceApp: storage
+            environment: development
+            clientServiceId: svc_123
+            clientServiceSlug: catalog-api
+            requestId: delete-failed-123
+            path: demo/image
+            name: sample.00000000-0000-4000-8000-000000000000.png
+            imageKey: demo/image/sample.00000000-0000-4000-8000-000000000000.png
+            format: png
+            status: failed
+            errorCode: InternalServerErrorException
+            errorMessage: delete transaction unavailable
   messageTraits:
     LifecycleKafkaMessage:
       description: |
@@ -138,6 +198,8 @@ components:
           enum:
             - image.upload.completed
             - image.upload.failed
+            - image.delete.completed
+            - image.delete.failed
         occurredAt:
           type: string
           format: date-time
@@ -251,6 +313,49 @@ components:
             eventType:
               type: string
               enum: [image.upload.failed]
+            sourceApp:
+              type: string
+              enum: [storage]
+            status:
+              type: string
+              enum: [failed]
+            errorCode:
+              type: string
+              minLength: 1
+            errorMessage:
+              type: string
+              minLength: 1
+    ImageDeleteCompletedLifecycleEvent:
+      allOf:
+        - $ref: '#/components/schemas/ImageLifecycleEventBase'
+        - type: object
+          properties:
+            schemaVersion:
+              type: integer
+              enum: [1]
+            eventType:
+              type: string
+              enum: [image.delete.completed]
+            sourceApp:
+              type: string
+              enum: [storage]
+            status:
+              type: string
+              enum: [success]
+    ImageDeleteFailedLifecycleEvent:
+      allOf:
+        - $ref: '#/components/schemas/ImageLifecycleEventBase'
+        - type: object
+          required:
+            - errorCode
+            - errorMessage
+          properties:
+            schemaVersion:
+              type: integer
+              enum: [1]
+            eventType:
+              type: string
+              enum: [image.delete.failed]
             sourceApp:
               type: string
               enum: [storage]

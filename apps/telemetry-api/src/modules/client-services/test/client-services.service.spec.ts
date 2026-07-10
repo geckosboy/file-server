@@ -228,7 +228,7 @@ describe('클라이언트 서비스 관리 서비스', () => {
 			created.id,
 			subscription.id,
 			{
-				eventType: 'image.upload.failed',
+				eventType: 'image.delete.failed',
 				consumerGroup: 'catalog-image-failure-consumer',
 				isEnabled: false,
 				description: '실패 이벤트만 임시 소비합니다.',
@@ -237,7 +237,7 @@ describe('클라이언트 서비스 관리 서비스', () => {
 		const detail = await service.getService(created.id);
 
 		expect(updated).toMatchObject({
-			eventType: 'image.upload.failed',
+			eventType: 'image.delete.failed',
 			consumerGroup: 'catalog-image-failure-consumer',
 			isEnabled: false,
 			description: '실패 이벤트만 임시 소비합니다.',

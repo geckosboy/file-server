@@ -4,6 +4,7 @@ import {
 	Controller,
 	Delete,
 	Get,
+	Headers,
 	HttpStatus,
 	Param,
 	ParseFilePipe,
@@ -38,6 +39,10 @@ import {
 	toImageStoragePath,
 } from '@file/image-contracts';
 import { PolicyAwareImageUploadInterceptor } from './policy-aware-image-upload.interceptor';
+import {
+	IMAGE_UPLOAD_IDEMPOTENCY_HEADER,
+	resolveImageUploadIdempotencyKey,
+} from './image-upload-idempotency';
 
 @Controller('image')
 export class ImageController {
@@ -95,11 +100,21 @@ export class ImageController {
 		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Body() imageDto: UploadImageDto,
 		@UploadedFile(new ParseFilePipe()) file: Express.Multer.File,
+		@Headers(IMAGE_UPLOAD_IDEMPOTENCY_HEADER)
+		idempotencyKeyHeader?: string,
 	) {
+		const idempotencyKey = resolveImageUploadIdempotencyKey({
+			headerValue: idempotencyKeyHeader,
+			clientServiceContext,
+			path: imageDto.path,
+			originalName: file.originalname,
+			externalImageId: imageDto.externalImageId,
+		});
 		const result = await this.imageService.uploadFile({
 			file,
 			apiInfo: { ...imageDto },
 			clientServiceContext,
+			idempotencyKey,
 		});
 
 		res.status(HttpStatus.CREATED).json(result);

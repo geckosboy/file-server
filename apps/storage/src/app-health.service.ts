@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { mkdir, readFile, rm, writeFile } from 'fs/promises';
 import * as path from 'path';
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { Kafka, logLevel } from 'kafkajs';
 import {
 	getClientServiceAuthMetricsSnapshot,
@@ -11,6 +11,7 @@ import { readKafkaClientSecurityOptions } from '@file/nest-common';
 import { getImageTelemetryProducerStatus } from '@file/telemetry-contracts';
 import { AppConfig } from './config/env.schema';
 import { Root } from './enum';
+import { IMAGE_LIFECYCLE_HEALTH_METRICS } from './modules/image/image-lifecycle-health.service';
 
 interface DependencyHealth {
 	ok: boolean;
@@ -27,6 +28,11 @@ export class AppHealthService {
 	constructor(
 		private readonly config: AppConfig,
 		private readonly prisma: PrismaService,
+		@Optional()
+		@Inject(IMAGE_LIFECYCLE_HEALTH_METRICS)
+		private readonly imageLifecycleMetrics?: {
+			getMetrics(): Promise<{ ready: boolean; [key: string]: unknown }>;
+		},
 	) {}
 
 	getLive() {
@@ -38,19 +44,25 @@ export class AppHealthService {
 	}
 
 	async getReady() {
-		const [database, kafka, filesystem] = await Promise.all([
+		const [database, kafka, filesystem, imageLifecycle] = await Promise.all([
 			probe(() => this.prisma.$queryRaw`SELECT 1`, this.config),
 			probe(() => this.probeKafka(), this.config),
 			probe(() => this.probeFilesystem(), this.config),
+			this.imageLifecycleMetrics?.getMetrics(),
 		]);
 		return {
-			ok: database.ok && kafka.ok && filesystem.ok,
+			ok:
+				database.ok &&
+				kafka.ok &&
+				filesystem.ok &&
+				(imageLifecycle?.ready ?? true),
 			service: 'storage',
 			checkedAt: new Date().toISOString(),
 			dependencies: { database, kafka, filesystem },
 			operationalMetrics: {
 				auth: getClientServiceAuthMetricsSnapshot(),
 				telemetryProducer: getImageTelemetryProducerStatus(),
+				...(imageLifecycle ? { imageLifecycle } : {}),
 			},
 		};
 	}

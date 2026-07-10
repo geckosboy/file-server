@@ -62,6 +62,11 @@
 			"require": "./dist/lifecycle-topics.js",
 			"default": "./dist/lifecycle-topics.js"
 		},
+		"./image-operations": {
+			"types": "./dist/image-operations.d.ts",
+			"require": "./dist/image-operations.js",
+			"default": "./dist/image-operations.js"
+		},
 		"./admin-api": {
 			"types": "./dist/admin-api.d.ts",
 			"require": "./dist/admin-api.js",

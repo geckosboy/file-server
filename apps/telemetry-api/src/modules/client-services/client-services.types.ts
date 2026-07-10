@@ -10,6 +10,8 @@ export type JsonObject = Record<string, unknown>;
 export const ClientServiceLifecycleEventType = {
 	UploadCompleted: 'image.upload.completed',
 	UploadFailed: 'image.upload.failed',
+	DeleteCompleted: 'image.delete.completed',
+	DeleteFailed: 'image.delete.failed',
 } as const;
 export type ClientServiceLifecycleEventType =
 	(typeof ClientServiceLifecycleEventType)[keyof typeof ClientServiceLifecycleEventType];

@@ -1,8 +1,11 @@
 import { HttpException, Injectable, NotFoundException } from '@nestjs/common';
 import type { OutputInfo, Sharp } from 'sharp';
-import { mkdir, readFile, rm, stat } from 'fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat } from 'fs/promises';
+import { createHash, randomUUID } from 'crypto';
+import { relative, sep } from 'path';
 import { SharpStrategy } from './sharp';
 import {
+	createBoundedImageVariantName,
 	normalizeImageStoragePath,
 	normalizeSafeFileName,
 } from '@file/image-contracts';
@@ -39,13 +42,34 @@ export class ImageManager {
 		const path = strategy.getMainDirectory(safeSavePath);
 		await this.createMainDirectory(path);
 
-		/** 압축 및 저장 */
-		const result = (await strategy.compressAndSave({
-			from: strategy.getTempDirectory(safeTempName),
-			to: strategy.getMainDirectory(`${safeSavePath}/${safeMainName}`),
-		})) as Awaited<ReturnType<T['compressAndSave']>>;
+		/**
+		 * Final 이름에 직접 쓰지 않는다. 같은 directory의 staging 파일에
+		 * 압축/검증한 뒤 rename하여 filesystem 관점의 publish를 원자화한다.
+		 */
+		const stagingName = `${safeMainName}.stage-${randomUUID()}`;
+		const stagingPath = strategy.getMainDirectory(
+			`${safeSavePath}/${stagingName}`,
+		);
+		const finalPath = strategy.getMainDirectory(
+			`${safeSavePath}/${safeMainName}`,
+		);
+		try {
+			const result = (await strategy.compressAndSave({
+				from: strategy.getTempDirectory(safeTempName),
+				to: stagingPath,
+			})) as Awaited<ReturnType<T['compressAndSave']>>;
+			const checksum = createHash('sha256')
+				.update(await readFile(stagingPath))
+				.digest('hex');
+			await rename(stagingPath, finalPath);
 
-		return result;
+			return Object.assign(result as object, { checksum }) as Awaited<
+				ReturnType<T['compressAndSave']>
+			> & { checksum: string };
+		} catch (error) {
+			await rm(stagingPath, { force: true });
+			throw error;
+		}
 	}
 
 	/** Main 폴더에 저장된 원본을 지정된 사전 생성 사이즈 파일로 리사이징한다. */
@@ -61,6 +85,7 @@ export class ImageManager {
 		const safeName = normalizeSafeFileName(name, 'main name');
 		const variantName = createPreGeneratedVariantName({
 			name: safeName,
+			path: safePath,
 			width,
 			height,
 			format,
@@ -68,38 +93,46 @@ export class ImageManager {
 		const sourcePath = this.pathStrategy.getMainDirectory(
 			`${safePath}/${safeName}`,
 		);
+		const stagingDirectory = this.pathStrategy.getMainDirectory(
+			`${safePath}/.staging`,
+		);
+		const stagingPath = this.pathStrategy.getMainDirectory(
+			`${safePath}/.staging/${randomUUID()}.variant-stage`,
+		);
 		const outputPath = this.pathStrategy.getMainDirectory(
 			`${safePath}/${variantName}`,
 		);
 		const sourceStats = await stat(sourcePath);
 		this.pathStrategy.assertOutputSize(sourceStats.size);
-		let outputWritten = false;
 		let result: OutputInfo;
 		try {
+			await mkdir(stagingDirectory, { recursive: true });
 			const resizedImage = this.pathStrategy.createPipeline(sourcePath).resize({
 				...(width ? { width } : {}),
 				...(height ? { height } : {}),
 				fit: 'fill',
 			});
 
-			result = await toFormat(resizedImage, format).toFile(outputPath);
-			outputWritten = true;
+			result = await toFormat(resizedImage, format).toFile(stagingPath);
 			this.pathStrategy.assertOutputSize(result.size);
+			const checksum = createHash('sha256')
+				.update(await readFile(stagingPath))
+				.digest('hex');
+			await rename(stagingPath, outputPath);
+
+			return {
+				name: variantName,
+				width: width ?? undefined,
+				height: height ?? undefined,
+				format,
+				inputBytes: sourceStats.size,
+				outputBytes: result.size,
+				checksum,
+			};
 		} catch (error) {
-			if (outputWritten) {
-				await rm(outputPath, { force: true });
-			}
+			await rm(stagingPath, { force: true });
 			throw this.pathStrategy.toHttpException(error);
 		}
-
-		return {
-			name: variantName,
-			width: width ?? undefined,
-			height: height ?? undefined,
-			format,
-			inputBytes: sourceStats.size,
-			outputBytes: result.size,
-		};
 	}
 
 	/** Main 폴더에 있는 이미지 제거 */
@@ -119,6 +152,29 @@ export class ImageManager {
 		await rm(this.pathStrategy.getTempDirectory(safeName), {
 			force: true,
 		});
+	}
+
+	async mainImageExists({ path, name }: { path: string; name: string }) {
+		const safePath = this.normalizeMainPath(path);
+		const safeName = normalizeSafeFileName(name);
+		try {
+			await stat(this.pathStrategy.getMainDirectory(`${safePath}/${safeName}`));
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
+	async listStoredImageKeys(): Promise<string[]> {
+		const root = this.pathStrategy.getMainDirectory();
+		try {
+			const files = await walkFiles(root);
+			return files
+				.map((file) => relative(root, file).split(sep).join('/'))
+				.filter((key) => !key.includes('.stage-'));
+		} catch {
+			return [];
+		}
 	}
 
 	/** Buffer 형태의 이미지 데이터 가져오기 */
@@ -152,16 +208,22 @@ export const createPreGeneratedVariantName = ({
 	format,
 	height,
 	name,
+	path,
 	width,
 }: {
 	name: string;
+	path?: string;
 	width?: number | null;
 	height?: number | null;
 	format: PreGeneratedImageFormat;
 }) => {
-	const extensionIndex = name.lastIndexOf('.');
-	const baseName = extensionIndex > 0 ? name.slice(0, extensionIndex) : name;
-	return `${baseName}__w${width ?? 'auto'}_h${height ?? 'auto'}.${format}`;
+	return createBoundedImageVariantName({
+		name,
+		path: path ?? 'image',
+		width,
+		height,
+		format,
+	});
 };
 
 function toFormat(image: Sharp, format: PreGeneratedImageFormat) {
@@ -173,4 +235,15 @@ function toFormat(image: Sharp, format: PreGeneratedImageFormat) {
 		case 'webp':
 			return image.webp({ quality: 75 });
 	}
+}
+
+async function walkFiles(directory: string): Promise<string[]> {
+	const entries = await readdir(directory, { withFileTypes: true });
+	const nested = await Promise.all(
+		entries.map(async (entry) => {
+			const fullPath = `${directory}/${entry.name}`;
+			return entry.isDirectory() ? walkFiles(fullPath) : [fullPath];
+		}),
+	);
+	return nested.flat();
 }

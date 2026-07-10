@@ -49,11 +49,16 @@ export interface TimeseriesResponse {
 export type TopImageQuery = ImageFilter;
 
 export interface ImageListItem {
+	assetId?: string;
+	assetStatus?: string;
 	imageKey: string;
 	imageId?: number;
 	path: string;
 	name: string;
 	format?: string;
+	originalName?: string;
+	bytes?: number;
+	checksum?: string;
 	totalReads: number;
 	totalResizes: number;
 	totalCacheHits: number;

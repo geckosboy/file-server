@@ -376,11 +376,16 @@ export type ImageLifecycleEventsResponse = {
 };
 
 export type ImageListItem = {
+	assetId?: string;
+	assetStatus?: string;
 	imageKey: string;
 	imageId?: number;
 	path: string;
 	name: string;
 	format?: string;
+	originalName?: string;
+	bytes?: number;
+	checksum?: string;
 	totalReads: number;
 	totalResizes: number;
 	totalCacheHits: number;
@@ -410,6 +415,10 @@ export type ImageEventsResponse = {
 };
 
 export type ImageVariantListItem = {
+	variantId?: string;
+	status?: string;
+	storageKey?: string;
+	checksum?: string;
 	variantKey: string;
 	imageKey: string;
 	width?: number;
@@ -455,7 +464,10 @@ export type ImageResizeRecommendationsResponse = {
 
 export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
 export type ClientServiceLifecycleEventType =
-	'image.upload.completed' | 'image.upload.failed';
+	| 'image.upload.completed'
+	| 'image.upload.failed'
+	| 'image.delete.completed'
+	| 'image.delete.failed';
 export type ClientServiceImageResizeMode = 'ON_DEMAND' | 'PRE_GENERATE';
 export type ClientServiceImageResizeFormat = 'png' | 'jpeg' | 'webp';
 

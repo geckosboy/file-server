@@ -33,6 +33,9 @@ import {
 	IMAGE_TELEMETRY_TOPIC,
 	ImageTelemetryEventType,
 } from '.././image.telemetry';
+import { AppConfig } from '../../../config/env.schema';
+import { createImageCacheInvalidationEvent } from '@file/telemetry-contracts/image-operations';
+import { CacheInvalidationConsumerService } from '../cache-invalidation-consumer.service';
 import { ImageService } from '.././image.service';
 
 const createFetchResponse = (
@@ -83,7 +86,7 @@ describe('캐시 이미지 서비스', () => {
 		cacheService = {
 			getCachedImage: jest.fn(),
 			cacheImage: jest.fn(),
-			deleteCachedImagesForImage: jest.fn(),
+			deleteCachedImagesForImage: jest.fn().mockReturnValue(0),
 		};
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
@@ -253,6 +256,72 @@ describe('캐시 이미지 서비스', () => {
 			waiters: 0,
 			coalescedRequests: 99,
 		});
+	});
+
+	it('진행 중인 resize 이후 무효화를 처리하면 오래된 결과를 캐시에 다시 넣지 않는다', async () => {
+		const stale = Buffer.from('stale-singleflight-image');
+		const fresh = Buffer.from('fresh-singleflight-image');
+		cacheService.getCachedImage.mockReturnValue(undefined);
+		let resolveStaleFetch: ((response: Response) => void) | undefined;
+		let resolveFreshFetch: ((response: Response) => void) | undefined;
+		fetchSpy
+			.mockReturnValueOnce(
+				new Promise<Response>((resolve) => {
+					resolveStaleFetch = resolve;
+				}),
+			)
+			.mockReturnValueOnce(
+				new Promise<Response>((resolve) => {
+					resolveFreshFetch = resolve;
+				}),
+			);
+		const invalidationConsumer = new CacheInvalidationConsumerService(
+			{ kafkaClientBrokerList: [] } as unknown as AppConfig,
+			service,
+		);
+
+		const staleRequest = service.getCacheImage(
+			{ path: 'public', name: 'sample.png', width: 100, format: 'webp' },
+			clientServiceContext,
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+		const invalidation = createImageCacheInvalidationEvent({
+			eventId: 'invalidate-during-singleflight',
+			clientServiceId: clientServiceContext.clientServiceId,
+			path: 'public',
+			name: 'sample.png',
+			reason: 'delete',
+		});
+		invalidationConsumer.handlePayload(
+			Buffer.from(JSON.stringify(invalidation)),
+		);
+
+		const freshRequest = service.getCacheImage(
+			{ path: 'public', name: 'sample.png', width: 100, format: 'webp' },
+			clientServiceContext,
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+		resolveFreshFetch?.(
+			createFetchResponse(fresh, { contentType: 'image/webp' }),
+		);
+		await expect(freshRequest).resolves.toMatchObject({ imageBuffer: fresh });
+		expect(cacheService.cacheImage).toHaveBeenCalledTimes(1);
+		expect(cacheService.cacheImage).toHaveBeenCalledWith(
+			'service-1|public|100|x|webp|sample.png',
+			expect.objectContaining({ imageBuffer: fresh }),
+		);
+
+		resolveStaleFetch?.(
+			createFetchResponse(stale, { contentType: 'image/webp' }),
+		);
+		await expect(staleRequest).resolves.toMatchObject({ imageBuffer: stale });
+		expect(cacheService.cacheImage).toHaveBeenCalledTimes(1);
 	});
 
 	it('tenant나 variant가 다른 miss는 서로 다른 singleflight로 처리한다', async () => {

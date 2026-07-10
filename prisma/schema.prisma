@@ -20,6 +20,7 @@ model ClientService {
   adminAuditLogs         AdminAuditLog[]
   lifecycleSubscriptions ClientServiceLifecycleSubscription[]
   imageResizePolicy      ClientServiceImageResizePolicy?
+  imageAssets            ImageAsset[]
   events                 TelemetryEvent[]
   lifecycleEvents        ImageLifecycleEvent[]
 
@@ -176,6 +177,162 @@ model ClientServiceImageResizeVariant {
   @@map("client_service_image_resize_variants")
 }
 
+enum ImageAssetState {
+  Pending
+  Ready
+  Deleting
+  Deleted
+  Failed
+}
+
+enum ImageVariantState {
+  Pending
+  Ready
+  Deleting
+  Deleted
+  Failed
+}
+
+enum ImageVariantJobState {
+  Pending
+  Processing
+  Completed
+  Failed
+  Cancelled
+}
+
+model ImageAsset {
+  assetId         String        @id(map: "image_assets_pkey") @default(cuid()) @map("asset_id")
+  clientServiceId String        @map("client_service_id")
+  clientService   ClientService @relation(fields: [clientServiceId], references: [id], onDelete: Restrict, map: "image_assets_client_service_id_fkey")
+
+  idempotencyKey  String          @map("idempotency_key")
+  sourceEventId   String?         @unique(map: "image_assets_source_event_id_key") @map("source_event_id")
+  deleteEventId   String?         @unique(map: "image_assets_delete_event_id_key") @map("delete_event_id")
+  externalImageId Int?            @map("external_image_id")
+  logicalPath     String          @map("logical_path")
+  name            String
+  originalName    String          @map("original_name")
+  storageKey      String          @unique(map: "image_assets_storage_key_key") @map("storage_key")
+  contentType     String          @map("content_type")
+  inputBytes      Int?            @map("input_bytes")
+  bytes           Int?
+  checksum        String?
+  width           Int?
+  height          Int?
+  format          String?
+  status          ImageAssetState @default(Pending)
+  failureReason   String?         @map("failure_reason")
+  cacheVersion    Int             @default(1) @map("cache_version")
+
+  readyAt          DateTime? @map("ready_at")
+  deletingAt       DateTime? @map("deleting_at")
+  deletedAt        DateTime? @map("deleted_at")
+  failedAt         DateTime? @map("failed_at")
+  lastReconciledAt DateTime? @map("last_reconciled_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  variants    ImageVariant[]
+  variantJobs ImageVariantJob[]
+
+  @@unique([clientServiceId, idempotencyKey], map: "image_assets_owner_idempotency_key")
+  @@unique([clientServiceId, logicalPath, name], map: "image_assets_owner_path_name_key")
+  @@index([clientServiceId, status, createdAt], map: "image_assets_owner_state_created_idx")
+  @@index([status, updatedAt], map: "image_assets_reconciliation_idx")
+  @@index([status, lastReconciledAt, assetId], map: "image_assets_ready_reconciliation_idx")
+  @@index([status, lastReconciledAt, updatedAt, assetId], map: "image_assets_ready_unreconciled_idx")
+  @@index([status, deletedAt, assetId], map: "image_assets_deleted_cleanup_idx")
+  @@map("image_assets")
+}
+
+model ImageVariant {
+  variantId String     @id(map: "image_variants_pkey") @default(cuid()) @map("variant_id")
+  assetId   String     @map("asset_id")
+  asset     ImageAsset @relation(fields: [assetId], references: [assetId], onDelete: Cascade, map: "image_variants_asset_id_fkey")
+
+  specKey        String            @map("spec_key")
+  storageKey     String            @unique(map: "image_variants_storage_key_key") @map("storage_key")
+  width          Int?
+  height         Int?
+  format         String
+  sourceChecksum String            @map("source_checksum")
+  bytes          Int?
+  checksum       String?
+  status         ImageVariantState @default(Pending)
+  failureReason  String?           @map("failure_reason")
+  readyAt        DateTime?         @map("ready_at")
+  deletingAt     DateTime?         @map("deleting_at")
+  deletedAt      DateTime?         @map("deleted_at")
+  failedAt       DateTime?         @map("failed_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  jobs ImageVariantJob[]
+
+  @@unique([assetId, specKey], map: "image_variants_asset_spec_key")
+  @@index([assetId, status], map: "image_variants_asset_state_idx")
+  @@index([status, updatedAt], map: "image_variants_reconciliation_idx")
+  @@index([status, deletedAt, variantId], map: "image_variants_deleted_cleanup_idx")
+  @@map("image_variants")
+}
+
+model ImageVariantJob {
+  jobId     String       @id(map: "image_variant_jobs_pkey") @default(cuid()) @map("job_id")
+  assetId   String       @map("asset_id")
+  asset     ImageAsset   @relation(fields: [assetId], references: [assetId], onDelete: Cascade, map: "image_variant_jobs_asset_id_fkey")
+  variantId String       @map("variant_id")
+  variant   ImageVariant @relation(fields: [variantId], references: [variantId], onDelete: Cascade, map: "image_variant_jobs_variant_id_fkey")
+
+  jobKey           String               @unique(map: "image_variant_jobs_job_key_key") @map("job_key")
+  status           ImageVariantJobState @default(Pending)
+  attempts         Int                  @default(0)
+  nextAttemptAt    DateTime             @default(now()) @map("next_attempt_at")
+  leaseOwner       String?              @map("lease_owner")
+  leaseExpiresAt   DateTime?            @map("lease_expires_at")
+  lastError        String?              @map("last_error")
+  completedAt      DateTime?            @map("completed_at")
+  publishedAt      DateTime?            @map("published_at")
+  publishAttempts  Int                  @default(0) @map("publish_attempts")
+  nextPublishAt    DateTime             @default(now()) @map("next_publish_at")
+  publishLastError String?              @map("publish_last_error")
+  createdAt        DateTime             @default(now()) @map("created_at")
+  updatedAt        DateTime             @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt, leaseExpiresAt], map: "image_variant_jobs_claim_idx")
+  @@index([assetId, status], map: "image_variant_jobs_asset_state_idx")
+  @@index([publishedAt, nextPublishAt], map: "image_variant_jobs_publish_idx")
+  @@map("image_variant_jobs")
+}
+
+model ImageReconciliationLease {
+  leaseName String   @id(map: "image_reconciliation_leases_pkey") @map("lease_name")
+  owner     String
+  token     String   @unique(map: "image_reconciliation_leases_token_key")
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([expiresAt], map: "image_reconciliation_leases_expires_at_idx")
+  @@map("image_reconciliation_leases")
+}
+
+model ImageReconciliationMetric {
+  id                  String    @id(map: "image_reconciliation_metrics_pkey")
+  orphanCount         Int       @default(0) @map("orphan_count")
+  repairedCount       Int       @default(0) @map("repaired_count")
+  failedCount         Int       @default(0) @map("failed_count")
+  oldestPendingAgeMs  Float?    @map("oldest_pending_age_ms")
+  oldestDeletingAgeMs Float?    @map("oldest_deleting_age_ms")
+  durationMs          Int       @default(0) @map("duration_ms")
+  lastRunAt           DateTime? @map("last_run_at")
+  lastSuccessAt       DateTime? @map("last_success_at")
+  lastError           String?   @map("last_error")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@map("image_reconciliation_metrics")
+}
+
 model TelemetryEvent {
   id          String @id(map: "telemetry_events_pkey") @default(cuid())
   eventId     String @unique(map: "telemetry_events_event_id_key") @map("event_id")
@@ -226,6 +383,7 @@ model TelemetryEvent {
   @@index([sourceApp, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_source_app_occurred_event_idx")
   @@index([status, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_status_occurred_event_idx")
   @@index([imageKey, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_image_key_occurred_event_idx")
+  @@index([eventType, status, clientServiceId, imageKey, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_image_asset_backfill_idx")
   @@index([occurredAt, id], map: "telemetry_events_retention_occurred_at_id_idx")
   @@map("telemetry_events")
 }
@@ -276,6 +434,7 @@ model ImageLifecycleEvent {
   @@index([sourceApp, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_source_app_occurred_event_idx")
   @@index([status, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_status_occurred_event_idx")
   @@index([imageKey, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_image_key_occurred_event_idx")
+  @@index([eventType, status, clientServiceId, imageKey, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_image_asset_backfill_idx")
   @@index([occurredAt, id], map: "image_lifecycle_events_retention_occurred_at_id_idx")
   @@map("image_lifecycle_events")
 }

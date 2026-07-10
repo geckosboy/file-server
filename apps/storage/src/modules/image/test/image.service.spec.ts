@@ -27,6 +27,9 @@ import { PngStrategy } from '.././strategies/sharp/png.strategy';
 import { ImageManager } from '.././strategies/manager';
 import { createStoredImageName, ImageService } from '.././image.service';
 import { AppConfig } from 'src/config/env.schema';
+import { ImageAssetLifecycleService } from '../image-asset-lifecycle.service';
+import { ImageCacheInvalidationPublisher } from '../image-cache-invalidation.publisher';
+import { ImageLifecycleMetricsService } from '../image-lifecycle-metrics.service';
 
 type KafkaEmitPayload = { key: string; value: string };
 
@@ -42,6 +45,12 @@ const clientServiceContext: ClientServiceAuthContext = {
 	requestId: 'req-storage-1',
 	traceId: 'trace-storage-1',
 };
+
+const originalMetadataWritesFlag =
+	process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED;
+const originalDualReadFlag = process.env.IMAGE_ASSET_DUAL_READ_ENABLED;
+const originalSyncPregenerationFlag =
+	process.env.IMAGE_PREGENERATION_SYNC_COMPAT_ENABLED;
 
 const createMulterFile = (overrides: Partial<Express.Multer.File> = {}) => {
 	const buffer = Buffer.from('file-buffer');
@@ -78,7 +87,9 @@ describe('스토리지 이미지 서비스', () => {
 	let imagePregenerationService: jest.Mocked<
 		Pick<
 			ImagePregenerationService,
-			'preGenerateForUpload' | 'findPreGeneratedVariantForRequest'
+			| 'preGenerateForUpload'
+			| 'findPreGeneratedVariantForRequest'
+			| 'assertSourceReadable'
 		>
 	>;
 	let service: ImageService;
@@ -129,6 +140,7 @@ describe('스토리지 이미지 서비스', () => {
 		imagePregenerationService = {
 			preGenerateForUpload: jest.fn().mockResolvedValue([]),
 			findPreGeneratedVariantForRequest: jest.fn().mockResolvedValue(null),
+			assertSourceReadable: jest.fn().mockResolvedValue(null),
 		};
 		service = new ImageService(
 			new PngStrategy(),
@@ -146,7 +158,339 @@ describe('스토리지 이미지 서비스', () => {
 	});
 
 	afterEach(() => {
+		if (originalMetadataWritesFlag === undefined) {
+			delete process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED;
+		} else {
+			process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED =
+				originalMetadataWritesFlag;
+		}
+		if (originalSyncPregenerationFlag === undefined) {
+			delete process.env.IMAGE_PREGENERATION_SYNC_COMPAT_ENABLED;
+		} else {
+			process.env.IMAGE_PREGENERATION_SYNC_COMPAT_ENABLED =
+				originalSyncPregenerationFlag;
+		}
+		if (originalDualReadFlag === undefined) {
+			delete process.env.IMAGE_ASSET_DUAL_READ_ENABLED;
+		} else {
+			process.env.IMAGE_ASSET_DUAL_READ_ENABLED = originalDualReadFlag;
+		}
 		jest.restoreAllMocks();
+	});
+
+	it('Authoritative lifecycle flag는 authoritative lifecycle을 사용하고 legacy 응답 필드에 asset 상태를 추가한다', async () => {
+		process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED = 'true';
+		process.env.IMAGE_PREGENERATION_SYNC_COMPAT_ENABLED = 'false';
+		const lifecycle = {
+			upload: jest.fn().mockResolvedValue({
+				assetId: 'asset-1',
+				eventId: 'upload-event-1',
+				variantStatus: 'Pending',
+				path: 'products/image',
+				name: 'sample.stable.png',
+				storageKey: 'products/image/sample.stable.png',
+				checksum: 'source-checksum',
+				size: 80,
+				format: 'png',
+				durationMs: 5,
+			}),
+		};
+		const invalidation = { publish: jest.fn().mockResolvedValue(true) };
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
+			imagePregenerationService as unknown as ImagePregenerationService,
+			undefined,
+			lifecycle as unknown as ImageAssetLifecycleService,
+			invalidation as unknown as ImageCacheInvalidationPublisher,
+		);
+
+		const result = await service.uploadFile({
+			file: createMulterFile(),
+			apiInfo: { path: 'products/image', externalImageId: 10 },
+			clientServiceContext,
+			idempotencyKey: 'image-upload:v1:stable',
+		});
+
+		expect(lifecycle.upload).toHaveBeenCalledWith(
+			expect.any(PngStrategy),
+			expect.objectContaining({
+				idempotencyKey: 'image-upload:v1:stable',
+				clientServiceId: 'service-1',
+				path: 'products/image',
+				inputBytes: 11,
+			}),
+		);
+		expect(imageManager.saveImageFromTemp).not.toHaveBeenCalled();
+		expect(
+			imagePregenerationService.preGenerateForUpload,
+		).not.toHaveBeenCalled();
+		const storedName = (lifecycle.upload.mock.calls[0][1] as { name: string })
+			.name;
+		expect(result).toEqual({
+			imageKey: `products/image/${storedName}`,
+			path: 'products/image',
+			name: storedName,
+			originalName: 'sample.png',
+			format: 'png',
+			size: 80,
+			eventId: 'upload-event-1',
+			assetId: 'asset-1',
+			variantStatus: 'Pending',
+		});
+	});
+
+	it('Authoritative lifecycle flag off는 기존 저장/동기 pregeneration/응답 계약을 유지한다', async () => {
+		process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED = 'false';
+		const lifecycle = { upload: jest.fn() };
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
+			imagePregenerationService as unknown as ImagePregenerationService,
+			undefined,
+			lifecycle as unknown as ImageAssetLifecycleService,
+		);
+
+		const result = await service.uploadFile({
+			file: createMulterFile(),
+			apiInfo: { path: 'products/image', externalImageId: 10 },
+			clientServiceContext,
+			idempotencyKey: 'image-upload:v1:stable',
+		});
+
+		expect(lifecycle.upload).not.toHaveBeenCalled();
+		expect(imageManager.saveImageFromTemp).toHaveBeenCalled();
+		expect(imagePregenerationService.preGenerateForUpload).toHaveBeenCalled();
+		expect(result).toEqual(
+			expect.objectContaining({
+				imageKey: expect.any(String),
+				path: 'products/image',
+				name: expect.any(String),
+				originalName: 'sample.png',
+				format: 'png',
+				size: 128,
+				eventId: expect.any(String),
+			}),
+		);
+		expect(result).not.toHaveProperty('assetId');
+		expect(result).not.toHaveProperty('variantStatus');
+	});
+
+	it('Authoritative lifecycle sync compatibility는 asset identity를 전달하고 응답 variantStatus를 Ready로 수렴한다', async () => {
+		process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED = 'true';
+		process.env.IMAGE_PREGENERATION_SYNC_COMPAT_ENABLED = 'true';
+		const lifecycle = {
+			upload: jest.fn().mockResolvedValue({
+				assetId: 'asset-1',
+				eventId: 'upload-event-1',
+				variantStatus: 'Pending',
+				path: 'products/image',
+				name: 'sample.stable.png',
+				storageKey: 'products/image/sample.stable.png',
+				checksum: 'source-checksum',
+				size: 80,
+				format: 'png',
+				durationMs: 5,
+			}),
+		};
+		imagePregenerationService.preGenerateForUpload.mockResolvedValue([
+			{
+				variantId: 'variant-1',
+				width: 400,
+				format: 'webp',
+				durationMs: 5,
+				status: 'success',
+			},
+		]);
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
+			imagePregenerationService as unknown as ImagePregenerationService,
+			undefined,
+			lifecycle as unknown as ImageAssetLifecycleService,
+		);
+
+		const result = await service.uploadFile({
+			file: createMulterFile(),
+			apiInfo: { path: 'products/image', externalImageId: 10 },
+			clientServiceContext,
+			idempotencyKey: 'image-upload:v1:stable',
+		});
+
+		expect(imagePregenerationService.preGenerateForUpload).toHaveBeenCalledWith(
+			expect.objectContaining({
+				clientServiceId: 'service-1',
+				assetId: 'asset-1',
+				sourceChecksum: 'source-checksum',
+				path: 'products/image',
+			}),
+		);
+		expect(result).toEqual(
+			expect.objectContaining({ assetId: 'asset-1', variantStatus: 'Ready' }),
+		);
+	});
+
+	it('Authoritative lifecycle upload 실패는 legacy Kafka publish를 기다리지 않고 원래 오류를 보존한다', async () => {
+		process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED = 'true';
+		const lifecycle = {
+			upload: jest.fn().mockRejectedValue(new Error('disk down')),
+		};
+		lifecycleOutbox.enqueueAndPublish.mockReturnValue(
+			new Promise<void>(() => undefined),
+		);
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
+			imagePregenerationService as unknown as ImagePregenerationService,
+			undefined,
+			lifecycle as unknown as ImageAssetLifecycleService,
+		);
+
+		await expect(
+			Promise.race([
+				service.uploadFile({
+					file: createMulterFile(),
+					apiInfo: { path: 'products/image', externalImageId: 10 },
+					clientServiceContext,
+					idempotencyKey: 'image-upload:v1:stable',
+				}),
+				new Promise<never>((_resolve, reject) =>
+					setTimeout(() => reject(new Error('request awaited Kafka')), 100),
+				),
+			]),
+		).rejects.toThrow('disk down');
+		expect(lifecycleOutbox.enqueueAndPublish).not.toHaveBeenCalled();
+		expect(imageManager.deleteTempImage).toHaveBeenCalledWith('temp-file.png');
+	});
+
+	it('Authoritative lifecycle delete는 authoritative eventId로 완료 telemetry를 발행한다', async () => {
+		process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED = 'true';
+		const lifecycle = {
+			delete: jest.fn().mockResolvedValue({
+				alreadyDeleted: false,
+				eventId: 'delete-event-1',
+			}),
+		};
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
+			imagePregenerationService as unknown as ImagePregenerationService,
+			undefined,
+			lifecycle as unknown as ImageAssetLifecycleService,
+		);
+
+		await service.deleteImage({
+			path: 'products/image',
+			name: 'sample.png',
+			clientServiceContext,
+		});
+
+		expect(lifecycle.delete).toHaveBeenCalledWith({
+			clientServiceId: 'service-1',
+			path: 'products/image',
+			name: 'sample.png',
+		});
+		expect(imageManager.deleteMainImage).not.toHaveBeenCalled();
+		expect(parseKafkaPayload(getEmittedMessage(IMAGE_TELEMETRY_TOPIC))).toEqual(
+			expect.objectContaining({
+				eventId: 'delete-event-1',
+				eventType: ImageTelemetryEventType.DeleteCompleted,
+				status: 'success',
+			}),
+		);
+	});
+
+	it('dual-read 중 authoritative metadata가 없으면 legacy filesystem delete로 fallback한다', async () => {
+		process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED = 'true';
+		process.env.IMAGE_ASSET_DUAL_READ_ENABLED = 'true';
+		const lifecycle = {
+			delete: jest.fn().mockResolvedValue({
+				alreadyDeleted: true,
+				metadataMissing: true,
+			}),
+		};
+		const cacheInvalidationPublisher = {
+			publish: jest.fn().mockResolvedValue(true),
+		};
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
+			imagePregenerationService as unknown as ImagePregenerationService,
+			{
+				CACHE_SERVER: 'http://cache.test',
+				INTERNAL_API_KEY: 'internal-test-key',
+			} as AppConfig,
+			lifecycle as unknown as ImageAssetLifecycleService,
+			cacheInvalidationPublisher as unknown as ImageCacheInvalidationPublisher,
+			new ImageLifecycleMetricsService(),
+		);
+
+		await service.deleteImage({
+			path: 'products/image',
+			name: 'legacy.png',
+			clientServiceContext,
+		});
+
+		expect(imageManager.deleteMainImage).toHaveBeenCalledWith({
+			path: 'products/image',
+			name: 'legacy.png',
+		});
+		expect(fetchSpy).toHaveBeenCalledWith(
+			'http://cache.test/image/products/legacy.png/cache',
+			expect.objectContaining({ method: 'DELETE' }),
+		);
+		expect(cacheInvalidationPublisher.publish).toHaveBeenCalledWith({
+			eventId: expect.any(String),
+			clientServiceId: 'service-1',
+			path: 'products',
+			name: 'legacy.png',
+			reason: 'delete',
+		});
+	});
+
+	it('authoritative Deleted metadata는 dual-read 중에도 legacy file을 재삭제하지 않는다', async () => {
+		process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED = 'true';
+		process.env.IMAGE_ASSET_DUAL_READ_ENABLED = 'true';
+		const lifecycle = {
+			delete: jest.fn().mockResolvedValue({ alreadyDeleted: true }),
+		};
+		service = new ImageService(
+			new PngStrategy(),
+			new JpegStrategy(),
+			imageManager as unknown as ImageManager,
+			imageClient as unknown as ClientKafka,
+			lifecycleOutbox as unknown as ImageLifecycleOutboxService,
+			imagePregenerationService as unknown as ImagePregenerationService,
+			undefined,
+			lifecycle as unknown as ImageAssetLifecycleService,
+		);
+
+		await service.deleteImage({
+			path: 'products/image',
+			name: 'deleted.png',
+			clientServiceContext,
+		});
+
+		expect(imageManager.deleteMainImage).not.toHaveBeenCalled();
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 
 	it('업로드된 PNG를 원본 파일명 기반 고유 파일명으로 압축해 저장한다', async () => {
@@ -181,6 +525,17 @@ describe('스토리지 이미지 서비스', () => {
 		expect(createStoredImageName('sample.png', 'fixed-id')).toBe(
 			'sample.fixed-id.png',
 		);
+	});
+
+	it('긴 원본명도 suffix와 확장자를 보존하며 API filename 상한에 맞춘다', () => {
+		const storedName = createStoredImageName(
+			`${'a'.repeat(120)}.png`,
+			'1'.repeat(32),
+			127,
+		);
+
+		expect(storedName).toHaveLength(127);
+		expect(storedName).toMatch(/\.1{32}\.png$/);
 	});
 
 	it('파일 업로드 후 lifecycle/telemetry를 발행하고 이전 이미지와 임시 파일을 정리한다', async () => {
@@ -527,6 +882,7 @@ describe('스토리지 이미지 서비스', () => {
 			width: 400,
 			height: 400,
 			format: 'webp',
+			authoritativeAsset: undefined,
 		});
 		expect(imageManager.getBufferImage).not.toHaveBeenCalled();
 		expect(result).toEqual(
@@ -545,7 +901,27 @@ describe('스토리지 이미지 서비스', () => {
 		);
 	});
 
+	it('authoritative tombstone 또는 준비 중 상태면 filesystem을 읽지 않는다', async () => {
+		imagePregenerationService.assertSourceReadable.mockRejectedValue(
+			new Error('authoritative asset is not Ready'),
+		);
+
+		await expect(
+			service.getImage(
+				{ path: 'products', name: 'sample.png' },
+				clientServiceContext,
+			),
+		).rejects.toThrow('authoritative asset is not Ready');
+		expect(imageManager.getBufferImage).not.toHaveBeenCalled();
+		expect(
+			imagePregenerationService.findPreGeneratedVariantForRequest,
+		).not.toHaveBeenCalled();
+	});
+
 	it('메인 이미지 삭제 후 cache 앱의 리사이즈 캐시를 무효화한다', async () => {
+		const cacheInvalidationPublisher = {
+			publish: jest.fn().mockResolvedValue(true),
+		};
 		service = new ImageService(
 			new PngStrategy(),
 			new JpegStrategy(),
@@ -557,6 +933,9 @@ describe('스토리지 이미지 서비스', () => {
 				CACHE_SERVER: 'http://cache.test',
 				INTERNAL_API_KEY: 'internal-test-key',
 			} as AppConfig,
+			undefined,
+			cacheInvalidationPublisher as unknown as ImageCacheInvalidationPublisher,
+			new ImageLifecycleMetricsService(),
 		);
 
 		await service.deleteImage({
@@ -580,5 +959,12 @@ describe('스토리지 이미지 서비스', () => {
 				}),
 			},
 		);
+		expect(cacheInvalidationPublisher.publish).toHaveBeenCalledWith({
+			eventId: expect.any(String),
+			clientServiceId: 'service-1',
+			path: 'products',
+			name: 'sample.png',
+			reason: 'delete',
+		});
 	});
 });

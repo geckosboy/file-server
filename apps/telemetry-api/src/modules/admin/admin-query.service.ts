@@ -75,11 +75,16 @@ export interface EventListResponse {
 }
 
 export interface ImageListItem {
+	assetId?: string;
+	assetStatus?: string;
 	imageKey: string;
 	imageId?: number;
 	path: string;
 	name: string;
 	format?: string;
+	originalName?: string;
+	bytes?: number;
+	checksum?: string;
 	totalReads: number;
 	totalResizes: number;
 	totalCacheHits: number;
@@ -166,23 +171,29 @@ export class AdminQueryService {
 		const lifecycleKafka =
 			this.lifecycleKafkaStatusService?.getHealth() ??
 			disabledLifecycleKafkaHealth();
-		const [metrics, lifecycleMetrics, outbox] = await Promise.all([
-			withHealthTimeout(
-				readMetrics(() => this.repository.getMetrics()),
-				timeoutMs,
-				unavailableMetrics(),
-			),
-			withHealthTimeout(
-				readMetrics(() => this.lifecycleRepository.getMetrics()),
-				timeoutMs,
-				unavailableMetrics(),
-			),
-			withHealthTimeout(
-				this.getOutboxMetrics(storageConnected && lifecycleStorageConnected),
-				timeoutMs,
-				unavailableOutboxMetrics(),
-			),
-		]);
+		const [metrics, lifecycleMetrics, outbox, imageLifecycle] =
+			await Promise.all([
+				withHealthTimeout(
+					readMetrics(() => this.repository.getMetrics()),
+					timeoutMs,
+					unavailableMetrics(),
+				),
+				withHealthTimeout(
+					readMetrics(() => this.lifecycleRepository.getMetrics()),
+					timeoutMs,
+					unavailableMetrics(),
+				),
+				withHealthTimeout(
+					this.getOutboxMetrics(storageConnected && lifecycleStorageConnected),
+					timeoutMs,
+					unavailableOutboxMetrics(),
+				),
+				withHealthTimeout(
+					this.getImageLifecycleMetrics(storageConnected),
+					timeoutMs,
+					unavailableImageLifecycleMetrics(),
+				),
+			]);
 		const ok =
 			storageConnected &&
 			lifecycleStorageConnected &&
@@ -217,14 +228,151 @@ export class AdminQueryService {
 					reconnectAttempts: lifecycleKafka.reconnectAttempts,
 				},
 				outbox,
-				reconciliation: {
-					supported: false,
-					orphanCount: null,
-					disabledReason:
-						'Authoritative asset reconciliation belongs to Stage 5.',
-				},
+				imageLifecycle,
+				reconciliation: imageLifecycle.reconciliation,
 			},
 		};
+	}
+
+	private async getImageLifecycleMetrics(databaseReady: boolean) {
+		if (!databaseReady || !this.prisma)
+			return unavailableImageLifecycleMetrics();
+		try {
+			const [[assets], [variants], [jobs], [reconciliation]] =
+				await Promise.all([
+					this.prisma.$queryRaw<
+						Array<
+							Record<
+								'pending' | 'ready' | 'deleting' | 'deleted' | 'failed',
+								number
+							> & {
+								oldestPendingAgeMs: number | null;
+								oldestDeletingAgeMs: number | null;
+							}
+						>
+					>`SELECT
+						COUNT(*) FILTER (WHERE status='Pending')::int AS pending,
+						COUNT(*) FILTER (WHERE status='Ready')::int AS ready,
+						COUNT(*) FILTER (WHERE status='Deleting')::int AS deleting,
+						COUNT(*) FILTER (WHERE status='Deleted')::int AS deleted,
+						COUNT(*) FILTER (WHERE status='Failed')::int AS failed,
+						(
+							EXTRACT(EPOCH FROM (
+								CURRENT_TIMESTAMP - MIN(created_at) FILTER (WHERE status='Pending')
+							)) * 1000
+						)::double precision AS "oldestPendingAgeMs",
+						(
+							EXTRACT(EPOCH FROM (
+								CURRENT_TIMESTAMP - MIN(COALESCE(deleting_at, updated_at))
+									FILTER (WHERE status='Deleting')
+							)) * 1000
+						)::double precision AS "oldestDeletingAgeMs"
+					FROM image_assets`,
+					this.prisma.$queryRaw<
+						Array<
+							Record<
+								'pending' | 'ready' | 'deleting' | 'deleted' | 'failed',
+								number
+							> & {
+								oldestPendingAgeMs: number | null;
+								oldestDeletingAgeMs: number | null;
+							}
+						>
+					>`SELECT
+						COUNT(*) FILTER (WHERE status='Pending')::int AS pending,
+						COUNT(*) FILTER (WHERE status='Ready')::int AS ready,
+						COUNT(*) FILTER (WHERE status='Deleting')::int AS deleting,
+						COUNT(*) FILTER (WHERE status='Deleted')::int AS deleted,
+						COUNT(*) FILTER (WHERE status='Failed')::int AS failed,
+						(
+							EXTRACT(EPOCH FROM (
+								CURRENT_TIMESTAMP - MIN(created_at) FILTER (WHERE status='Pending')
+							)) * 1000
+						)::double precision AS "oldestPendingAgeMs",
+						(
+							EXTRACT(EPOCH FROM (
+								CURRENT_TIMESTAMP - MIN(COALESCE(deleting_at, updated_at))
+									FILTER (WHERE status='Deleting')
+							)) * 1000
+						)::double precision AS "oldestDeletingAgeMs"
+					FROM image_variants`,
+					this.prisma.$queryRaw<
+						Array<
+							Record<
+								'pending' | 'processing' | 'completed' | 'failed' | 'cancelled',
+								number
+							> & { oldestActiveAgeMs: number | null }
+						>
+					>`SELECT
+						COUNT(*) FILTER (WHERE status='Pending')::int AS pending,
+						COUNT(*) FILTER (WHERE status='Processing')::int AS processing,
+						COUNT(*) FILTER (WHERE status='Completed')::int AS completed,
+						COUNT(*) FILTER (WHERE status='Failed')::int AS failed,
+						COUNT(*) FILTER (WHERE status='Cancelled')::int AS cancelled,
+						(
+							EXTRACT(EPOCH FROM (
+								CURRENT_TIMESTAMP - MIN(
+									CASE
+										WHEN status='Pending' THEN created_at
+										WHEN status='Processing' THEN updated_at
+									END
+								)
+							)) * 1000
+						)::double precision AS "oldestActiveAgeMs"
+					FROM image_variant_jobs`,
+					this.prisma.$queryRaw<
+						Array<{
+							orphanCount: number;
+							repairedCount: number;
+							failedCount: number;
+							oldestPendingAgeMs: number | null;
+							oldestDeletingAgeMs: number | null;
+							durationMs: number;
+							lastRunAt: Date | null;
+							lastSuccessAt: Date | null;
+							lastError: string | null;
+						}>
+					>`SELECT
+						orphan_count AS "orphanCount", repaired_count AS "repairedCount",
+						failed_count AS "failedCount", oldest_pending_age_ms AS "oldestPendingAgeMs",
+						oldest_deleting_age_ms AS "oldestDeletingAgeMs", duration_ms AS "durationMs",
+						last_run_at AS "lastRunAt", last_success_at AS "lastSuccessAt",
+						last_error AS "lastError"
+					FROM image_reconciliation_metrics
+					WHERE id='image-asset-reconciliation'`,
+				]);
+			const actualReconciliation = reconciliation
+				? {
+						supported: true,
+						...reconciliation,
+						lastRunAt: reconciliation.lastRunAt?.toISOString() ?? null,
+						lastSuccessAt: reconciliation.lastSuccessAt?.toISOString() ?? null,
+					}
+				: {
+						supported: true,
+						orphanCount: 0,
+						repairedCount: 0,
+						failedCount: 0,
+						oldestPendingAgeMs: null,
+						oldestDeletingAgeMs: null,
+						durationMs: 0,
+						lastRunAt: null,
+						lastSuccessAt: null,
+						lastError: null,
+					};
+			return {
+				available: true,
+				assets,
+				variants,
+				jobs: {
+					...jobs,
+					lagMs: jobs.oldestActiveAgeMs,
+				},
+				reconciliation: presentAdminReconciliationMetrics(actualReconciliation),
+			};
+		} catch {
+			return unavailableImageLifecycleMetrics();
+		}
 	}
 
 	private async getOutboxMetrics(databaseReady: boolean) {
@@ -515,6 +663,42 @@ function unavailableOutboxMetrics() {
 		publishedCount: null,
 		retryCount: null,
 		oldestUnpublishedAgeMs: null,
+	};
+}
+
+function unavailableImageLifecycleMetrics() {
+	return {
+		available: false,
+		assets: null,
+		variants: null,
+		jobs: null,
+		reconciliation: {
+			supported: false,
+			orphanCount: null,
+			repairedCount: null,
+			failedCount: null,
+			lastRunAt: null,
+		},
+	};
+}
+
+function presentAdminReconciliationMetrics<
+	T extends { supported: boolean; orphanCount: number | null },
+>(value: T) {
+	if (
+		process.env.IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED !== 'true'
+	) {
+		return value;
+	}
+	return {
+		...value,
+		supported: false,
+		orphanCount: null,
+		transition: {
+			imageLifecycleSupported: value.supported,
+			imageLifecycleOrphanCount: value.orphanCount,
+			legacyCompatEnabled: true,
+		},
 	};
 }
 

@@ -9,11 +9,18 @@ import { ClientKafka } from '@nestjs/microservices';
 import { ImageLifecycleOutbox, Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
 import {
+	IMAGE_CACHE_INVALIDATION_TOPIC,
+	ImageCacheInvalidationEvent,
+	assertImageCacheInvalidationEvent,
+	createImageCacheInvalidationKafkaKey,
+} from '@file/telemetry-contracts/image-operations';
+import {
 	assertImageLifecycleEvent,
 	createLifecycleKafkaKey,
 } from '@file/telemetry-contracts/lifecycle';
 import { createClientLifecycleTopic } from '@file/telemetry-contracts/lifecycle-topics';
 import { randomUUID } from 'crypto';
+import { lastValueFrom } from 'rxjs';
 import {
 	IMAGE_LIFECYCLE_TOPIC,
 	ImageLifecycleEvent,
@@ -116,8 +123,15 @@ export class ImageLifecycleOutboxService
 	}
 
 	async enqueue(event: ImageLifecycleEvent): Promise<ImageLifecycleOutbox[]> {
-		const topics = await this.resolveDestinationTopics(event);
-		await this.prisma.imageLifecycleOutbox.createMany({
+		return this.enqueueWithinTransaction(this.prisma, event);
+	}
+
+	async enqueueWithinTransaction(
+		database: Prisma.TransactionClient | PrismaService,
+		event: ImageLifecycleEvent,
+	): Promise<ImageLifecycleOutbox[]> {
+		const topics = await this.resolveDestinationTopics(event, database);
+		await database.imageLifecycleOutbox.createMany({
 			data: topics.map((topic) => ({
 				eventId: event.eventId,
 				topic,
@@ -129,9 +143,29 @@ export class ImageLifecycleOutboxService
 			skipDuplicates: true,
 		});
 
-		return this.prisma.imageLifecycleOutbox.findMany({
+		return database.imageLifecycleOutbox.findMany({
 			where: { eventId: event.eventId, topic: { in: topics } },
 			orderBy: { topic: 'asc' },
+		});
+	}
+
+	async enqueueCacheInvalidationWithinTransaction(
+		database: Prisma.TransactionClient | PrismaService,
+		event: ImageCacheInvalidationEvent,
+	): Promise<void> {
+		const validated = assertImageCacheInvalidationEvent(event);
+		await database.imageLifecycleOutbox.createMany({
+			data: [
+				{
+					eventId: validated.eventId,
+					topic: readCacheInvalidationTopic(),
+					kafkaKey: createImageCacheInvalidationKafkaKey(validated),
+					payload: validated as unknown as Prisma.InputJsonValue,
+					status: OutboxStatus.Pending,
+					nextAttemptAt: new Date(),
+				},
+			],
+			skipDuplicates: true,
 		});
 	}
 
@@ -286,6 +320,7 @@ export class ImageLifecycleOutboxService
 
 	private async resolveDestinationTopics(
 		event: ImageLifecycleEvent,
+		database: Prisma.TransactionClient | PrismaService = this.prisma,
 	): Promise<string[]> {
 		const topics = [IMAGE_LIFECYCLE_TOPIC as string];
 		if (!event.clientServiceId) {
@@ -293,7 +328,7 @@ export class ImageLifecycleOutboxService
 		}
 
 		const activeSubscription =
-			await this.prisma.clientServiceLifecycleSubscription.findFirst({
+			await database.clientServiceLifecycleSubscription.findFirst({
 				where: {
 					clientServiceId: event.clientServiceId,
 					eventType: event.eventType,
@@ -351,12 +386,22 @@ export class ImageLifecycleOutboxService
 
 	private async tryPublish(row: ImageLifecycleOutbox): Promise<void> {
 		try {
-			const event = assertImageLifecycleEvent(row.payload);
-			await publishImageLifecycleEventOrThrow({
-				client: this.imageClient,
-				event,
-				topic: row.topic,
-			});
+			if (row.topic === readCacheInvalidationTopic()) {
+				const event = assertImageCacheInvalidationEvent(row.payload);
+				await lastValueFrom(
+					this.imageClient.emit(row.topic, {
+						key: createImageCacheInvalidationKafkaKey(event),
+						value: JSON.stringify(event),
+					}),
+				);
+			} else {
+				const event = assertImageLifecycleEvent(row.payload);
+				await publishImageLifecycleEventOrThrow({
+					client: this.imageClient,
+					event,
+					topic: row.topic,
+				});
+			}
 			await this.prisma.imageLifecycleOutbox.updateMany({
 				where: { id: row.id, leaseOwner: this.leaseOwner },
 				data: {
@@ -398,6 +443,12 @@ function readBatchSize(): number {
 	return readPositiveInteger(
 		process.env.LIFECYCLE_OUTBOX_PUBLISH_BATCH_SIZE,
 		DEFAULT_BATCH_SIZE,
+	);
+}
+
+function readCacheInvalidationTopic(): string {
+	return (
+		process.env.CACHE_INVALIDATION_KAFKA_TOPIC ?? IMAGE_CACHE_INVALIDATION_TOPIC
 	);
 }
 

@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
+import { createImageCacheInvalidationEvent } from '@file/telemetry-contracts/image-operations';
 import { of, throwError } from 'rxjs';
 import {
 	createImageLifecycleEvent,
@@ -99,6 +100,8 @@ describe('이미지 lifecycle outbox 서비스', () => {
 		process.env.LIFECYCLE_OUTBOX_CLEANUP_BATCH_SLEEP_MS;
 	const originalCleanupLockTimeout =
 		process.env.LIFECYCLE_OUTBOX_CLEANUP_LOCK_TIMEOUT_MS;
+	const originalCacheInvalidationTopic =
+		process.env.CACHE_INVALIDATION_KAFKA_TOPIC;
 	let prisma: PrismaMock;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let service: ImageLifecycleOutboxService;
@@ -144,6 +147,10 @@ describe('이미지 lifecycle outbox 서비스', () => {
 		restoreEnvironmentValue(
 			'LIFECYCLE_OUTBOX_CLEANUP_LOCK_TIMEOUT_MS',
 			originalCleanupLockTimeout,
+		);
+		restoreEnvironmentValue(
+			'CACHE_INVALIDATION_KAFKA_TOPIC',
+			originalCacheInvalidationTopic,
 		);
 		jest.restoreAllMocks();
 	});
@@ -272,6 +279,48 @@ describe('이미지 lifecycle outbox 서비스', () => {
 				}),
 			}),
 		);
+	});
+
+	it('cache invalidation row를 같은 durable outbox에서 재시도 가능하게 발행한다', async () => {
+		const configuredTopic = 'custom.image.cache-invalidation.v1';
+		process.env.CACHE_INVALIDATION_KAFKA_TOPIC = configuredTopic;
+		const invalidation = createImageCacheInvalidationEvent({
+			eventId: 'delete-event-1',
+			occurredAt: '2026-07-03T00:00:00.000Z',
+			clientServiceId: 'service-1',
+			path: 'products',
+			name: 'sample.png',
+			reason: 'delete',
+			assetId: 'asset-1',
+		});
+		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([
+			createOutboxRecord({
+				eventId: invalidation.eventId,
+				topic: configuredTopic,
+				payload: invalidation as unknown as Prisma.JsonValue,
+			}),
+		]);
+
+		await service.enqueueCacheInvalidationWithinTransaction(
+			prisma as unknown as PrismaService,
+			invalidation,
+		);
+		await service.publishPending();
+
+		expect(prisma.imageLifecycleOutbox.createMany).toHaveBeenCalledWith({
+			data: [
+				expect.objectContaining({
+					eventId: 'delete-event-1',
+					topic: configuredTopic,
+					status: 'PENDING',
+				}),
+			],
+			skipDuplicates: true,
+		});
+		expect(imageClient.emit).toHaveBeenCalledWith(configuredTopic, {
+			key: 'service-1:products/sample.png',
+			value: JSON.stringify(invalidation),
+		});
 	});
 
 	it('active subscription이면 동일 eventId payload를 canonical/client topic별 row로 발행한다', async () => {

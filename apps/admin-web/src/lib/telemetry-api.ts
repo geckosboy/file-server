@@ -3,7 +3,10 @@ import { getCurrentAdminAuditHeaders } from './admin-session';
 export type SourceApp = 'storage' | 'resize' | 'cache';
 export type EventStatus = 'success' | 'failed';
 export type LifecycleEventType =
-	'image.upload.completed' | 'image.upload.failed';
+	| 'image.upload.completed'
+	| 'image.upload.failed'
+	| 'image.delete.completed'
+	| 'image.delete.failed';
 export type ClientServiceStatus = 'ACTIVE' | 'DISABLED';
 export type ImageResizeMode = 'ON_DEMAND' | 'PRE_GENERATE';
 export type ImageResizeFormat = 'png' | 'jpeg' | 'webp';
@@ -110,11 +113,16 @@ export interface LifecycleEventListResponse {
 }
 
 export interface ImageListItem {
+	assetId?: string;
+	assetStatus?: string;
 	imageKey: string;
 	imageId?: number;
 	path: string;
 	name: string;
 	format?: string;
+	originalName?: string;
+	bytes?: number;
+	checksum?: string;
 	totalReads: number;
 	totalResizes: number;
 	totalCacheHits: number;

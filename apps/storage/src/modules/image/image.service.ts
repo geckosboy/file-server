@@ -11,14 +11,17 @@ import {
 	createInternalServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 } from '@file/database';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { extension } from 'mime-types';
 import { performance } from 'perf_hooks';
 
 import {
+	getMaxImageFileNameLengthForPath,
 	GetImageDto,
 	ImageEntity,
+	MAX_SAFE_FILE_NAME_LENGTH,
 	UploadImageDto,
+	normalizeImageStoragePath,
 	normalizeSafeFileName,
 } from '@file/image-contracts';
 import {
@@ -46,6 +49,12 @@ import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
 import { SharpStrategy } from './strategies/sharp';
 import { AppConfig } from 'src/config/env.schema';
+import {
+	ImageAssetDeleteFailure,
+	ImageAssetLifecycleService,
+} from './image-asset-lifecycle.service';
+import { ImageCacheInvalidationPublisher } from './image-cache-invalidation.publisher';
+import { ImageLifecycleMetricsService } from './image-lifecycle-metrics.service';
 
 @Injectable()
 export class ImageService {
@@ -59,6 +68,12 @@ export class ImageService {
 		private readonly lifecycleOutbox: ImageLifecycleOutboxService,
 		private readonly imagePregenerationService: ImagePregenerationService,
 		@Optional() private readonly appConfig?: AppConfig,
+		@Optional()
+		private readonly assetLifecycle?: ImageAssetLifecycleService,
+		@Optional()
+		private readonly cacheInvalidationPublisher?: ImageCacheInvalidationPublisher,
+		@Optional()
+		private readonly imageLifecycleMetrics?: ImageLifecycleMetricsService,
 	) {}
 
 	private publishTelemetryEvent(event: ImageTelemetryEvent): void {
@@ -251,14 +266,19 @@ export class ImageService {
 			file.originalname,
 			'original name',
 		);
-		const mainName = createStoredImageName(originalName);
+		const storagePath = normalizeImageStoragePath(apiInfo.path);
+		const mainName = createStoredImageName(
+			originalName,
+			undefined,
+			getMaxImageFileNameLengthForPath(storagePath),
+		);
 
 		try {
 			const startTime = performance.now();
 			const { format, size } = await this.imageManager.saveImageFromTemp(
 				strategy,
 				{
-					savePath: apiInfo.path,
+					savePath: storagePath,
 					mainName,
 					tempName: file.filename,
 				},
@@ -285,7 +305,82 @@ export class ImageService {
 	}) {
 		const { clientServiceContext, name, path, isTemp } = imageInfo;
 		if (!isTemp && path) {
+			if (
+				this.isAuthoritativeImageLifecycleEnabled() &&
+				this.assetLifecycle &&
+				clientServiceContext?.clientServiceId
+			) {
+				const telemetryContext =
+					createClientServiceTelemetryFields(clientServiceContext);
+				try {
+					const result = await this.assetLifecycle.delete({
+						clientServiceId: clientServiceContext.clientServiceId,
+						path: normalizeImageStoragePath(path),
+						name,
+					});
+					if (!(result.metadataMissing && this.isImageAssetDualReadEnabled())) {
+						if (result.eventId) {
+							this.publishTelemetryEvent(
+								createImageTelemetryEvent({
+									eventId: result.eventId,
+									eventType: ImageTelemetryEventType.DeleteCompleted,
+									sourceApp: 'storage',
+									path,
+									name,
+									imageKey: `${path}/${name}`,
+									format: normalizeImageFormat(name),
+									status: 'success',
+									...telemetryContext,
+								}),
+							);
+						}
+						this.imageLifecycleMetrics?.recordDeleteCompleted(result.eventId);
+						return;
+					}
+					this.logger.log(
+						`authoritative metadata missing for ${path}/${name}; using legacy delete during dual-read transition`,
+					);
+				} catch (error) {
+					const deleteEventId =
+						error instanceof ImageAssetDeleteFailure
+							? error.eventId
+							: randomUUID();
+					this.imageLifecycleMetrics?.recordDeleteFailed(deleteEventId, error);
+					this.publishTelemetryEvent(
+						createImageTelemetryEvent({
+							eventId: randomUUID(),
+							eventType: ImageTelemetryEventType.DeleteFailed,
+							sourceApp: 'storage',
+							path,
+							name,
+							imageKey: `${path}/${name}`,
+							format: normalizeImageFormat(name),
+							status: 'failed',
+							...telemetryContext,
+							...createFailedTelemetryFields(error),
+						}),
+					);
+					throw error;
+				}
+			}
 			await this.imageManager.deleteMainImage({ path, name });
+			if (
+				this.cacheInvalidationPublisher &&
+				clientServiceContext?.clientServiceId
+			) {
+				const published = await this.cacheInvalidationPublisher.publish({
+					eventId: randomUUID(),
+					clientServiceId: clientServiceContext.clientServiceId,
+					path: this.getPublicCachePath(path),
+					name,
+					reason: 'delete',
+				});
+				if (!published) {
+					this.logger.warn(
+						`legacy delete cache invalidation publish failed for ${path}/${name}`,
+					);
+				}
+			}
 			await this.invalidateCachedImage({
 				action: 'image.delete',
 				path,
@@ -308,6 +403,15 @@ export class ImageService {
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
 		const mainPath = `${path}/image`;
+		const authoritativeAsset =
+			this.isAuthoritativeImageLifecycleEnabled() &&
+			clientServiceContext?.clientServiceId
+				? await this.imagePregenerationService.assertSourceReadable({
+						clientServiceId: clientServiceContext.clientServiceId,
+						path: mainPath,
+						name,
+					})
+				: null;
 		const variant =
 			await this.imagePregenerationService.findPreGeneratedVariantForRequest({
 				clientServiceId: clientServiceContext?.clientServiceId,
@@ -316,6 +420,7 @@ export class ImageService {
 				width,
 				height,
 				format: this.resolveRequestedVariantFormat(name, requestedFormat),
+				authoritativeAsset: authoritativeAsset ?? undefined,
 			});
 
 		try {
@@ -367,11 +472,148 @@ export class ImageService {
 		}
 	}
 
+	private isAuthoritativeImageLifecycleEnabled() {
+		return process.env.IMAGE_ASSET_METADATA_WRITES_ENABLED !== 'false';
+	}
+
+	private isImageAssetDualReadEnabled() {
+		return process.env.IMAGE_ASSET_DUAL_READ_ENABLED !== 'false';
+	}
+
+	private async uploadFileWithAuthoritativeLifecycle(input: {
+		file: Express.Multer.File;
+		apiInfo: UploadImageDto;
+		clientServiceContext: ClientServiceAuthContext;
+		idempotencyKey: string;
+	}) {
+		if (!this.assetLifecycle) {
+			throw new Error('Authoritative image lifecycle provider is unavailable');
+		}
+		const { apiInfo, clientServiceContext, file, idempotencyKey } = input;
+		const strategy = this.getStrategyFromMimeType(file.mimetype);
+		const originalName = normalizeSafeFileName(
+			file.originalname,
+			'original name',
+		);
+		const storagePath = normalizeImageStoragePath(apiInfo.path);
+		const name = createStoredImageName(
+			originalName,
+			createStableStoredImageSuffix(idempotencyKey),
+			getMaxImageFileNameLengthForPath(storagePath),
+		);
+		const lifecycleResult = await this.assetLifecycle.upload(strategy, {
+			idempotencyKey,
+			clientServiceId: clientServiceContext.clientServiceId,
+			clientServiceSlug: clientServiceContext.clientServiceSlug,
+			requestId: clientServiceContext.requestId,
+			traceId: clientServiceContext.traceId,
+			logicalPath: storagePath,
+			path: storagePath,
+			name,
+			originalName,
+			contentType: file.mimetype,
+			inputBytes: file.size,
+			externalImageId: apiInfo.externalImageId,
+			tempName: file.filename,
+		});
+		const imageKey = `${storagePath}/${name}`;
+		const telemetryContext =
+			createClientServiceTelemetryFields(clientServiceContext);
+		this.publishTelemetryEvent(
+			createImageTelemetryEvent({
+				eventId: lifecycleResult.eventId,
+				eventType: ImageTelemetryEventType.UploadCompleted,
+				sourceApp: 'storage',
+				imageId: apiInfo.externalImageId,
+				path: apiInfo.path,
+				name,
+				originalName,
+				imageKey,
+				format: normalizeImageFormat(lifecycleResult.format),
+				inputBytes: file.size,
+				outputBytes: lifecycleResult.size,
+				durationMs: lifecycleResult.durationMs,
+				status: 'success',
+				...telemetryContext,
+			}),
+		);
+
+		let variantStatus = lifecycleResult.variantStatus;
+		if (process.env.IMAGE_PREGENERATION_SYNC_COMPAT_ENABLED === 'true') {
+			const results = await this.imagePregenerationService.preGenerateForUpload(
+				{
+					clientServiceId: clientServiceContext.clientServiceId,
+					assetId: lifecycleResult.assetId,
+					sourceChecksum: lifecycleResult.checksum,
+					path: apiInfo.path,
+					name,
+				},
+			);
+			if (results.length > 0) {
+				variantStatus = results.every((result) => result.status === 'success')
+					? 'Ready'
+					: 'Failed';
+			}
+			await this.publishPregenerationTelemetryEvents({
+				imageId: apiInfo.externalImageId,
+				path: apiInfo.path,
+				name,
+				results,
+				telemetryContext,
+			});
+		}
+
+		if (this.cacheInvalidationPublisher) {
+			void this.cacheInvalidationPublisher
+				.publish({
+					eventId: lifecycleResult.eventId,
+					clientServiceId: clientServiceContext.clientServiceId,
+					path: this.getPublicCachePath(apiInfo.path),
+					name,
+					reason: 'upload',
+					assetId: lifecycleResult.assetId,
+					sourceChecksum: lifecycleResult.checksum,
+				})
+				.then((published) => {
+					if (!published)
+						this.logger.warn('upload cache invalidation deferred');
+				})
+				.catch((error: unknown) => {
+					this.logger.warn(
+						`upload cache invalidation wakeup failed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				});
+		}
+
+		if (apiInfo.beforeName && apiInfo.beforeName !== name) {
+			await this.deleteImage({
+				path: apiInfo.path,
+				name: apiInfo.beforeName,
+				clientServiceContext,
+			});
+		}
+
+		return {
+			imageKey,
+			path: apiInfo.path,
+			name,
+			originalName,
+			format: normalizeImageFormat(lifecycleResult.format),
+			size: lifecycleResult.size,
+			eventId: lifecycleResult.eventId,
+			assetId: lifecycleResult.assetId,
+			variantStatus,
+		};
+	}
+
 	/** 로컬에 이미지 업로드 */
 	async uploadFile(imageInfo: {
 		file: Express.Multer.File;
 		apiInfo: UploadImageDto;
 		clientServiceContext?: ClientServiceAuthContext;
+		idempotencyKey?: string;
 	}) {
 		const {
 			apiInfo: { externalImageId, path, beforeName },
@@ -381,8 +623,23 @@ export class ImageService {
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
 		const failedOriginalName = this.getTelemetryFileName(file);
+		let authoritativeLifecycleAttempted = false;
 
 		try {
+			if (
+				this.isAuthoritativeImageLifecycleEnabled() &&
+				this.assetLifecycle &&
+				clientServiceContext?.clientServiceId &&
+				imageInfo.idempotencyKey
+			) {
+				authoritativeLifecycleAttempted = true;
+				return await this.uploadFileWithAuthoritativeLifecycle({
+					file,
+					apiInfo: imageInfo.apiInfo,
+					clientServiceContext,
+					idempotencyKey: imageInfo.idempotencyKey,
+				});
+			}
 			const { exeTime, format, name, originalName, size } =
 				await this.compressAndSaveImage({
 					file,
@@ -469,21 +726,23 @@ export class ImageService {
 			};
 		} catch (error) {
 			const failedFields = createFailedTelemetryFields(error);
-			await this.publishLifecycleEvent(
-				createImageLifecycleEvent({
-					eventType: ImageLifecycleEventType.UploadFailed,
-					imageId: externalImageId,
-					path,
-					name: failedOriginalName,
-					originalName: failedOriginalName,
-					imageKey: `${path}/${failedOriginalName}`,
-					format: normalizeImageFormat(file.originalname),
-					inputBytes: file.size,
-					status: ImageLifecycleStatus.Failed,
-					...telemetryContext,
-					...failedFields,
-				}),
-			);
+			if (!authoritativeLifecycleAttempted) {
+				await this.publishLifecycleEvent(
+					createImageLifecycleEvent({
+						eventType: ImageLifecycleEventType.UploadFailed,
+						imageId: externalImageId,
+						path,
+						name: failedOriginalName,
+						originalName: failedOriginalName,
+						imageKey: `${path}/${failedOriginalName}`,
+						format: normalizeImageFormat(file.originalname),
+						inputBytes: file.size,
+						status: ImageLifecycleStatus.Failed,
+						...telemetryContext,
+						...failedFields,
+					}),
+				);
+			}
 
 			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
@@ -512,15 +771,37 @@ export class ImageService {
 export const createStoredImageName = (
 	originalName: string,
 	suffix: string = randomUUID(),
+	maximumLength = MAX_SAFE_FILE_NAME_LENGTH,
 ) => {
 	const safeOriginalName = normalizeSafeFileName(originalName, 'original name');
 	const extensionIndex = safeOriginalName.lastIndexOf('.');
-
-	if (extensionIndex <= 0) {
-		return `${safeOriginalName}.${suffix}`;
+	const rawExtension =
+		extensionIndex > 0 ? safeOriginalName.slice(extensionIndex) : '';
+	const extension =
+		rawExtension.length <= 16 && /^\.[A-Za-z0-9]+$/.test(rawExtension)
+			? rawExtension
+			: '';
+	const baseName = extension
+		? safeOriginalName.slice(0, extensionIndex)
+		: safeOriginalName;
+	const safeSuffix = suffix.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
+	if (!safeSuffix) {
+		throw new BadRequestException('stored image suffix가 비어 있습니다.');
+	}
+	const boundedMaximumLength = Math.min(
+		MAX_SAFE_FILE_NAME_LENGTH,
+		Math.max(1, Math.trunc(maximumLength)),
+	);
+	const suffixSegment = `.${safeSuffix}${extension}`;
+	const maximumBaseLength = boundedMaximumLength - suffixSegment.length;
+	if (maximumBaseLength < 1) {
+		throw new BadRequestException(
+			'stored image filename 상한이 너무 작습니다.',
+		);
 	}
 
-	const baseName = safeOriginalName.slice(0, extensionIndex);
-	const extension = safeOriginalName.slice(extensionIndex);
-	return `${baseName}.${suffix}${extension}`;
+	return `${baseName.slice(0, maximumBaseLength)}${suffixSegment}`;
 };
+
+const createStableStoredImageSuffix = (idempotencyKey: string) =>
+	createHash('sha256').update(idempotencyKey).digest('hex').slice(0, 32);

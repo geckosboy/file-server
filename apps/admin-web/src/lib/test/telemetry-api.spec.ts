@@ -16,6 +16,7 @@ import {
 	buildImagesUrl,
 	buildImageResizeRecommendationsUrl,
 	buildLifecycleEventsUrl,
+	fetchImages,
 	fetchTelemetryJson,
 	getTelemetryApiBaseUrl,
 	getTelemetryAdminToken,
@@ -248,6 +249,66 @@ describe('텔레메트리 API 클라이언트', () => {
 		await expect(
 			fetchTelemetryJson('https://telemetry.test/api'),
 		).rejects.toThrow(TelemetryApiError);
+	});
+
+	it('권위 자산 메타데이터를 받되 레거시 이미지 항목도 유지한다', async () => {
+		process.env.TELEMETRY_API_BASE_URL = 'https://telemetry.test/api/admin';
+		jest.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					items: [
+						{
+							assetId: 'asset-1',
+							assetStatus: 'Ready',
+							imageKey: 'products/main/hero.png',
+							path: 'products/main',
+							name: 'hero.png',
+							originalName: 'hero-original.png',
+							bytes: 1024,
+							checksum: 'sha256:abc',
+							format: 'png',
+							totalReads: 1,
+							totalResizes: 0,
+							totalCacheHits: 1,
+							totalCacheMisses: 0,
+							cacheHitRate: 1,
+							totalFailures: 0,
+							avgDurationMs: 1,
+							p95DurationMs: 1,
+							lastSeenAt: '2026-07-11T00:00:00.000Z',
+						},
+						{
+							imageKey: 'legacy/image.png',
+							path: 'legacy',
+							name: 'image.png',
+							totalReads: 0,
+							totalResizes: 0,
+							totalCacheHits: 0,
+							totalCacheMisses: 0,
+							cacheHitRate: null,
+							totalFailures: 0,
+							avgDurationMs: null,
+							p95DurationMs: null,
+							lastSeenAt: '2026-07-10T00:00:00.000Z',
+						},
+					],
+				}),
+				{ status: 200 },
+			),
+		);
+
+		const result = await fetchImages();
+
+		expect(result.items[0]).toMatchObject({
+			assetId: 'asset-1',
+			assetStatus: 'Ready',
+			originalName: 'hero-original.png',
+			bytes: 1024,
+			checksum: 'sha256:abc',
+		});
+		expect(result.items[1].imageKey).toBe('legacy/image.png');
+		expect(result.items[1].assetId).toBeUndefined();
+		expect(result.items[1].assetStatus).toBeUndefined();
 	});
 
 	it('숫자 지표가 null이면 UI용 fallback 값을 만든다', () => {

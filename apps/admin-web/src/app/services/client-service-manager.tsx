@@ -297,6 +297,10 @@ function ServiceCard({
 							image.upload.completed
 						</option>
 						<option value="image.upload.failed">image.upload.failed</option>
+						<option value="image.delete.completed">
+							image.delete.completed
+						</option>
+						<option value="image.delete.failed">image.delete.failed</option>
 					</select>
 				</label>
 				<label>
@@ -373,6 +377,12 @@ function ServiceCard({
 												</option>
 												<option value="image.upload.failed">
 													image.upload.failed
+												</option>
+												<option value="image.delete.completed">
+													image.delete.completed
+												</option>
+												<option value="image.delete.failed">
+													image.delete.failed
 												</option>
 											</select>
 											<input

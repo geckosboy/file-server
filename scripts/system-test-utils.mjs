@@ -135,6 +135,10 @@ export const startInfrastructure = async (config) => {
 		'file.image.events.v1.dlq',
 		'file.image.lifecycle.v1',
 		'file.image.lifecycle.v1.dlq',
+		'file.image.variant.jobs.v1',
+		'file.image.variant.jobs.v1.dlq',
+		'file.image.cache-invalidation.v1',
+		'file.image.cache-invalidation.v1.dlq',
 	]) {
 		await ensureKafkaTopic(config, topic);
 	}
@@ -242,7 +246,13 @@ export const waitForHttp = async (
 			if (response.status === expectedStatus) {
 				return response;
 			}
-			lastError = new Error(`HTTP ${response.status}`);
+			const responseBody = (await response.text().catch(() => '')).slice(
+				0,
+				2_000,
+			);
+			lastError = new Error(
+				`HTTP ${response.status}${responseBody ? `: ${responseBody}` : ''}`,
+			);
 		} catch (error) {
 			lastError = error;
 		}

@@ -6,6 +6,8 @@ export const IMAGE_LIFECYCLE_SCHEMA_VERSION = 1 as const;
 export const ImageLifecycleEventType = {
 	UploadCompleted: 'image.upload.completed',
 	UploadFailed: 'image.upload.failed',
+	DeleteCompleted: 'image.delete.completed',
+	DeleteFailed: 'image.delete.failed',
 } as const;
 export type ImageLifecycleEventType = ValueOf<typeof ImageLifecycleEventType>;
 
@@ -80,8 +82,25 @@ export type ImageUploadFailedLifecycleEvent = ImageLifecycleEventBase & {
 	errorMessage: string;
 };
 
+export type ImageDeleteCompletedLifecycleEvent = ImageLifecycleEventBase & {
+	eventType: typeof ImageLifecycleEventType.DeleteCompleted;
+	sourceApp: typeof ImageLifecycleSourceApp.Storage;
+	status: typeof ImageLifecycleStatus.Success;
+};
+
+export type ImageDeleteFailedLifecycleEvent = ImageLifecycleEventBase & {
+	eventType: typeof ImageLifecycleEventType.DeleteFailed;
+	sourceApp: typeof ImageLifecycleSourceApp.Storage;
+	status: typeof ImageLifecycleStatus.Failed;
+	errorCode: string;
+	errorMessage: string;
+};
+
 export type ImageLifecycleEvent =
-	ImageUploadCompletedLifecycleEvent | ImageUploadFailedLifecycleEvent;
+	| ImageUploadCompletedLifecycleEvent
+	| ImageUploadFailedLifecycleEvent
+	| ImageDeleteCompletedLifecycleEvent
+	| ImageDeleteFailedLifecycleEvent;
 
 export type ImageLifecycleValidationResult =
 	{ ok: true; event: ImageLifecycleEvent } | { ok: false; errors: string[] };
@@ -245,7 +264,10 @@ const validateLifecycleSpecificFields = (
 		errors.push(`${eventType} 이벤트의 sourceApp은 storage여야 합니다`);
 	}
 
-	if (eventType === ImageLifecycleEventType.UploadFailed) {
+	if (
+		eventType === ImageLifecycleEventType.UploadFailed ||
+		eventType === ImageLifecycleEventType.DeleteFailed
+	) {
 		if (input.status !== ImageLifecycleStatus.Failed) {
 			errors.push(`${eventType} 이벤트의 status는 failed여야 합니다`);
 		}

@@ -14,6 +14,10 @@ import {
 } from 'class-validator';
 
 export {
+	createBoundedImageVariantName,
+	getMaxImageFileNameLengthForPath,
+	MAX_IMAGE_STORAGE_KEY_LENGTH,
+	MAX_SAFE_FILE_NAME_LENGTH,
 	matchesClientServicePathPattern,
 	normalizeClientServicePathPattern,
 	normalizeImageStoragePath,

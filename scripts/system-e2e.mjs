@@ -663,13 +663,40 @@ const proveDatabaseOutageRedelivery = async ({ telemetryBaseUrl }) => {
 
 		await startInfrastructureService(infrastructure, 'postgres');
 		postgresStopped = false;
+		// Recover providers before dependants so readiness polling does not create a
+		// retry storm through cache -> resize -> storage while PostgreSQL clients are
+		// still reconnecting.
 		await Promise.all([
-			...Object.entries(appBaseUrls).map(([name, baseUrl]) =>
-				assertServiceReady(baseUrl, `${name} PostgreSQL recovery`, 90_000),
+			assertServiceReady(
+				appBaseUrls.telemetry,
+				'telemetry PostgreSQL recovery',
+				90_000,
+			),
+			assertServiceReady(
+				appBaseUrls.storage,
+				'storage PostgreSQL recovery',
+				90_000,
 			),
 			assertTelemetryTopLevelHealth(
 				true,
 				'telemetry top-level PostgreSQL recovery',
+			),
+		]);
+		await assertServiceReady(
+			appBaseUrls.resize,
+			'resize PostgreSQL recovery',
+			90_000,
+		);
+		await Promise.all([
+			assertServiceReady(
+				appBaseUrls.cache,
+				'cache PostgreSQL recovery',
+				90_000,
+			),
+			assertServiceReady(
+				appBaseUrls.cacheReplica,
+				'cacheReplica PostgreSQL recovery',
+				90_000,
 			),
 		]);
 		await assertTelemetryEventEventually(telemetryBaseUrl, validEvent.eventId, {

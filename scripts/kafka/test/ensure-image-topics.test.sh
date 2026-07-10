@@ -30,7 +30,11 @@ for topic in \
   file.image.events.v1 \
   file.image.events.v1.dlq \
   file.image.lifecycle.v1 \
-  file.image.lifecycle.v1.dlq; do
+  file.image.lifecycle.v1.dlq \
+  file.image.variant.jobs.v1 \
+  file.image.variant.jobs.v1.dlq \
+  file.image.cache-invalidation.v1 \
+  file.image.cache-invalidation.v1.dlq; do
   grep -F -- "--topic $topic" "$DOCKER_STUB_LOG" >/dev/null
 done
 

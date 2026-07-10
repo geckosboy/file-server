@@ -1,12 +1,13 @@
 # File Server Integration Handoff
 
-- 기준일: 2026-07-10
-- 기준 상태: 아키텍처 개선 계획의 단계 0~4 구현, Stage 4 통합 인프라 gate는 final HEAD에서 실행
+- 기준일: 2026-07-11
+- 기준 상태: 아키텍처 개선 계획의 단계 0~5 구현, authoritative image lifecycle 통합 gate는 clean integrated HEAD에서 실행
 - 대상: 이 저장소를 호출하거나 lifecycle 이벤트를 소비할 다른 프로젝트와 해당 프로젝트를 설계하는 AI
+- 전체 구조 시각화: [`architecture.html`](architecture.html)
 
 ## 1. 먼저 알아야 할 결론
 
-현재 저장소는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리, DB 중심 telemetry 조회와 bounded retention, 호출 timeout/cache stampede 제어와 실제 dependency health를 확보했다. 공유 storage와 authoritative asset 수명주기는 이후 단계의 범위다.
+현재 저장소는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리, DB 중심 telemetry 조회와 bounded retention, 호출 timeout/cache stampede 제어, 실제 dependency health, authoritative asset/variant 수명주기를 확보했다. 공유 object storage는 이후 단계의 범위다.
 
 - API key 인증 뒤 `ClientServicePolicy ∩ key scopes`를 read/upload/delete마다 강제한다.
 - canonical storage path와 제한된 glob(`*`, `**`)으로 tenant path 소유권을 판정한다.
@@ -16,10 +17,14 @@
 - 내부 canonical lifecycle topic과 client service별 topic을 분리하며 client principal은 자기 topic만 consume한다.
 - canonical/client destination은 동일 payload와 `eventId`를 사용하지만 outbox 상태는 topic별 row로 독립 추적한다.
 - storage는 로컬 파일시스템, cache는 프로세스 로컬 메모리를 사용한다.
+- `ImageAsset`/`ImageVariant`가 active image 원장이며 telemetry는 사용량/성능 결합 정보다. migration `000010_add_authoritative_image_assets`가 이 원장과 job/reconciliation table을 추가하고 `000011_add_image_asset_backfill_indexes`가 대규모 source scan용 index를 online 생성한다.
+- upload 성공 응답은 authoritative write 경로에서 `assetId`와 `variantStatus`를 포함한다. `imageKey`는 현재 source의 storage/public reference이고 `assetId`는 metadata/variant 관계의 primary key다.
+- PRE_GENERATE는 source Ready transaction 뒤 durable job ledger/Kafka로 비동기 처리한다. 현재 worker는 filesystem locality 때문에 storage에 colocate한다.
+- cache invalidation은 replica별 Kafka consumer가 처리하며 delete lifecycle과 같은 `eventId`를 쓴다.
 - telemetry는 운영 관측에 유용하지만 비즈니스 원장으로 사용하면 안 된다.
 - telemetry/lifecycle 목록은 opaque keyset cursor를 사용하고 retention scheduler는 production owner가 명시적으로 승인·활성화하기 전에는 실행되지 않는다.
 
-다른 프로젝트는 현재 구현에 직접 결합하지 말고 별도의 `FileServerClient` 또는 gateway adapter 뒤에서 연동해야 한다. Kafka topic/credential은 관리 API와 운영 secret으로 주입받고, 이후 단계의 asset 식별 방식 변경도 adapter 뒤에서 흡수해야 한다.
+다른 프로젝트는 현재 구현에 직접 결합하지 말고 별도의 `FileServerClient` 또는 gateway adapter 뒤에서 연동해야 한다. Kafka topic/credential은 관리 API와 운영 secret으로 주입받고, `imageKey`/`assetId`, `variantStatus`, transition 중 optional field도 adapter 뒤에서 흡수해야 한다.
 
 ## 2. 단계 0~3에서 확보된 기준선
 
@@ -53,10 +58,10 @@
 pnpm db:generate
 pnpm db:migrate:deploy
 pnpm all:lint
-pnpm typecheck:ts7
 pnpm all:test
 pnpm test:component:e2e
 pnpm all:build
+pnpm test:image-lifecycle:system:e2e
 pnpm test:system:e2e
 pnpm test:kafka:acl:e2e
 pnpm docker:build
@@ -67,7 +72,7 @@ pnpm test:docker:smoke
 
 단계 3의 retention 활성화, 실제 PostgreSQL 검증, 1M-row 성능 evidence는 [`docs/stage3-db-telemetry-runbook.md`](stage3-db-telemetry-runbook.md)의 순서와 매트릭스를 따른다. 성능 fixture 실행 중에는 retention scheduler를 비활성화하며 결과는 `artifacts/stage3-db-telemetry/benchmark-1m.json`에 남긴다. Node `22.15.0`/PostgreSQL `18.4`, 100만 row, warmup 5회/sample 20회의 최종 application-Prisma 경로에서 first page p95 `4.18ms`, middle cursor page p95 `171.95ms`, 24시간 dashboard p95 `67.15ms`, 최대 요청 RSS 증가 `110,592 bytes`였고, 목록은 `take + 1` sentinel을 포함해 요청당 `51`개 row만 materialize했다. 같은 artifact의 direct-SQL 측정은 EXPLAIN 비교를 위한 보조 evidence이며 first/middle/dashboard p95가 각각 `3.43ms`/`2.59ms`/`67.02ms`였다. 같은 fixture에서 실제 compiled `PrismaAdminAnalyticsRepository`를 실행한 `app-probe-1m.json`도 summary p95 `122.37ms`, timeseries p95 `168.99ms`, top images p95 `90.83ms`와 RSS gate를 모두 통과했다.
 
-적용해야 할 Prisma migration은 `prisma/migrations/000001_init`부터 `000009_stage3_db_telemetry_indexes`까지다. 특히 `000003`은 lifecycle event/idempotency 저장소, `000004`는 client subscription, `000005`는 lifecycle outbox, `000007`은 tenant rate-limit/audit, `000008`은 `(event_id, topic)` destination별 outbox 상태·lease/dead-letter와 subscription의 topic/principal/provisioning 상태를 추가하며 `000009`는 단계 3 query/keyset/retention용 index를 추가한다. 배포 전에 `DATABASE_URL`을 설정하고 `pnpm db:migrate:deploy`를 실행한다.
+적용해야 할 Prisma migration은 `prisma/migrations/000001_init`부터 `000011_add_image_asset_backfill_indexes`까지다. 특히 `000003`은 lifecycle event/idempotency 저장소, `000004`는 client subscription, `000005`는 lifecycle outbox, `000007`은 tenant rate-limit/audit, `000008`은 `(event_id, topic)` destination별 outbox 상태·lease/dead-letter와 subscription의 topic/principal/provisioning 상태를 추가하며 `000009`는 단계 3 query/keyset/retention용 index를 추가한다. `000010`은 `ImageAsset`/`ImageVariant`/`ImageVariantJob`, reconciliation lease/metric과 관련 enum/index를 expand-only로 추가한다. `000011`은 telemetry/lifecycle source에 image asset backfill composite index를 `CREATE INDEX CONCURRENTLY`로 추가한다. 배포 전에 `DATABASE_URL`을 설정하고 `pnpm db:migrate:deploy`를 실행하고 두 index의 `pg_index.indisvalid/indisready=true`를 확인한다. interrupted build로 INVALID index가 남으면 runbook대로 migration transaction 밖에서 `DROP INDEX CONCURRENTLY`, `migrate resolve --rolled-back`, deploy 재실행 순서로 복구한다. backfill·switch가 끝나도 이 단계에서 destructive contract migration을 실행하지 않는다.
 
 ## 3. 현재 서비스 경계
 
@@ -125,6 +130,7 @@ Authorization: Bearer <issued key>
 POST {STORAGE_BASE_URL}/image
 Content-Type: multipart/form-data
 x-client-api-key: ...
+Idempotency-Key: <stable business upload key>
 ```
 
 multipart 필드:
@@ -138,7 +144,11 @@ multipart 필드:
 
 `path`는 stream 저장 전에 권한과 크기 제한을 결정해야 하므로 multipart에서 `file`보다 먼저 전송해야 한다. `beforeName`을 사용하면 같은 path의 delete 권한도 필요하다.
 
-대표 응답:
+`Idempotency-Key`는 안전한 upload retry를 위한 계약이다. trim 후 최대 256자이며 control character를 허용하지 않는다. 서버는 client service namespace와 함께 hash하고 `(clientServiceId, idempotencyKey)` unique row로 retry를 수렴시킨다. 같은 key에는 같은 path/name/originalName/contentType/inputBytes/externalImageId identity를 사용해야 한다. Pending row를 만들기 전에는 compressed SHA-256을 알 수 없으므로 동일 byte length의 다른 payload까지 판별하는 계약은 아니며, 호출자는 key를 payload-version과 함께 생성해야 한다.
+
+header가 없을 때 서버는 `externalImageId`, request context의 `requestId`, 마지막으로 random legacy key 순서로 fallback한다. `IMAGE_UPLOAD_IDEMPOTENCY_STRICT=true`이면 header, `externalImageId`, `requestId`가 모두 없을 때 400이다. 다른 프로젝트는 fallback에 의존하지 말고 안정적인 header를 항상 보낸다.
+
+authoritative write 경로의 대표 응답:
 
 ```json
 {
@@ -148,11 +158,24 @@ multipart 필드:
 	"originalName": "sample.png",
 	"format": "png",
 	"size": 12345,
-	"eventId": "uuid"
+	"eventId": "uuid",
+	"assetId": "authoritative-asset-id",
+	"variantStatus": "Pending"
 }
 ```
 
-다른 프로젝트는 저장 파일명을 미리 계산하지 말고 응답의 `imageKey`, `path`, `name`, `eventId`를 저장해야 한다.
+다른 프로젝트는 저장 파일명을 미리 계산하지 말고 응답의 `assetId`, `imageKey`, `path`, `name`, `eventId`, `variantStatus`를 저장해야 한다. source/variant `name`은 최대 128자, `imageKey`는 최대 384자이며 긴 원본명은 stable suffix 또는 source-name hash를 보존하도록 bounded 된다. consumer가 다시 truncate하면 authoritative metadata와 파일 key가 달라진다.
+
+- `assetId`는 authoritative metadata primary key이며 variant가 이 ID를 FK로 참조한다.
+- `imageKey`는 현재 `ImageAsset.storageKey`와 같은 `logicalPath/name` reference다. read/delete 호환 API는 아직 이 값을 사용한다.
+- `variantStatus`는 source 상태가 아니라 `Pending | Ready | Failed | NotConfigured`인 파생물 집계 상태다. HTTP 201 시 source는 이미 `Ready`지만 variant는 보통 비동기로 남아 있다.
+- authoritative read는 source `ImageAsset=Ready`를 요구하고, pre-generated 응답은 현재 source checksum에 연결된 `ImageVariant=Ready`만 제공한다. `Pending|Failed|Deleting|Deleted` metadata가 있으면 남아 있는 filesystem 파일을 직접 제공하지 않는다.
+- 같은 `Idempotency-Key`는 같은 `assetId`와 `imageKey`로 수렴한다. 이미 성공한 upload의 응답 재시도는 같은 completion `eventId`를 반환한다. 성공 전 실패 attempt는 별도의 immutable `image.upload.failed` event ID를 사용하고, 이후 성공은 새 `image.upload.completed` event ID를 source identity로 확정한다.
+- transition/rollback에서 `IMAGE_ASSET_METADATA_WRITES_ENABLED=false`인 legacy 응답은 `assetId`와 `variantStatus`를 생략할 수 있다. cutover 전 adapter는 optional로 읽되 authoritative write gate 이후에는 존재를 검증한다.
+
+성공 시점은 `Pending metadata → inbound temp에서 .staging 생성/checksum → final rename → ImageAsset Ready + upload lifecycle outbox + ImageVariant/ImageVariantJob ledger transaction → HTTP 201`이다. 201은 Kafka broker acknowledgement, variant Ready, 모든 cache replica invalidation 완료를 기다리지 않는다.
+
+`beforeName`을 보낸 교체 upload는 새 asset의 Ready transaction 뒤 이전 asset delete까지 await한 다음 201을 반환한다. 이전 delete가 실패하면 새 asset은 이미 durable한데 HTTP는 실패할 수 있으므로, 같은 `Idempotency-Key`로 retry하고 새 key로 중복 upload하지 않는다.
 
 ### 4.3 Read/Resize
 
@@ -178,7 +201,9 @@ x-client-api-key: ...
 
 호환 방식으로 `path`와 `name`을 각각 전달할 수도 있지만, 다른 프로젝트는 upload 응답의 `imageKey`를 사용하는 것이 안전하다.
 
-현재 delete는 원본 삭제가 중심이며 모든 pre-generated variant와 모든 cache replica의 삭제가 완전하게 보장되지는 않는다. 단계 5에서 asset 단위 삭제로 바뀐다.
+delete는 authoritative asset과 non-deleted variant를 `Deleting`으로 전이하고 stable `deleteEventId`를 저장한 뒤 원본과 모든 known variant file을 정리한다. final transaction은 variant `Deleted`, incomplete job `Cancelled`, asset `Deleted` tombstone, lifecycle outbox와 cache invalidation outbox를 같은 `eventId`로 기록한다. HTTP 200은 file/DB 정리가 끝난 뒤 반환하지만 Kafka broker나 모든 process-local cache replica를 기다리지 않으므로 cache convergence는 eventual consistency다.
+
+같은 delete 재시도와 이미 없는 file 삭제는 멱등이며 현재 controller는 200을 반환한다. final transaction 전 실패는 asset을 `Deleting`에 유지하고 같은 event ID/failure reason을 보존하여 HTTP retry 또는 reconciliation이 완료한다. worker가 delete 직후 늦게 variant file을 publish하고 중단하더라도 reconciliation은 최근 `Deleted` tombstone의 source/variant key를 일반 orphan-delete flag와 무관하게 다시 제거한다. dual-read 중 metadata가 없는 file은 legacy delete로 fallback하며 이 전환 경로도 Kafka invalidation을 모든 replica group에 발행하고 기존 단일 cache HTTP invalidation을 병행한다. authoritative-only switch 뒤에는 metadata absence를 authoritative absence로 취급하므로 backfill coverage가 선행되어야 한다.
 
 ### 4.5 오류와 제어면 계약
 
@@ -222,6 +247,10 @@ key 발급 시 `scopes`에 `read|upload|delete` 또는 `actions`, `pathPatterns`
 - telemetry poison DLQ: `file.image.events.v1.dlq`
 - lifecycle canonical(내부 전용): `file.image.lifecycle.v1`
 - lifecycle poison DLQ(내부 전용): `file.image.lifecycle.v1.dlq`
+- async variant job: `file.image.variant.jobs.v1`
+- async variant poison DLQ: `file.image.variant.jobs.v1.dlq`
+- cache invalidation: `file.image.cache-invalidation.v1`
+- cache invalidation poison DLQ: `file.image.cache-invalidation.v1.dlq`
 - client lifecycle: `file.image.lifecycle.client.<lowercase clientServiceId>.v1`
 
 앱별 복제 타입을 만들지 말고 다음 공유 package를 계약 원본으로 사용한다.
@@ -229,11 +258,14 @@ key 발급 시 `scopes`에 `read|upload|delete` 또는 `actions`, `pathPatterns`
 - telemetry: [`@file/telemetry-contracts/events`](../libs/telemetry-contracts/src/events.ts)
 - lifecycle: [`@file/telemetry-contracts/lifecycle`](../libs/telemetry-contracts/src/lifecycle.ts)
 - lifecycle topic naming: [`@file/telemetry-contracts/lifecycle-topics`](../libs/telemetry-contracts/src/lifecycle-topics.ts)
+- variant/cache operation: [`@file/telemetry-contracts/image-operations`](../libs/telemetry-contracts/src/image-operations.ts)
 - AsyncAPI: [`docs/asyncapi/file-image-lifecycle.asyncapi.yaml`](asyncapi/file-image-lifecycle.asyncapi.yaml)
 
-두 event contract 모두 `schemaVersion=1`, `eventId`, `eventType`, `occurredAt`, `sourceApp`, `environment`, `imageKey`와 tenant/correlation 필드를 검증한다. producer와 consumer는 package의 생성·정규화·검증 함수를 사용해야 하며 `eventId`가 at-least-once 전달의 idempotency key다.
+두 event contract 모두 `schemaVersion=1`, `eventId`, `eventType`, `occurredAt`, `sourceApp`, `environment`, `imageKey`와 tenant/correlation 필드를 검증한다. lifecycle v1의 현재 union은 `image.upload.completed`, `image.upload.failed`, `image.delete.completed`, `image.delete.failed` 네 종류이며 AsyncAPI와 admin subscription/filter UI도 같은 목록을 사용한다. producer와 consumer는 package의 생성·정규화·검증 함수를 사용해야 하며 `eventId`가 at-least-once 전달의 idempotency key다.
 
 client topic은 요청 body에서 받지 않는다. `clientServiceId`는 `[A-Za-z0-9_-]{1,128}`만 허용하고 서버가 trim/lowercase한 뒤 topic과 `User:file-lifecycle-<lowercase clientServiceId>` principal을 계산한다. subscription 응답의 `topic`, `principal`, `provisioningStatus`, `provisioningError`, `provisionedAt`을 source of truth로 사용한다.
+
+Image lifecycle operation topic은 runtime에서 구성 가능하다. variant producer/worker는 `IMAGE_VARIANT_KAFKA_TOPIC`, worker DLQ는 `IMAGE_VARIANT_KAFKA_DLQ_TOPIC`, storage invalidation publisher/outbox와 cache consumer는 같은 `CACHE_INVALIDATION_KAFKA_TOPIC`, cache poison DLQ는 `CACHE_INVALIDATION_KAFKA_DLQ_TOPIC`을 사용한다. custom 이름은 producer·consumer·ACL·topic bootstrap에 동일하게 적용하고, `scripts/kafka/ensure-image-topics.sh`에 custom topic을 인자로 전달한다.
 
 ### 5.2 수동 offset, retry, DLQ
 
@@ -294,6 +326,7 @@ credential secret은 관리 API 응답에 포함하지 않는다. 운영자는 [
 interface FileReference {
 	provider: 'file-server';
 	clientServiceId: string;
+	assetId?: string; // dual-read/rollback window only optional
 	imageKey: string;
 	storagePath: string;
 	storedName: string;
@@ -302,6 +335,7 @@ interface FileReference {
 	bytes?: number;
 	uploadEventId: string;
 	status: 'pending' | 'ready' | 'deleting' | 'deleted' | 'failed';
+	variantStatus?: 'Pending' | 'Ready' | 'Failed' | 'NotConfigured';
 }
 ```
 
@@ -310,7 +344,8 @@ interface FileReference {
 - 절대 URL만 저장하지 않는다. CDN/base URL은 환경별로 바뀔 수 있다.
 - 사용자가 보낸 원본 filename을 storage identity로 사용하지 않는다.
 - `externalImageId`를 file-server의 영구 primary key라고 가정하지 않는다.
-- 향후 `assetId`가 추가될 수 있도록 provider metadata 확장을 허용한다.
+- authoritative write 응답에서는 `assetId`를 저장하고 `imageKey`에서 다시 계산하지 않는다. optional 표기는 explicit transition/rollback window를 위한 것이며 cutover 완료 뒤에는 누락을 integration error로 처리한다.
+- source `status=ready`와 `variantStatus=Pending|Failed`는 동시에 가능하다. upload 성공을 모든 variant의 즉시 준비로 해석하지 않는다.
 
 권장 adapter 경계:
 
@@ -333,7 +368,7 @@ interface FileServerClient {
 3. **서비스별 path namespace**
    - 단계 1의 policy를 고려해 `서비스명/도메인/image` 형태의 소유 namespace를 미리 정한다.
 4. **응답 기반 식별**
-   - upload 응답의 `imageKey`와 `eventId`를 transaction/outbox와 함께 저장한다.
+   - upload 응답의 `assetId`, `imageKey`, `eventId`, `variantStatus`를 transaction/outbox와 함께 저장한다.
 5. **보상 가능한 상태 기계**
    - DB 저장과 file upload는 분산 transaction이므로 `pending → ready/failed` 상태와 재처리 job을 둔다.
 6. **멱등 이벤트 처리**
@@ -346,8 +381,12 @@ interface FileServerClient {
    - base URL, API key, Kafka brokers/topic/group은 코드 상수가 아니라 환경 설정이어야 한다.
 10. **호환 계층 유지**
     - 단계 1~5 전환 중 구·신 계약을 동시에 지원할 수 있도록 adapter version 또는 feature flag를 둔다.
+11. **upload idempotency**
+    - 업무 file identity로 안정적인 `Idempotency-Key`를 만들고 timeout/retry에서도 같은 key와 payload identity를 사용한다.
+12. **eventual variant/cache**
+    - source 201 뒤 variant와 delete 뒤 cache replica convergence를 별도 상태/lag로 모델링한다.
 
-## 8. 향후 단계와 다른 프로젝트에 미치는 영향
+## 8. 구현 단계와 다른 프로젝트에 미치는 영향
 
 ### 단계 1 — 테넌트 권한과 제어면 보안 (완료)
 
@@ -413,7 +452,7 @@ interface FileServerClient {
 - PostgreSQL/Kafka/upstream/storage read-write readiness indicator
 - broker high offset과 consumer group offset 차이 기반 Kafka lag, 최초 connect 실패 reconnect/capped backoff
 - upstream/cache/singleflight/lag/DLQ/outbox operational metric
-- Stage 5 전까지 reconciliation metric은 `supported=false`, `orphanCount=null`
+- `GET /api/admin/health`의 image lifecycle metric은 asset/variant `oldestPendingAgeMs`·`oldestDeletingAgeMs`, jobs `oldestActiveAgeMs`·`lagMs`·failure/state count를 DB에서 계산한다. `IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED=true`이면 top-level reconciliation은 Stage 4 `supported=false/orphanCount=null`을 유지하고 실제 값은 transition의 `imageLifecycleSupported`/`imageLifecycleOrphanCount` field로 함께 제공한다.
 
 endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순서는 [`stage4-resilience-health-runbook.md`](stage4-resilience-health-runbook.md)를 따른다.
 
@@ -434,43 +473,42 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 
 ### 단계 5 — ImageAsset/ImageVariant 수명주기
 
-예정 변경:
+구현된 변경:
 
 - authoritative `ImageAsset`, `ImageVariant` metadata
-- staged upload와 reconciliation
-- 원본/variant/cache 통합 delete
-- PRE_GENERATE 비동기 job 전환
+- migration `000010`/`000011`, `assetId ↔ imageKey(storageKey)` 관계, online backfill source index와 admin authoritative query
+- stable `Idempotency-Key`, upload 응답 `assetId`/`variantStatus`
+- `Pending → temp/.staging/checksum/rename → Ready + lifecycle outbox + variant ledger transaction`과 reconciliation
+- 원본/variant/job/cache/metadata 통합 delete, `Deleted` tombstone과 멱등 `Deleting` 재시도
+- `(assetId,width,height,format,sourceChecksum)` key의 durable PRE_GENERATE job/Kafka worker
+- delete 및 variant-ready invalidation durable outbox와 background replay; variant event ID는 `variant-ready:<jobKey>`
+- replica별 cache invalidation consumer, manual offset/bounded retry/poison DLQ
+- stale `.staging`/inbound temp cleanup, metadata 없는 object detect와 owner-approved delete gate
+- 최근 `Deleted` tombstone key의 늦은 worker output은 일반 orphan-delete gate와 무관하게 bounded reconciliation으로 제거
+- asset/variant Pending·Deleting age, recent failure, job/reconciliation lag와 readiness threshold
+- upload source를 실행당 한 번 materialize하고 ordinal keyset으로 처리하며, batch delete 확인은 composite-index point probe, 종료 tombstone 처리는 fresh latest-delete temp table 한 번으로 제한한 bounded backfill; max-batch 소진 시 `snapshotComplete=false`, `remaining`, exit code 2
+- backfill 뒤 도착한 legacy delete를 `Deleted` tombstone으로 수렴시키고, 모든 writer의 metadata write 전환, legacy in-flight/outbox/Kafka ingestion drain 확인 뒤 `ingestionDrainConfirmed=true`, `cutoverReady=true`, `auditCandidates=0`, `auditTombstoneGaps=0`을 요구하는 final audit
+- expand → backfill → write/read switch → non-destructive contract hold
+
+상태 기계, topic/offset 계약, 환경변수, 장애 복구, rollback과 최종 검증은 [`image-asset-lifecycle-runbook.md`](image-asset-lifecycle-runbook.md)를 따른다.
 
 다른 프로젝트 영향:
 
 - upload 직후 모든 variant가 즉시 준비된다고 가정하지 않는다.
-- 향후 `assetId`와 variant status를 저장할 확장 필드를 둔다.
+- `assetId`, `imageKey`, `eventId`, `variantStatus`를 함께 저장하고 transition 중 field 누락을 adapter에서만 흡수한다.
+- timeout retry에 같은 `Idempotency-Key`와 payload identity를 사용한다.
 - delete를 즉시 물리 삭제가 아니라 상태 전이로 처리할 수 있게 한다.
-
-### 단계 6 — 선택적 수평 확장
-
-예정 변경:
-
-- 공유 object storage/CDN
-- 필요할 때만 분산 cache/lock
-- 독립 resize worker scaling
-
-다른 프로젝트 영향:
-
-- 내부 storage 경로나 host filesystem을 참조하지 않는다.
-- CDN URL은 영구 identity가 아니라 projection으로 취급한다.
+- delete 성공 뒤 cache replica 반영은 eventual consistency이며, readiness 실패를 이미지 404로 변환하지 않는다.
 
 ## 9. 현재 보장되지 않는 사항
 
 다른 프로젝트가 임시 코드로 보완하거나 영구 전제로 삼아서는 안 되는 항목이다.
 
 - telemetry의 무손실 전달
-- cache replica 간 일관성
 - storage replica 간 파일 공유
 - 모든 호출에 대한 circuit breaker(현재는 deadline/bounded retry이며 circuit breaker는 도입하지 않음)
 - 여러 replica/region을 하나로 집계한 전역 health(각 endpoint는 해당 process와 dependency snapshot)
-- 원본 삭제 시 모든 variant와 cache의 즉시 삭제
-- admin 화면의 이미지 목록이 authoritative asset 원장이라는 보장
+- 현재 로컬 filesystem에서 여러 storage replica가 같은 source/variant file을 공유하거나 임의의 replica worker가 다른 replica의 file을 처리한다는 보장
 
 ### PostgreSQL outage 복구 보장과 경계
 
@@ -511,7 +549,16 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 ### 단계 5 asset 전환 전
 
 - 다른 프로젝트의 기존 file reference schema
-- `imageKey → assetId` backfill 방식
+- migration `000010`/`000011` 적용 및 backup/PITR 책임자
+- legacy telemetry/lifecycle upload의 `imageKey → assetId` backfill count와 later-delete/conflict 처리
+- backfill snapshot 결과가 `snapshotComplete=true`, `remaining=0`인지 확인하고 incomplete exit code 2이면 같은 설정으로 재실행
+- `snapshotComplete=true`를 read cutover 완료로 오인하지 않고, 모든 writer가 metadata dual-write 중이거나 legacy write가 freeze된 상태에서 `IMAGE_ASSET_BACKFILL_CUTOVER_AUDIT=true`를 실행
+- 마지막 legacy request 시점의 telemetry/lifecycle topic high watermark 기록, lifecycle outbox non-terminal 0, ingestion consumer lag 0, DLQ/terminal failure 처리 확인
+- drain evidence가 있을 때만 `IMAGE_ASSET_BACKFILL_INGESTION_DRAIN_CONFIRMED=true`를 설정하고 final audit의 `cutoverReady=true`, `auditCandidates=0`, `auditTombstoneGaps=0` 확인
+- write switch 전후 `assetId`/`variantStatus` optional-to-required window
+- storage와 telemetry-api의 `IMAGE_ASSET_DUAL_READ_ENABLED` 동시 전환
+- `IMAGE_RECONCILIATION_ORPHAN_DELETE_ENABLED=false` 유지와 향후 owner 승인 조건
+- stale inbound temp/`.staging` cleanup limit과 alert owner
 - pending/failed/deleted 상태의 사용자 노출 규칙
 - variant eventual consistency 허용 시간
 
@@ -519,7 +566,7 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 
 1. API key 누락/오류 시 401
 2. 타 tenant path 접근 시 read/upload/delete 모두 403
-3. upload 성공 응답의 `imageKey`, `name`, `eventId` 저장
+3. stable `Idempotency-Key`로 upload를 두 번 보내 같은 `assetId`, `imageKey`, `eventId`를 받고 `variantStatus`를 저장
 4. 원본 read와 width/height/format variant read
 5. 404와 upstream 5xx 구분
 6. 동일 lifecycle `eventId`를 두 번 받아도 업무 처리가 한 번만 실행됨
@@ -530,9 +577,11 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 11. Kafka brokers/topic/group/SASL credential/CA 교체 후 코드 변경 없이 재연결
 12. admin 목록의 opaque `nextCursor`를 같은 filter/order에 전달하고 offset/page number를 추론하지 않음
 13. telemetry retention 뒤에도 필요한 업무 이력은 별도 도메인 원장에 남음
-14. upload 성공 후 업무 DB 저장 실패 시 보상/reconciliation 가능
-15. delete 요청 재시도가 멱등
-16. file-server readiness 실패 시 호출 차단 또는 명시적 degraded 처리
+14. upload 201 시 source `ImageAsset=Ready`/lifecycle outbox가 이미 commit되었고 variant는 비동기일 수 있음
+15. upload 성공 후 업무 DB 저장 실패 시 같은 idempotency key로 보상/reconciliation 가능
+16. delete 요청 재시도가 멱등이고 `Deleting → Deleted` 뒤 두 cache replica가 eventual invalidation
+17. dual-read on/off에서 legacy field absence와 authoritative-only 결과를 adapter가 구분
+18. file-server readiness 실패 시 호출 차단 또는 명시적 degraded 처리
 
 ## 12. 다른 AI에게 전달할 프롬프트
 
@@ -544,12 +593,13 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 
 목표:
 - file-server HTTP/Kafka 구현 세부사항이 도메인에 새지 않도록 adapter/gateway 경계를 설계한다.
-- upload 응답의 imageKey/eventId를 보존하고 lifecycle eventId를 멱등 처리한다.
+- upload마다 stable Idempotency-Key를 보내고 응답의 assetId/imageKey/eventId/variantStatus를 보존하며 lifecycle eventId를 멱등 처리한다.
 - 완료된 단계 1 tenant policy, signed internal context, multipart path-before-file 계약을 보존한다.
 - 완료된 단계 2의 공유 event contract, 서버 계산 client topic, SASL/TLS, 수동 offset/retry/DLQ,
   동일 eventId dual-publish, provisioning/최소 ACL을 그대로 수용한다.
 - 완료된 단계 3의 opaque keyset cursor, DB 집계, bounded retention 계약을 수용한다.
-- 완료된 단계 4의 timeout/status/readiness 계약과 단계 5의 예정 async ImageAsset/ImageVariant lifecycle을 adapter 뒤에서 수용한다.
+- 완료된 단계 4의 timeout/status/readiness 계약과 단계 5의 async ImageAsset/ImageVariant lifecycle,
+  assetId/imageKey 관계, variantStatus, durable delete/cache invalidation을 adapter 뒤에서 수용한다.
 
 금지:
 - frontend에 API key 노출
@@ -559,6 +609,7 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 - 사용자 filename이나 externalImageId를 storage primary key로 사용
 - telemetry를 비즈니스 원장으로 사용
 - 현재 local filesystem/NodeCache 구조를 영구 인프라로 가정
+- imageKey에서 assetId를 계산하거나 source 201을 모든 variant/cache convergence로 해석
 
 산출물:
 1. 현재 프로젝트에서 필요한 FileReference와 FileServerClient interface
@@ -567,7 +618,7 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 4. 실패·재시도·보상·멱등성 설계
 5. provisioningStatus=PROVISIONED gate와 credential rotation/ACL 책임
 6. poison DLQ 및 DB outage/redelivery 처리·관측 전략
-7. file-server 단계별 전환 호환 전략
+7. migration 000010/000011의 expand/online-index/backfill/dual-read/write-read switch/contract hold 호환 전략
 8. 구현 전 작성할 contract/integration test 목록
 
 불명확한 업무 요구만 질문하고, file-server의 현재 취약한 동작을 정상 계약으로 고정하지 마라.
