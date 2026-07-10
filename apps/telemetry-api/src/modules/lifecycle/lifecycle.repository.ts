@@ -1,4 +1,9 @@
 import { Injectable } from '@nestjs/common';
+import {
+	EventListPage,
+	EventListQuery,
+	listInMemoryEventPage,
+} from '../telemetry/event-list-query';
 import { ImageLifecycleEvent, LifecycleMetrics } from './lifecycle.types';
 
 export interface LifecycleRepository {
@@ -7,6 +12,9 @@ export interface LifecycleRepository {
 	recordInsertFailure(): Promise<void>;
 	getMetrics(): Promise<LifecycleMetrics>;
 	listEvents(): Promise<ImageLifecycleEvent[]>;
+	listEventPage(
+		query: EventListQuery,
+	): Promise<EventListPage<ImageLifecycleEvent>>;
 	clear(): Promise<void>;
 	getStorageKind(): 'memory' | 'postgresql';
 	isConnected(): Promise<boolean>;
@@ -56,6 +64,12 @@ export class InMemoryLifecycleRepository implements LifecycleRepository {
 
 	async listEvents(): Promise<ImageLifecycleEvent[]> {
 		return [...this.eventsById.values()];
+	}
+
+	async listEventPage(
+		query: EventListQuery,
+	): Promise<EventListPage<ImageLifecycleEvent>> {
+		return listInMemoryEventPage(this.eventsById.values(), query);
 	}
 
 	async clear(): Promise<void> {

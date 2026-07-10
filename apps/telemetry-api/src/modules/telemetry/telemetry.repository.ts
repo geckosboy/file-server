@@ -6,6 +6,11 @@ import {
 	ImageVariantSummary,
 	TelemetryMetrics,
 } from './telemetry.types';
+import {
+	EventListPage,
+	EventListQuery,
+	listInMemoryEventPage,
+} from './event-list-query';
 
 export interface TelemetryRepository {
 	insertEvent(event: ImageTelemetryEvent): Promise<{ inserted: boolean }>;
@@ -13,6 +18,9 @@ export interface TelemetryRepository {
 	recordInsertFailure(): Promise<void>;
 	getMetrics(): Promise<TelemetryMetrics>;
 	listEvents(): Promise<ImageTelemetryEvent[]>;
+	listEventPage(
+		query: EventListQuery,
+	): Promise<EventListPage<ImageTelemetryEvent>>;
 	listAssets(): Promise<ImageAssetSummary[]>;
 	listVariants(imageKey?: string): Promise<ImageVariantSummary[]>;
 	clear(): Promise<void>;
@@ -80,6 +88,12 @@ export class InMemoryTelemetryRepository implements TelemetryRepository {
 
 	async listEvents(): Promise<ImageTelemetryEvent[]> {
 		return [...this.eventsById.values()];
+	}
+
+	async listEventPage(
+		query: EventListQuery,
+	): Promise<EventListPage<ImageTelemetryEvent>> {
+		return listInMemoryEventPage(this.eventsById.values(), query);
 	}
 
 	async listAssets(): Promise<ImageAssetSummary[]> {

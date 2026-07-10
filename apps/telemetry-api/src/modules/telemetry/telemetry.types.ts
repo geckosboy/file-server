@@ -80,6 +80,7 @@ export interface EventFilter extends Partial<TelemetryRange> {
 	name?: string;
 	imageKey?: string;
 	requestId?: string;
+	search?: string;
 	cursor?: string;
 	limit?: number;
 }

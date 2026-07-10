@@ -1,12 +1,12 @@
 # File Server Integration Handoff
 
 - 기준일: 2026-07-10
-- 기준 상태: 아키텍처 개선 계획의 단계 0~2 완료
+- 기준 상태: 아키텍처 개선 계획의 단계 0~3 완료
 - 대상: 이 저장소를 호출하거나 lifecycle 이벤트를 소비할 다른 프로젝트와 해당 프로젝트를 설계하는 AI
 
 ## 1. 먼저 알아야 할 결론
 
-현재 저장소는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리를 확보했다. 공유 storage와 authoritative asset 수명주기는 이후 단계의 범위다.
+현재 저장소는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리, DB 중심 telemetry 조회와 bounded retention을 확보했다. 공유 storage와 authoritative asset 수명주기는 이후 단계의 범위다.
 
 - API key 인증 뒤 `ClientServicePolicy ∩ key scopes`를 read/upload/delete마다 강제한다.
 - canonical storage path와 제한된 glob(`*`, `**`)으로 tenant path 소유권을 판정한다.
@@ -17,10 +17,11 @@
 - canonical/client destination은 동일 payload와 `eventId`를 사용하지만 outbox 상태는 topic별 row로 독립 추적한다.
 - storage는 로컬 파일시스템, cache는 프로세스 로컬 메모리를 사용한다.
 - telemetry는 운영 관측에 유용하지만 비즈니스 원장으로 사용하면 안 된다.
+- telemetry/lifecycle 목록은 opaque keyset cursor를 사용하고 retention scheduler는 production owner가 명시적으로 승인·활성화하기 전에는 실행되지 않는다.
 
 다른 프로젝트는 현재 구현에 직접 결합하지 말고 별도의 `FileServerClient` 또는 gateway adapter 뒤에서 연동해야 한다. Kafka topic/credential은 관리 API와 운영 secret으로 주입받고, 이후 단계의 asset 식별 방식 변경도 adapter 뒤에서 흡수해야 한다.
 
-## 2. 단계 0~2에서 확보된 기준선
+## 2. 단계 0~3에서 확보된 기준선
 
 - Node.js `22.15.0`, pnpm `10.15.0`
 - storage, resize, cache 컨테이너는 non-root `node` 사용자로 실행
@@ -64,7 +65,9 @@ pnpm test:docker:smoke
 
 `pnpm test:system:e2e`는 Docker/PostgreSQL/Kafka를 사용하며 poison DLQ와 PostgreSQL outage/redelivery까지 포함한다. `pnpm test:kafka:acl:e2e`는 격리된 실제 Kafka authorizer를 띄우고 허용/거부 ACL과 종료 후 container cleanup을 검증한다. 두 명령은 Docker daemon을 사용할 수 있는 환경에서 실행한다.
 
-적용해야 할 Prisma migration은 `prisma/migrations/000001_init`부터 `000008_stage2_lifecycle_delivery`까지다. 특히 `000003`은 lifecycle event/idempotency 저장소, `000004`는 client subscription, `000005`는 lifecycle outbox, `000007`은 tenant rate-limit/audit, `000008`은 `(event_id, topic)` destination별 outbox 상태·lease/dead-letter와 subscription의 topic/principal/provisioning 상태를 추가한다. 배포 전에 `DATABASE_URL`을 설정하고 `pnpm db:migrate:deploy`를 실행한다.
+단계 3의 retention 활성화, 실제 PostgreSQL 검증, 1M-row 성능 evidence는 [`docs/stage3-db-telemetry-runbook.md`](stage3-db-telemetry-runbook.md)의 순서와 매트릭스를 따른다. 성능 fixture 실행 중에는 retention scheduler를 비활성화하며 결과는 `artifacts/stage3-db-telemetry/benchmark-1m.json`에 남긴다. Node `22.15.0`/PostgreSQL `18.4`, 100만 row, warmup 5회/sample 20회의 최종 application-Prisma 경로에서 first page p95 `4.18ms`, middle cursor page p95 `171.95ms`, 24시간 dashboard p95 `67.15ms`, 최대 요청 RSS 증가 `110,592 bytes`였고, 목록은 `take + 1` sentinel을 포함해 요청당 `51`개 row만 materialize했다. 같은 artifact의 direct-SQL 측정은 EXPLAIN 비교를 위한 보조 evidence이며 first/middle/dashboard p95가 각각 `3.43ms`/`2.59ms`/`67.02ms`였다. 같은 fixture에서 실제 compiled `PrismaAdminAnalyticsRepository`를 실행한 `app-probe-1m.json`도 summary p95 `122.37ms`, timeseries p95 `168.99ms`, top images p95 `90.83ms`와 RSS gate를 모두 통과했다.
+
+적용해야 할 Prisma migration은 `prisma/migrations/000001_init`부터 `000009_stage3_db_telemetry_indexes`까지다. 특히 `000003`은 lifecycle event/idempotency 저장소, `000004`는 client subscription, `000005`는 lifecycle outbox, `000007`은 tenant rate-limit/audit, `000008`은 `(event_id, topic)` destination별 outbox 상태·lease/dead-letter와 subscription의 topic/principal/provisioning 상태를 추가하며 `000009`는 단계 3 query/keyset/retention용 index를 추가한다. 배포 전에 `DATABASE_URL`을 설정하고 `pnpm db:migrate:deploy`를 실행한다.
 
 ## 3. 현재 서비스 경계
 
@@ -249,6 +252,8 @@ event 순서를 전역 순서로 가정하지 않는다. 알 수 없는 optional
 - `image_lifecycle_outbox`는 `(eventId, topic)` unique row를 사용한다. destination 하나가 성공하고 다른 하나가 실패하면 성공 row를 되돌리거나 새 `eventId`를 만들지 않고 실패 destination만 재시도한다.
 - atomic lease owner만 row를 발행한다. 기본 publish interval 5초, batch 25, lease 30초, max attempts 10이며 retry delay는 1분 exponential backoff로 최대 1시간이다.
 - max attempts 이후 row는 `DEAD_LETTER`, `deadLetteredAt`, `lastError`로 남는다. 기본 보존은 published 30일, dead-letter 90일이다. 관련 `LIFECYCLE_OUTBOX_*` 환경변수는 [`apps/storage/.env.local.example`](../apps/storage/.env.local.example)을 따른다.
+- `DEAD_LETTER`는 미발행 active row가 아니라 재시도가 끝난 terminal Stage 2 상태다. cleanup은 `PUBLISHED`/`DEAD_LETTER`만 작은 batch로 처리하며 `PENDING`/`PUBLISHING`/`FAILED`는 삭제하지 않는다.
+- cleanup transaction은 lock timeout과 `FOR UPDATE SKIP LOCKED`를 사용하고 full batch 사이에 sleep한다. delete 시 terminal status/cutoff를 다시 확인해 같은 `eventId`의 retrying destination을 보존한다.
 - scheduler는 최초 실행과 모든 publish/cleanup timer promise를 process boundary에서 관찰한다. scheduler-level rejection은 `event=image_lifecycle_outbox_background_task_failed`, `task=publish|cleanup`, error/stack 구조로 기록하고 process 밖으로 unhandled rejection을 전파하지 않는다. row별 Kafka publish 실패는 기존 bounded retry/dead-letter 상태 전이로 처리한다.
 - publish/cleanup의 `finally`가 실행 중 flag를 해제하므로 실패한 tick이 scheduler를 고착시키지 않는다. 다음 timer tick이 다시 조회·claim·cleanup을 시도하며 기존 row별 lease, bounded retry, dead-letter, `lastError` 규칙은 그대로 유지된다.
 
@@ -380,18 +385,23 @@ interface FileServerClient {
 - 자기 client topic의 메시지를 과거부터 모두 재생해도 안전한 handler를 만든다.
 - `provisioningStatus=PROVISIONED`와 secret 전달 완료 전에는 consumer를 운영 배포하지 않는다.
 
-### 단계 3 — Telemetry DB query 전환
+### 단계 3 — Telemetry DB query 전환 (완료)
 
-예정 변경:
+적용된 변경:
 
-- 전체 메모리 로딩 제거
-- keyset cursor pagination
-- DB 집계/index/retention
+- telemetry/lifecycle 목록 filter/sort/take를 PostgreSQL query로 이동하고 전체 배열 반환을 제거
+- 내림차순 `(occurredAt,eventId)` opaque keyset cursor와 bounded `take`; non-negative safe-integer decimal 입력만 legacy offset adapter가 수용한다. 서버가 반환하는 모든 `nextCursor`는 `{v:1,occurredAt,eventId}`의 base64url envelope이며 숫자도 envelope도 아닌 cursor는 400이다. 현재 disable flag는 없고 legacy 제거/gate는 integration follow-up이다.
+- dashboard summary/time-series/top image/recommendation을 parameterized PostgreSQL 집계로 이동
+- 실제 query 조합과 retention scan을 위한 복합 index 및 1M-row `EXPLAIN (ANALYZE, BUFFERS)` evidence
+- telemetry 기본 90일, lifecycle/admin audit 별도 owner-approved 기간의 bounded/idempotent retention
+- published/dead-letter outbox cleanup의 multi-batch/sleep/lock-timeout 강화와 active outbox 보존
 
 다른 프로젝트 영향:
 
 - admin API를 호출한다면 offset/page 번호에 의존하지 말고 `nextCursor`를 수용할 수 있게 한다.
 - telemetry 보존 기간을 업무 데이터 보존 기간으로 오해하지 않는다.
+- opaque cursor를 해석·수정하거나 장기 저장하지 말고 같은 filter/order의 다음 요청에만 그대로 전달한다.
+- telemetry/lifecycle은 `occurredAt`, admin audit은 `createdAt` 기준으로 삭제되므로 필요한 업무 원장은 별도 도메인 DB에 보존한다.
 
 ### 단계 4 — 호출 복원력과 health
 
@@ -476,6 +486,13 @@ interface FileServerClient {
 - SASL username/password와 TLS CA 전달·회전 책임자
 - DLQ 확인 및 재처리 책임
 
+### retention 운영 활성화 전
+
+- `DATA_RETENTION_ENABLED=true` 승인자와 변경 기록
+- telemetry/lifecycle/admin audit별 보존 기간 owner
+- 삭제 예상 row 수, 실행 창, batch/sleep/lock timeout
+- backup/PITR 복구 책임자와 실제 PostgreSQL 검증 evidence
+
 ### 단계 5 asset 전환 전
 
 - 다른 프로젝트의 기존 file reference schema
@@ -496,9 +513,11 @@ interface FileServerClient {
 9. DB 저장 실패 동안 offset이 commit되지 않고 복구 후 같은 이벤트가 redelivery됨
 10. 자기 client topic은 consume하지만 다른 client/canonical topic은 authorization 거부됨
 11. Kafka brokers/topic/group/SASL credential/CA 교체 후 코드 변경 없이 재연결
-12. upload 성공 후 업무 DB 저장 실패 시 보상/reconciliation 가능
-13. delete 요청 재시도가 멱등
-14. file-server readiness 실패 시 호출 차단 또는 명시적 degraded 처리
+12. admin 목록의 opaque `nextCursor`를 같은 filter/order에 전달하고 offset/page number를 추론하지 않음
+13. telemetry retention 뒤에도 필요한 업무 이력은 별도 도메인 원장에 남음
+14. upload 성공 후 업무 DB 저장 실패 시 보상/reconciliation 가능
+15. delete 요청 재시도가 멱등
+16. file-server readiness 실패 시 호출 차단 또는 명시적 degraded 처리
 
 ## 12. 다른 AI에게 전달할 프롬프트
 
@@ -514,7 +533,8 @@ interface FileServerClient {
 - 완료된 단계 1 tenant policy, signed internal context, multipart path-before-file 계약을 보존한다.
 - 완료된 단계 2의 공유 event contract, 서버 계산 client topic, SASL/TLS, 수동 offset/retry/DLQ,
   동일 eventId dual-publish, provisioning/최소 ACL을 그대로 수용한다.
-- 단계 3~5의 예정 변경(cursor pagination, async ImageAsset/ImageVariant lifecycle)을 adapter 뒤에서 수용한다.
+- 완료된 단계 3의 opaque keyset cursor, DB 집계, bounded retention 계약을 수용한다.
+- 단계 4~5의 예정 변경(timeout/health, async ImageAsset/ImageVariant lifecycle)을 adapter 뒤에서 수용한다.
 
 금지:
 - frontend에 API key 노출

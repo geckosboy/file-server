@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "benchmark": "stage3-db-telemetry-application-probe",
+  "database": "postgresql://127.0.0.1:55439/stage3_benchmark",
+  "queryScope": {
+    "mode": "built-prisma-repository",
+    "implementation": "apps/telemetry-api/dist/.../prisma-admin-analytics.repository.js",
+    "note": "This probe measures the actual compiled PrismaAdminAnalyticsRepository path over the 1M fixture. EXPLAIN (ANALYZE, BUFFERS) for equivalent bounded SQL is in benchmark-1m.json."
+  },
+  "run": {
+    "rows": 1000000,
+    "warmups": 5,
+    "samples": 20,
+    "node": "v22.15.0",
+    "nodeGcExposed": true
+  },
+  "gates": {
+    "thresholds": {
+      "topImagesP95Ms": 300,
+      "summaryP95Ms": 1000,
+      "timeseriesP95Ms": 1000,
+      "rssDeltaBytes": 104857600
+    },
+    "checks": {
+      "topImagesP95": true,
+      "summaryP95": true,
+      "timeseriesP95": true,
+      "rssDelta": true
+    },
+    "passed": true
+  },
+  "measurements": {
+    "summary": {
+      "resultRows": 1,
+      "p50Ms": 76.99,
+      "p95Ms": 122.37,
+      "maxMs": 126.39,
+      "maxRssDeltaBytes": 4026368,
+      "durationsMs": [
+        106.28,
+        103.86,
+        76.08,
+        93.39,
+        121.93,
+        122.37,
+        95.43,
+        126.39,
+        67.47,
+        68.49,
+        66.51,
+        82.48,
+        65.97,
+        69.48,
+        62.68,
+        76.99,
+        82.49,
+        83.88,
+        74.53,
+        67.59
+      ]
+    },
+    "timeseries": {
+      "resultRows": 25,
+      "p50Ms": 120.7,
+      "p95Ms": 168.99,
+      "maxMs": 179.25,
+      "maxRssDeltaBytes": 24576,
+      "durationsMs": [
+        121.22,
+        120.7,
+        117.09,
+        122.11,
+        136.27,
+        120.36,
+        119.82,
+        109.25,
+        109.83,
+        122.94,
+        113.82,
+        107.84,
+        108.78,
+        134.09,
+        129.35,
+        118.11,
+        131.36,
+        168.99,
+        144.69,
+        179.25
+      ]
+    },
+    "topImages": {
+      "resultRows": 50,
+      "p50Ms": 53.43,
+      "p95Ms": 90.83,
+      "maxMs": 136.62,
+      "maxRssDeltaBytes": 12288,
+      "durationsMs": [
+        75.17,
+        85.81,
+        90.83,
+        136.62,
+        74.4,
+        51.61,
+        52.86,
+        66.23,
+        53.85,
+        63.85,
+        51.35,
+        51.32,
+        52.67,
+        55.63,
+        53.5,
+        52.76,
+        52.39,
+        52.42,
+        53.43,
+        52.37
+      ]
+    }
+  }
+}

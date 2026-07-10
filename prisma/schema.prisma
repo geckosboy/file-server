@@ -107,6 +107,7 @@ model AdminAuditLog {
   @@index([clientServiceId, createdAt], map: "admin_audit_logs_client_service_created_at_idx")
   @@index([actor, createdAt], map: "admin_audit_logs_actor_created_at_idx")
   @@index([requestId], map: "admin_audit_logs_request_id_idx")
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "admin_audit_logs_created_at_id_idx")
   @@map("admin_audit_logs")
 }
 
@@ -218,6 +219,14 @@ model TelemetryEvent {
   @@index([imageKey, occurredAt], map: "telemetry_events_image_key_occurred_at_idx")
   @@index([requestId], map: "telemetry_events_request_id_idx")
   @@index([traceId], map: "telemetry_events_trace_id_idx")
+  @@index([occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_occurred_at_event_id_idx")
+  @@index([clientServiceId, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_client_service_occurred_event_idx")
+  @@index([clientServiceSlug, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_client_slug_occurred_event_idx")
+  @@index([eventType, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_event_type_occurred_event_idx")
+  @@index([sourceApp, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_source_app_occurred_event_idx")
+  @@index([status, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_status_occurred_event_idx")
+  @@index([imageKey, occurredAt(sort: Desc), eventId(sort: Desc)], map: "telemetry_events_image_key_occurred_event_idx")
+  @@index([occurredAt, id], map: "telemetry_events_retention_occurred_at_id_idx")
   @@map("telemetry_events")
 }
 
@@ -260,6 +269,14 @@ model ImageLifecycleEvent {
   @@index([imageKey, occurredAt], map: "image_lifecycle_events_image_key_occurred_at_idx")
   @@index([requestId], map: "image_lifecycle_events_request_id_idx")
   @@index([traceId], map: "image_lifecycle_events_trace_id_idx")
+  @@index([occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_occurred_at_event_id_idx")
+  @@index([clientServiceId, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_client_service_occurred_event_idx")
+  @@index([clientServiceSlug, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_client_slug_occurred_event_idx")
+  @@index([eventType, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_event_type_occurred_event_idx")
+  @@index([sourceApp, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_source_app_occurred_event_idx")
+  @@index([status, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_status_occurred_event_idx")
+  @@index([imageKey, occurredAt(sort: Desc), eventId(sort: Desc)], map: "image_lifecycle_events_image_key_occurred_event_idx")
+  @@index([occurredAt, id], map: "image_lifecycle_events_retention_occurred_at_id_idx")
   @@map("image_lifecycle_events")
 }
 

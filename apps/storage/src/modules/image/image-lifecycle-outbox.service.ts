@@ -33,6 +33,9 @@ const DEFAULT_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_LEASE_DURATION_MS = 30_000;
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_CLEANUP_BATCH_SIZE = 250;
+const DEFAULT_CLEANUP_MAX_BATCHES_PER_RUN = 20;
+const DEFAULT_CLEANUP_BATCH_SLEEP_MS = 100;
+const DEFAULT_CLEANUP_LOCK_TIMEOUT_MS = 1_000;
 const DEFAULT_MAX_ATTEMPTS = 10;
 const DEFAULT_PUBLISHED_RETENTION_DAYS = 30;
 const DEFAULT_DEAD_LETTER_RETENTION_DAYS = 90;
@@ -203,34 +206,82 @@ export class ImageLifecycleOutboxService
 						60 *
 						1000,
 			);
-			const expiredRows = await this.prisma.imageLifecycleOutbox.findMany({
-				where: {
-					OR: [
-						{
-							status: OutboxStatus.Published,
-							publishedAt: { lte: publishedBefore },
-						},
-						{
-							status: OutboxStatus.DeadLetter,
-							deadLetteredAt: { lte: deadLetteredBefore },
-						},
-					],
-				},
-				select: { id: true },
-				orderBy: { createdAt: 'asc' },
-				take: limit,
-			});
+			const maxBatches = readPositiveInteger(
+				process.env.LIFECYCLE_OUTBOX_CLEANUP_MAX_BATCHES_PER_RUN,
+				DEFAULT_CLEANUP_MAX_BATCHES_PER_RUN,
+			);
+			const batchSleepMs = readPositiveInteger(
+				process.env.LIFECYCLE_OUTBOX_CLEANUP_BATCH_SLEEP_MS,
+				DEFAULT_CLEANUP_BATCH_SLEEP_MS,
+			);
+			let deleted = 0;
+			for (let batch = 0; batch < maxBatches; batch += 1) {
+				const batchDeleted = await this.cleanupRetainedBatch({
+					limit,
+					publishedBefore,
+					deadLetteredBefore,
+				});
+				deleted += batchDeleted;
+				if (batchDeleted < limit) {
+					break;
+				}
+				if (batch + 1 < maxBatches && batchSleepMs > 0) {
+					await sleep(batchSleepMs);
+				}
+			}
+			return deleted;
+		} finally {
+			this.isCleaningUp = false;
+		}
+	}
+
+	async cleanupRetainedBatch(input: {
+		limit: number;
+		publishedBefore: Date;
+		deadLetteredBefore: Date;
+	}): Promise<number> {
+		return this.prisma.$transaction(async (transaction) => {
+			const lockTimeoutMs = readPositiveInteger(
+				process.env.LIFECYCLE_OUTBOX_CLEANUP_LOCK_TIMEOUT_MS,
+				DEFAULT_CLEANUP_LOCK_TIMEOUT_MS,
+			);
+			await transaction.$executeRaw(
+				Prisma.sql`SELECT set_config('lock_timeout', ${`${lockTimeoutMs}ms`}, true)`,
+			);
+			const expiredRows = await transaction.$queryRaw<Array<{ id: string }>>(
+				Prisma.sql`
+					SELECT "id"
+					FROM "image_lifecycle_outbox"
+					WHERE
+						("status" = ${OutboxStatus.Published} AND "published_at" < ${input.publishedBefore})
+						OR
+						("status" = ${OutboxStatus.DeadLetter} AND "dead_lettered_at" < ${input.deadLetteredBefore})
+					ORDER BY "created_at" ASC, "id" ASC
+					LIMIT ${input.limit}
+					FOR UPDATE SKIP LOCKED
+				`,
+			);
 			if (expiredRows.length === 0) {
 				return 0;
 			}
 
-			const result = await this.prisma.imageLifecycleOutbox.deleteMany({
-				where: { id: { in: expiredRows.map(({ id }) => id) } },
+			const result = await transaction.imageLifecycleOutbox.deleteMany({
+				where: {
+					id: { in: expiredRows.map(({ id }) => id) },
+					OR: [
+						{
+							status: OutboxStatus.Published,
+							publishedAt: { lt: input.publishedBefore },
+						},
+						{
+							status: OutboxStatus.DeadLetter,
+							deadLetteredAt: { lt: input.deadLetteredBefore },
+						},
+					],
+				},
 			});
 			return result.count;
-		} finally {
-			this.isCleaningUp = false;
-		}
+		});
 	}
 
 	private async resolveDestinationTopics(
@@ -382,6 +433,9 @@ function readPositiveInteger(value: string | undefined, fallback: number) {
 	const parsed = Number(value);
 	return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
+
+const sleep = (milliseconds: number) =>
+	new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 function getRetryDelayMs(attempts: number): number {
 	const exponent = Math.min(Math.max(attempts - 1, 0), 6);

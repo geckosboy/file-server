@@ -174,6 +174,34 @@ describe('텔레메트리 API e2e', () => {
 			});
 	});
 
+	it('이벤트 목록은 opaque cursor를 반환하고 legacy offset cursor도 수용한다', async () => {
+		await seedEvents(app);
+
+		const firstPage = await request(app.getHttpServer())
+			.get('/api/admin/events')
+			.set('x-admin-token', adminToken)
+			.query({ limit: 1 })
+			.expect(200)
+			.then(({ body }) => body);
+		const secondPage = await request(app.getHttpServer())
+			.get('/api/admin/events')
+			.set('x-admin-token', adminToken)
+			.query({ limit: 1, cursor: firstPage.nextCursor })
+			.expect(200)
+			.then(({ body }) => body);
+		const legacyPage = await request(app.getHttpServer())
+			.get('/api/admin/events')
+			.set('x-admin-token', adminToken)
+			.query({ limit: 1, cursor: '1' })
+			.expect(200)
+			.then(({ body }) => body);
+
+		expect(firstPage.nextCursor).toEqual(expect.any(String));
+		expect(firstPage.nextCursor).not.toMatch(/^\d+$/);
+		expect(secondPage.items).toEqual(legacyPage.items);
+		expect(secondPage.items[0].eventId).not.toBe(firstPage.items[0].eventId);
+	});
+
 	it('이미지 목록 요청에 이미지 집계 목록을 반환한다', async () => {
 		await seedEvents(app);
 

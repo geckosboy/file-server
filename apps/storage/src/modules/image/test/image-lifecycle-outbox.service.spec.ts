@@ -51,6 +51,9 @@ const createOutboxRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 type PrismaMock = {
+	$transaction: jest.Mock;
+	$executeRaw: jest.Mock;
+	$queryRaw: jest.Mock;
 	clientServiceLifecycleSubscription: {
 		findFirst: jest.Mock;
 	};
@@ -62,17 +65,26 @@ type PrismaMock = {
 	};
 };
 
-const createPrismaMock = (): PrismaMock => ({
-	clientServiceLifecycleSubscription: {
-		findFirst: jest.fn().mockResolvedValue(null),
-	},
-	imageLifecycleOutbox: {
-		createMany: jest.fn().mockResolvedValue({ count: 1 }),
-		findMany: jest.fn(),
-		updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-		deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
-	},
-});
+const createPrismaMock = (): PrismaMock => {
+	const prisma: PrismaMock = {
+		$transaction: jest.fn(),
+		$executeRaw: jest.fn().mockResolvedValue(1),
+		$queryRaw: jest.fn(),
+		clientServiceLifecycleSubscription: {
+			findFirst: jest.fn().mockResolvedValue(null),
+		},
+		imageLifecycleOutbox: {
+			createMany: jest.fn().mockResolvedValue({ count: 1 }),
+			findMany: jest.fn(),
+			updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+			deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+		},
+	};
+	prisma.$transaction.mockImplementation(
+		(callback: (transaction: PrismaMock) => unknown) => callback(prisma),
+	);
+	return prisma;
+};
 
 describe('이미지 lifecycle outbox 서비스', () => {
 	const originalNodeEnv = process.env.NODE_ENV;
@@ -81,6 +93,12 @@ describe('이미지 lifecycle outbox 서비스', () => {
 		process.env.LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS;
 	const originalCleanupInterval =
 		process.env.LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS;
+	const originalCleanupMaxBatches =
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_MAX_BATCHES_PER_RUN;
+	const originalCleanupBatchSleep =
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_BATCH_SLEEP_MS;
+	const originalCleanupLockTimeout =
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_LOCK_TIMEOUT_MS;
 	let prisma: PrismaMock;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let service: ImageLifecycleOutboxService;
@@ -114,6 +132,18 @@ describe('이미지 lifecycle outbox 서비스', () => {
 		restoreEnvironmentValue(
 			'LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS',
 			originalCleanupInterval,
+		);
+		restoreEnvironmentValue(
+			'LIFECYCLE_OUTBOX_CLEANUP_MAX_BATCHES_PER_RUN',
+			originalCleanupMaxBatches,
+		);
+		restoreEnvironmentValue(
+			'LIFECYCLE_OUTBOX_CLEANUP_BATCH_SLEEP_MS',
+			originalCleanupBatchSleep,
+		);
+		restoreEnvironmentValue(
+			'LIFECYCLE_OUTBOX_CLEANUP_LOCK_TIMEOUT_MS',
+			originalCleanupLockTimeout,
 		);
 		jest.restoreAllMocks();
 	});
@@ -171,14 +201,15 @@ describe('이미지 lifecycle outbox 서비스', () => {
 		expect(prisma.imageLifecycleOutbox.updateMany).toHaveBeenCalledTimes(2);
 	});
 
-	it('cleanup 조회가 실패해도 rejection을 관찰하고 다음 timer tick에서 재시도한다', async () => {
+	it('cleanup lock 설정이 실패해도 rejection을 관찰하고 다음 timer tick에서 재시도한다', async () => {
 		jest.useFakeTimers();
 		process.env.LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS = '0';
 		process.env.LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS = '100';
-		const databaseError = new Error('database unavailable during cleanup');
-		prisma.imageLifecycleOutbox.findMany
+		const databaseError = new Error('lock timeout configuration failed');
+		prisma.$executeRaw
 			.mockRejectedValueOnce(databaseError)
-			.mockResolvedValueOnce([]);
+			.mockResolvedValueOnce(1);
+		prisma.$queryRaw.mockResolvedValue([]);
 		const loggerError = jest
 			.spyOn(Logger.prototype, 'error')
 			.mockImplementation(() => undefined);
@@ -193,7 +224,7 @@ describe('이미지 lifecycle outbox 서비스', () => {
 			stack: databaseError.stack,
 		});
 		await jest.advanceTimersByTimeAsync(100);
-		expect(prisma.imageLifecycleOutbox.findMany).toHaveBeenCalledTimes(2);
+		expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
 	});
 
 	it('canonical destination row를 저장하고 lease를 획득한 뒤 발행한다', async () => {
@@ -322,33 +353,97 @@ describe('이미지 lifecycle outbox 서비스', () => {
 	});
 
 	it('published/dead-letter 보존 기간이 지난 row를 bounded batch로 정리한다', async () => {
-		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([
-			{ id: 'published-1' },
-			{ id: 'dead-letter-1' },
-		]);
-		prisma.imageLifecycleOutbox.deleteMany.mockResolvedValue({ count: 2 });
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_MAX_BATCHES_PER_RUN = '2';
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_BATCH_SLEEP_MS = '0';
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_LOCK_TIMEOUT_MS = '500';
+		prisma.$queryRaw
+			.mockResolvedValueOnce([{ id: 'published-1' }, { id: 'dead-letter-1' }])
+			.mockResolvedValueOnce([{ id: 'published-2' }]);
+		prisma.imageLifecycleOutbox.deleteMany
+			.mockResolvedValueOnce({ count: 2 })
+			.mockResolvedValueOnce({ count: 1 });
 
-		await expect(service.cleanupRetainedRows(2)).resolves.toBe(2);
+		await expect(service.cleanupRetainedRows(2)).resolves.toBe(3);
 
-		expect(prisma.imageLifecycleOutbox.findMany).toHaveBeenCalledWith({
-			where: {
+		expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+		expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+		const query = prisma.$queryRaw.mock.calls[0][0];
+		expect(query.text).toContain('FROM "image_lifecycle_outbox"');
+		expect(query.text).toContain('FOR UPDATE SKIP LOCKED');
+		expect(query.values).toEqual(
+			expect.arrayContaining(['PUBLISHED', 'DEAD_LETTER', 2]),
+		);
+		expect(prisma.imageLifecycleOutbox.deleteMany).toHaveBeenNthCalledWith(1, {
+			where: expect.objectContaining({
+				id: { in: ['published-1', 'dead-letter-1'] },
 				OR: [
 					{
 						status: 'PUBLISHED',
-						publishedAt: { lte: expect.any(Date) },
+						publishedAt: { lt: expect.any(Date) },
 					},
 					{
 						status: 'DEAD_LETTER',
-						deadLetteredAt: { lte: expect.any(Date) },
+						deadLetteredAt: { lt: expect.any(Date) },
 					},
 				],
-			},
-			select: { id: true },
-			orderBy: { createdAt: 'asc' },
-			take: 2,
+			}),
 		});
+	});
+
+	it('full cleanup batch 사이에 설정된 sleep을 적용한다', async () => {
+		jest.useFakeTimers();
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_MAX_BATCHES_PER_RUN = '2';
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_BATCH_SLEEP_MS = '100';
+		prisma.$queryRaw
+			.mockResolvedValueOnce([{ id: 'published-1' }, { id: 'published-2' }])
+			.mockResolvedValueOnce([]);
+		prisma.imageLifecycleOutbox.deleteMany.mockResolvedValue({ count: 2 });
+
+		const cleanup = service.cleanupRetainedRows(2);
+		await flushPromises();
+		expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+
+		await jest.advanceTimersByTimeAsync(99);
+		expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+		await jest.advanceTimersByTimeAsync(1);
+		await expect(cleanup).resolves.toBe(2);
+		expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+	});
+
+	it('pending/publishing/failed rows remain eligible for publish and are never cleanup candidates', async () => {
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_MAX_BATCHES_PER_RUN = '1';
+		prisma.$queryRaw.mockResolvedValue([]);
+
+		await expect(service.cleanupRetainedRows(2)).resolves.toBe(0);
+
+		expect(prisma.imageLifecycleOutbox.deleteMany).not.toHaveBeenCalled();
+		const query = prisma.$queryRaw.mock.calls[0][0];
+		expect(query.values).not.toEqual(
+			expect.arrayContaining(['PENDING', 'PUBLISHING', 'FAILED']),
+		);
+	});
+
+	it('rechecks terminal status and cutoff during delete to preserve a destination that is still retrying', async () => {
+		prisma.imageLifecycleOutbox.deleteMany.mockResolvedValue({ count: 1 });
+		prisma.$queryRaw.mockResolvedValue([
+			{ id: 'canonical-published' },
+			{ id: 'client-failed' },
+		]);
+
+		await service.cleanupRetainedBatch({
+			limit: 2,
+			publishedBefore: new Date('2026-06-10T00:00:00.000Z'),
+			deadLetteredBefore: new Date('2026-04-10T00:00:00.000Z'),
+		});
+
 		expect(prisma.imageLifecycleOutbox.deleteMany).toHaveBeenCalledWith({
-			where: { id: { in: ['published-1', 'dead-letter-1'] } },
+			where: {
+				id: { in: ['canonical-published', 'client-failed'] },
+				OR: expect.arrayContaining([
+					expect.objectContaining({ status: 'PUBLISHED' }),
+					expect.objectContaining({ status: 'DEAD_LETTER' }),
+				]),
+			},
 		});
 	});
 });

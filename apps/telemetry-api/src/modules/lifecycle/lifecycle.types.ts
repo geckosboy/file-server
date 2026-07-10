@@ -25,6 +25,7 @@ export type LifecycleMetrics = TelemetryMetrics;
 
 export interface LifecycleEventFilter extends Partial<TelemetryRange> {
 	eventType?: string;
+	sourceApp?: string;
 	status?: string;
 	clientServiceId?: string;
 	clientServiceSlug?: string;
@@ -32,6 +33,7 @@ export interface LifecycleEventFilter extends Partial<TelemetryRange> {
 	name?: string;
 	imageKey?: string;
 	requestId?: string;
+	search?: string;
 	cursor?: string;
 	limit?: number;
 }

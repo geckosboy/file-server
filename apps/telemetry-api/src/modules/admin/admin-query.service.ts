@@ -5,12 +5,7 @@ import {
 	NotFoundException,
 	Optional,
 } from '@nestjs/common';
-import {
-	average,
-	percentile,
-	projectAssetSummaries,
-	TelemetryRepository,
-} from '../telemetry/telemetry.repository';
+import { TelemetryRepository } from '../telemetry/telemetry.repository';
 import { TelemetryKafkaConsumerStatusService } from '../kafka-ingestion/kafka-ingestion.status';
 import { LifecycleKafkaConsumerStatusService } from '../kafka-lifecycle/kafka-lifecycle.status';
 import { LIFECYCLE_REPOSITORY } from '../lifecycle/lifecycle-repository.provider';
@@ -22,12 +17,18 @@ import {
 import { TELEMETRY_REPOSITORY } from '../telemetry/telemetry-repository.provider';
 import {
 	EventFilter,
-	ImageAssetSummary,
 	ImageFilter,
 	ImageTelemetryEvent,
 	TelemetryRange,
 	TimeseriesQuery,
 } from '../telemetry/telemetry.types';
+import { EventListQuery } from '../telemetry/event-list-query';
+import {
+	encodeEventListCursor,
+	parseEventListCursor,
+} from './event-list-cursor';
+import { AdminAnalyticsRepository } from './admin-analytics.types';
+import { ADMIN_ANALYTICS_REPOSITORY } from './admin-analytics.provider';
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 50;
@@ -139,6 +140,8 @@ export class AdminQueryService {
 		private readonly repository: TelemetryRepository,
 		@Inject(LIFECYCLE_REPOSITORY)
 		private readonly lifecycleRepository: LifecycleRepository,
+		@Inject(ADMIN_ANALYTICS_REPOSITORY)
+		private readonly analyticsRepository: AdminAnalyticsRepository,
 		@Optional()
 		private readonly kafkaStatusService?: TelemetryKafkaConsumerStatusService,
 		@Optional()
@@ -184,108 +187,35 @@ export class AdminQueryService {
 	}
 
 	async getSummary(query: Partial<EventFilter>): Promise<DashboardSummary> {
-		const range = parseRange(query);
-		const events = await this.eventsForQuery({ ...query, ...range });
-		const cacheHits = countByType(events, 'image.cache.hit');
-		const cacheMisses = countByType(events, 'image.cache.miss');
-		const cacheTotal = cacheHits + cacheMisses;
-		const failures = events.filter((event) => event.status === 'failed').length;
-		const durations = events
-			.map((event) => event.durationMs)
-			.filter((duration): duration is number => duration !== undefined);
-
-		return {
-			range,
-			totalEvents: events.length,
-			totalReads: cacheTotal + countByType(events, 'image.read.failed'),
-			totalUploads: countByType(events, 'image.upload.completed'),
-			totalResizes: countByType(events, 'image.resize.completed'),
-			cacheHitRate: rate(cacheHits, cacheTotal),
-			cacheMissRate: rate(cacheMisses, cacheTotal),
-			failureRate: rate(failures, events.length),
-			avgDurationMs: average(durations),
-			p95DurationMs: percentile(durations, 0.95),
-			totalInputBytes: sum(events, 'inputBytes'),
-			totalOutputBytes: sum(events, 'outputBytes'),
-		};
+		return this.analyticsRepository.getSummary(query);
 	}
 
 	async getTimeseries(query: TimeseriesQuery): Promise<TimeseriesResponse> {
-		const interval = query.interval ?? 'hour';
-		if (!['minute', 'hour', 'day'].includes(interval)) {
-			throw new BadRequestException('interval must be minute, hour, or day');
-		}
-
-		const now = new Date();
-		const range = parseRange({
-			from:
-				query.from ??
-				new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString(),
-			to: query.to ?? now.toISOString(),
-		});
-		const buckets = createBuckets(range, interval);
-		const events = await this.eventsForQuery({ ...query, ...range });
-		for (const event of events) {
-			const bucketStart = floorDate(
-				new Date(event.occurredAt),
-				interval,
-			).toISOString();
-			const bucket = buckets.get(bucketStart);
-			if (!bucket) {
-				continue;
-			}
-
-			bucket.totalEvents += 1;
-			bucket.cacheHits += event.eventType === 'image.cache.hit' ? 1 : 0;
-			bucket.cacheMisses += event.eventType === 'image.cache.miss' ? 1 : 0;
-			bucket.resizeCompleted +=
-				event.eventType === 'image.resize.completed' ? 1 : 0;
-			bucket.uploadCompleted +=
-				event.eventType === 'image.upload.completed' ? 1 : 0;
-			bucket.failures += event.status === 'failed' ? 1 : 0;
-			if (event.durationMs !== undefined) {
-				bucket.durations.push(event.durationMs);
-			}
-		}
-
-		return {
-			interval,
-			points: [...buckets.values()].map(({ durations, ...bucket }) => ({
-				...bucket,
-				cacheHitRate: rate(
-					bucket.cacheHits,
-					bucket.cacheHits + bucket.cacheMisses,
-				),
-				avgDurationMs: average(durations),
-				p95DurationMs: percentile(durations, 0.95),
-			})),
-		};
+		return this.analyticsRepository.getTimeseries(query);
 	}
 
 	async listEvents(query: EventFilter): Promise<EventListResponse> {
 		const limit = parseLimit(query.limit);
-		const cursor = parseCursor(query.cursor);
-		const filtered = (await this.eventsForQuery(query)).sort(compareEventsDesc);
-
-		const items = filtered.slice(cursor, cursor + limit);
-		const nextCursor =
-			cursor + limit < filtered.length ? String(cursor + limit) : undefined;
-		return { items, nextCursor };
+		const page = await this.repository.listEventPage(
+			toEventListQuery(query, limit),
+		);
+		return {
+			items: page.items,
+			nextCursor: encodeEventListCursor(page.nextCursor),
+		};
 	}
 
 	async listLifecycleEvents(
 		query: LifecycleEventFilter,
 	): Promise<LifecycleEventListResponse> {
 		const limit = parseLimit(query.limit);
-		const cursor = parseCursor(query.cursor);
-		const filtered = (await this.lifecycleEventsForQuery(query)).sort(
-			compareLifecycleEventsDesc,
+		const page = await this.lifecycleRepository.listEventPage(
+			toEventListQuery(query, limit),
 		);
-
-		const items = filtered.slice(cursor, cursor + limit);
-		const nextCursor =
-			cursor + limit < filtered.length ? String(cursor + limit) : undefined;
-		return { items, nextCursor };
+		return {
+			items: page.items,
+			nextCursor: encodeEventListCursor(page.nextCursor),
+		};
 	}
 
 	async listImageLifecycleEvents(
@@ -296,34 +226,11 @@ export class AdminQueryService {
 	}
 
 	async listImages(query: ImageFilter): Promise<ImageListResponse> {
-		const limit = parseLimit(query.limit);
-		const cursor = parseCursor(query.cursor);
-		const order = query.order ?? 'desc';
-		const sort = query.sort ?? 'lastSeenAt';
-		const events = await this.eventsForQuery({
-			from: query.from,
-			to: query.to,
-			clientServiceId: query.clientServiceId,
-			clientServiceSlug: query.clientServiceSlug,
-		});
-		const imageDurations = this.durationsByImageKey(events);
-		const filtered = (await projectAssetSummaries(events))
-			.filter((asset) => matchesImageQuery(asset, query.q))
-			.map((asset) =>
-				toImageListItem(asset, imageDurations.get(asset.imageKey) ?? []),
-			)
-			.sort((left, right) => compareImages(left, right, sort, order));
-
-		const items = filtered.slice(cursor, cursor + limit);
-		const nextCursor =
-			cursor + limit < filtered.length ? String(cursor + limit) : undefined;
-		return { items, nextCursor };
+		return this.analyticsRepository.listTopImages(query);
 	}
 
 	async getImage(imageKey: string): Promise<ImageListItem> {
-		const image = (
-			await this.listImages({ q: imageKey, limit: MAX_LIMIT })
-		).items.find((item) => item.imageKey === imageKey);
+		const image = await this.analyticsRepository.getImage(imageKey);
 		if (!image) {
 			throw new NotFoundException('image not found');
 		}
@@ -339,160 +246,16 @@ export class AdminQueryService {
 	}
 
 	async listImageVariants(imageKey: string) {
-		return { items: await this.repository.listVariants(imageKey) };
+		return {
+			items: await this.analyticsRepository.listVariants(imageKey),
+		};
 	}
 
 	async listImageResizeRecommendations(
 		query: ImageResizeRecommendationQuery,
 	): Promise<ImageResizeRecommendationResponse> {
-		const limit = parseLimit(query.limit);
-		const minRequests = parseMinRequests(query.minRequests);
-		const events = await this.eventsForQuery({
-			from: query.from,
-			to: query.to,
-			clientServiceId: query.clientServiceId,
-			clientServiceSlug: query.clientServiceSlug,
-			eventType: 'image.resize.completed',
-			status: 'success',
-		});
-		const grouped = new Map<string, MutableImageResizeRecommendation>();
-
-		for (const event of events) {
-			if (!isOnDemandResizeEvent(event)) {
-				continue;
-			}
-
-			const key = createResizeRecommendationKey(event);
-			const current =
-				grouped.get(key) ?? createMutableImageResizeRecommendation(key, event);
-			current.requestCount += 1;
-			current.totalInputBytes += event.inputBytes ?? 0;
-			current.totalOutputBytes += event.outputBytes ?? 0;
-			current.lastRequestedAt = maxIso(
-				current.lastRequestedAt,
-				event.occurredAt,
-			);
-			current.imageKeys.add(event.imageKey);
-			if (current.sampleImageKeys.length < 5) {
-				current.sampleImageKeys.push(event.imageKey);
-			}
-			if (event.durationMs !== undefined) {
-				current.durations.push(event.durationMs);
-			}
-
-			grouped.set(key, current);
-		}
-
-		const items = [...grouped.values()]
-			.map((item) =>
-				toImageResizeRecommendationItem(item, {
-					minRequests,
-				}),
-			)
-			.sort(compareImageResizeRecommendations)
-			.slice(0, limit);
-
-		return {
-			threshold: { minRequests },
-			items,
-		};
+		return this.analyticsRepository.listResizeRecommendations(query);
 	}
-
-	private async eventsForQuery(query: Partial<EventFilter>) {
-		const range = parseRange(query, true);
-		return (await this.repository.listEvents())
-			.filter((event) => matchesOptionalRange(event.occurredAt, range))
-			.filter(
-				(event) => !query.eventType || event.eventType === query.eventType,
-			)
-			.filter(
-				(event) => !query.sourceApp || event.sourceApp === query.sourceApp,
-			)
-			.filter((event) => !query.status || event.status === query.status)
-			.filter(
-				(event) =>
-					!query.clientServiceId ||
-					event.clientServiceId === query.clientServiceId,
-			)
-			.filter(
-				(event) =>
-					!query.clientServiceSlug ||
-					event.clientServiceSlug === query.clientServiceSlug,
-			)
-			.filter((event) => !query.path || event.path.includes(query.path))
-			.filter((event) => !query.name || event.name.includes(query.name))
-			.filter((event) => !query.imageKey || event.imageKey === query.imageKey)
-			.filter(
-				(event) => !query.requestId || event.requestId === query.requestId,
-			);
-	}
-
-	private async lifecycleEventsForQuery(query: Partial<LifecycleEventFilter>) {
-		const range = parseRange(query, true);
-		return (await this.lifecycleRepository.listEvents())
-			.filter((event) => matchesOptionalRange(event.occurredAt, range))
-			.filter(
-				(event) => !query.eventType || event.eventType === query.eventType,
-			)
-			.filter((event) => !query.status || event.status === query.status)
-			.filter(
-				(event) =>
-					!query.clientServiceId ||
-					event.clientServiceId === query.clientServiceId,
-			)
-			.filter(
-				(event) =>
-					!query.clientServiceSlug ||
-					event.clientServiceSlug === query.clientServiceSlug,
-			)
-			.filter((event) => !query.path || event.path.includes(query.path))
-			.filter((event) => !query.name || event.name.includes(query.name))
-			.filter((event) => !query.imageKey || event.imageKey === query.imageKey)
-			.filter(
-				(event) => !query.requestId || event.requestId === query.requestId,
-			);
-	}
-
-	private durationsByImageKey(
-		events: ImageTelemetryEvent[],
-	): Map<string, number[]> {
-		const durations = new Map<string, number[]>();
-		for (const event of events) {
-			if (event.durationMs === undefined) {
-				continue;
-			}
-
-			durations.set(event.imageKey, [
-				...(durations.get(event.imageKey) ?? []),
-				event.durationMs,
-			]);
-		}
-
-		return durations;
-	}
-}
-
-interface MutableImageResizeRecommendation {
-	recommendationKey: string;
-	clientServiceId?: string;
-	clientServiceSlug?: string;
-	width?: number;
-	height?: number;
-	format?: string;
-	requestCount: number;
-	totalInputBytes: number;
-	totalOutputBytes: number;
-	lastRequestedAt: string;
-	imageKeys: Set<string>;
-	sampleImageKeys: string[];
-	durations: number[];
-}
-
-interface MutableTimeseriesPoint extends Omit<
-	TimeseriesPoint,
-	'cacheHitRate' | 'avgDurationMs' | 'p95DurationMs'
-> {
-	durations: number[];
 }
 
 function parseRange(
@@ -528,299 +291,29 @@ function parseLimit(limit: number | undefined): number {
 	return limit;
 }
 
-function parseMinRequests(minRequests: number | undefined): number {
-	if (minRequests === undefined) {
-		return 3;
-	}
-	if (!Number.isInteger(minRequests) || minRequests < 1) {
-		throw new BadRequestException('minRequests must be a positive integer');
-	}
-
-	return minRequests;
-}
-
-function parseCursor(cursor: string | undefined): number {
-	if (cursor === undefined) {
-		return 0;
-	}
-	const parsed = Number(cursor);
-	if (!Number.isInteger(parsed) || parsed < 0) {
-		throw new BadRequestException(
-			'cursor must be a non-negative integer offset',
-		);
-	}
-
-	return parsed;
-}
-
-function isOnDemandResizeEvent(event: ImageTelemetryEvent): boolean {
-	return (
-		event.eventType === 'image.resize.completed' &&
-		event.status === 'success' &&
-		(event.clientServiceId !== undefined ||
-			event.clientServiceSlug !== undefined) &&
-		(event.width !== undefined || event.height !== undefined) &&
-		event.cacheKey === undefined
-	);
-}
-
-function createResizeRecommendationKey(event: ImageTelemetryEvent): string {
-	return [
-		event.clientServiceId ?? 'unknown-id',
-		event.clientServiceSlug ?? 'unknown-slug',
-		event.width ?? 'auto',
-		event.height ?? 'auto',
-		event.format ?? 'unknown',
-	].join(':');
-}
-
-function createMutableImageResizeRecommendation(
-	recommendationKey: string,
-	event: ImageTelemetryEvent,
-): MutableImageResizeRecommendation {
+function toEventListQuery(
+	query: EventFilter | LifecycleEventFilter,
+	take: number,
+): EventListQuery {
+	const range = parseRange(query, true);
 	return {
-		recommendationKey,
-		clientServiceId: event.clientServiceId,
-		clientServiceSlug: event.clientServiceSlug,
-		width: event.width,
-		height: event.height,
-		format: event.format,
-		requestCount: 0,
-		totalInputBytes: 0,
-		totalOutputBytes: 0,
-		lastRequestedAt: event.occurredAt,
-		imageKeys: new Set<string>(),
-		sampleImageKeys: [],
-		durations: [],
+		eventType: query.eventType,
+		sourceApp: query.sourceApp,
+		clientServiceId: query.clientServiceId,
+		clientServiceSlug: query.clientServiceSlug,
+		status: query.status,
+		from: range.from || undefined,
+		to: range.to || undefined,
+		search: query.search,
+		path: query.path,
+		name: query.name,
+		imageKey: query.imageKey,
+		requestId: query.requestId,
+		...parseEventListCursor(query.cursor),
+		take,
 	};
-}
-
-function toImageResizeRecommendationItem(
-	item: MutableImageResizeRecommendation,
-	threshold: { minRequests: number },
-): ImageResizeRecommendationItem {
-	const estimatedSavedResizeMs = item.durations.reduce(
-		(total, duration) => total + duration,
-		0,
-	);
-
-	return {
-		recommendationKey: item.recommendationKey,
-		clientServiceId: item.clientServiceId,
-		clientServiceSlug: item.clientServiceSlug,
-		width: item.width,
-		height: item.height,
-		format: item.format,
-		requestCount: item.requestCount,
-		imageCount: item.imageKeys.size,
-		avgDurationMs: average(item.durations),
-		p95DurationMs: percentile(item.durations, 0.95),
-		estimatedSavedResizeMs,
-		totalInputBytes: item.totalInputBytes,
-		totalOutputBytes: item.totalOutputBytes,
-		lastRequestedAt: item.lastRequestedAt,
-		sampleImageKeys: [...new Set(item.sampleImageKeys)],
-		recommended: item.requestCount >= threshold.minRequests,
-	};
-}
-
-function compareImageResizeRecommendations(
-	left: ImageResizeRecommendationItem,
-	right: ImageResizeRecommendationItem,
-): number {
-	if (left.recommended !== right.recommended) {
-		return left.recommended ? -1 : 1;
-	}
-	if (left.requestCount !== right.requestCount) {
-		return right.requestCount - left.requestCount;
-	}
-	if (left.estimatedSavedResizeMs !== right.estimatedSavedResizeMs) {
-		return right.estimatedSavedResizeMs - left.estimatedSavedResizeMs;
-	}
-
-	const timeDiff =
-		new Date(right.lastRequestedAt).getTime() -
-		new Date(left.lastRequestedAt).getTime();
-	return timeDiff === 0
-		? left.recommendationKey.localeCompare(right.recommendationKey)
-		: timeDiff;
 }
 
 function isValidDate(value: string): boolean {
 	return Number.isFinite(new Date(value).getTime());
-}
-
-function maxIso(left: string, right: string): string {
-	return new Date(left).getTime() >= new Date(right).getTime() ? left : right;
-}
-
-function matchesOptionalRange(
-	date: string,
-	range: Partial<TelemetryRange>,
-): boolean {
-	return (
-		(!range.from ||
-			new Date(date).getTime() >= new Date(range.from).getTime()) &&
-		(!range.to || new Date(date).getTime() <= new Date(range.to).getTime())
-	);
-}
-
-function countByType(events: ImageTelemetryEvent[], eventType: string): number {
-	return events.filter((event) => event.eventType === eventType).length;
-}
-
-function rate(part: number, total: number): number | null {
-	return total === 0 ? null : part / total;
-}
-
-function sum(
-	events: ImageTelemetryEvent[],
-	key: 'inputBytes' | 'outputBytes',
-): number {
-	return events.reduce((total, event) => total + (event[key] ?? 0), 0);
-}
-
-function createBuckets(
-	range: TelemetryRange,
-	interval: BucketInterval,
-): Map<string, MutableTimeseriesPoint> {
-	const buckets = new Map<string, MutableTimeseriesPoint>();
-	const end = new Date(range.to).getTime();
-	let current = floorDate(new Date(range.from), interval);
-
-	while (current.getTime() <= end) {
-		const bucketStart = current.toISOString();
-		buckets.set(bucketStart, {
-			bucketStart,
-			totalEvents: 0,
-			cacheHits: 0,
-			cacheMisses: 0,
-			resizeCompleted: 0,
-			uploadCompleted: 0,
-			failures: 0,
-			durations: [],
-		});
-		current = addInterval(current, interval);
-	}
-
-	return buckets;
-}
-
-function floorDate(date: Date, interval: BucketInterval): Date {
-	const next = new Date(date);
-	next.setUTCSeconds(0, 0);
-	if (interval === 'hour' || interval === 'day') {
-		next.setUTCMinutes(0, 0, 0);
-	}
-	if (interval === 'day') {
-		next.setUTCHours(0, 0, 0, 0);
-	}
-
-	return next;
-}
-
-function addInterval(date: Date, interval: BucketInterval): Date {
-	const next = new Date(date);
-	if (interval === 'minute') {
-		next.setUTCMinutes(next.getUTCMinutes() + 1);
-	}
-	if (interval === 'hour') {
-		next.setUTCHours(next.getUTCHours() + 1);
-	}
-	if (interval === 'day') {
-		next.setUTCDate(next.getUTCDate() + 1);
-	}
-
-	return next;
-}
-
-function compareEventsDesc(
-	left: ImageTelemetryEvent,
-	right: ImageTelemetryEvent,
-): number {
-	const timeDiff =
-		new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime();
-	return timeDiff === 0 ? right.eventId.localeCompare(left.eventId) : timeDiff;
-}
-
-function compareLifecycleEventsDesc(
-	left: ImageLifecycleEvent,
-	right: ImageLifecycleEvent,
-): number {
-	const timeDiff =
-		new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime();
-	return timeDiff === 0 ? right.eventId.localeCompare(left.eventId) : timeDiff;
-}
-
-function matchesImageQuery(
-	asset: ImageAssetSummary,
-	query: string | undefined,
-): boolean {
-	if (!query) {
-		return true;
-	}
-
-	return [asset.imageKey, asset.path, asset.name]
-		.join(' ')
-		.toLowerCase()
-		.includes(query.toLowerCase());
-}
-
-function toImageListItem(
-	asset: ImageAssetSummary,
-	durations: number[],
-): ImageListItem {
-	const cacheTotal = asset.totalCacheHits + asset.totalCacheMisses;
-	return {
-		imageKey: asset.imageKey,
-		imageId: asset.imageId,
-		path: asset.path,
-		name: asset.name,
-		format: asset.format,
-		totalReads: asset.totalReads,
-		totalResizes: asset.totalResizes,
-		totalCacheHits: asset.totalCacheHits,
-		totalCacheMisses: asset.totalCacheMisses,
-		cacheHitRate: rate(asset.totalCacheHits, cacheTotal),
-		totalFailures: asset.totalFailures,
-		avgDurationMs: average(durations),
-		p95DurationMs: percentile(durations, 0.95),
-		lastSeenAt: asset.lastSeenAt,
-	};
-}
-
-function compareImages(
-	left: ImageListItem,
-	right: ImageListItem,
-	sort: NonNullable<ImageFilter['sort']>,
-	order: NonNullable<ImageFilter['order']>,
-): number {
-	const multiplier = order === 'asc' ? 1 : -1;
-	const leftValue = imageSortValue(left, sort);
-	const rightValue = imageSortValue(right, sort);
-	const result =
-		leftValue === rightValue
-			? left.imageKey.localeCompare(right.imageKey)
-			: leftValue - rightValue;
-	return result * multiplier;
-}
-
-function imageSortValue(
-	image: ImageListItem,
-	sort: NonNullable<ImageFilter['sort']>,
-): number {
-	if (sort === 'reads') {
-		return image.totalReads;
-	}
-	if (sort === 'resizes') {
-		return image.totalResizes;
-	}
-	if (sort === 'cacheMisses') {
-		return image.totalCacheMisses;
-	}
-	if (sort === 'failures') {
-		return image.totalFailures;
-	}
-
-	return new Date(image.lastSeenAt).getTime();
 }

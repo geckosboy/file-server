@@ -3,6 +3,7 @@ import { IngestionService } from '../../ingestion/ingestion.service';
 import { LifecycleIngestionService } from '../../lifecycle/lifecycle-ingestion.service';
 import { InMemoryLifecycleRepository } from '../../lifecycle/lifecycle.repository';
 import { InMemoryTelemetryRepository } from '../../telemetry/telemetry.repository';
+import { InMemoryAdminAnalyticsRepository } from '../in-memory-admin-analytics.repository';
 
 const baseEvent = {
 	schemaVersion: 1,
@@ -28,7 +29,11 @@ describe('관리자 조회 서비스', () => {
 		lifecycleIngestionService = new LifecycleIngestionService(
 			lifecycleRepository,
 		);
-		queryService = new AdminQueryService(repository, lifecycleRepository);
+		queryService = new AdminQueryService(
+			repository,
+			lifecycleRepository,
+			new InMemoryAdminAnalyticsRepository(repository),
+		);
 		await seedFixture();
 	});
 
@@ -91,16 +96,43 @@ describe('관리자 조회 서비스', () => {
 			limit: 2,
 			cursor: firstPage.nextCursor,
 		});
+		const legacyOffsetPage = await queryService.listEvents({
+			limit: 2,
+			cursor: '2',
+		});
 
 		expect(firstPage.items.map((item) => item.eventId)).toEqual([
 			'evt-resize-1',
 			'evt-failed-1',
 		]);
-		expect(firstPage.nextCursor).toBe('2');
+		expect(firstPage.nextCursor).toEqual(expect.any(String));
+		expect(firstPage.nextCursor).not.toMatch(/^\d+$/);
 		expect(secondPage.items.map((item) => item.eventId)).toEqual([
 			'evt-miss-1',
 			'evt-hit-1',
 		]);
+		expect(legacyOffsetPage.items).toEqual(secondPage.items);
+	});
+
+	it('동일 occurredAt 이벤트는 eventId 내림차순 cursor로 중복 없이 이어진다', async () => {
+		const firstPage = await queryService.listEvents({ limit: 1 });
+		const secondPage = await queryService.listEvents({
+			limit: 1,
+			cursor: firstPage.nextCursor,
+		});
+
+		expect(firstPage.items.map((item) => item.eventId)).toEqual([
+			'evt-resize-1',
+		]);
+		expect(secondPage.items.map((item) => item.eventId)).toEqual([
+			'evt-failed-1',
+		]);
+	});
+
+	it('잘못된 opaque event cursor를 거부한다', async () => {
+		await expect(
+			queryService.listEvents({ cursor: 'not-an-event-cursor' }),
+		).rejects.toThrow('cursor must be a valid opaque event cursor');
 	});
 
 	it('이벤트 목록은 필터 조건을 적용한다', async () => {
@@ -116,6 +148,17 @@ describe('관리자 조회 서비스', () => {
 		});
 
 		expect(response.items.map((item) => item.eventId)).toEqual(['evt-hit-1']);
+	});
+
+	it('이벤트 목록 search는 repository query에서 주요 문자열 필드를 검색한다', async () => {
+		const response = await queryService.listEvents({
+			search: 'MISSING IMAGE',
+			limit: 10,
+		});
+
+		expect(response.items.map((item) => item.eventId)).toEqual([
+			'evt-failed-1',
+		]);
 	});
 
 	it('lifecycle 이벤트 목록은 telemetry 이벤트와 별도로 필터링한다', async () => {
@@ -261,6 +304,35 @@ describe('관리자 조회 서비스', () => {
 			imageKey: 'products/image/sample.png',
 			totalReads: 3,
 		});
+	});
+
+	it('이미지 목록은 legacy offset 입력 뒤에도 opaque cursor만 출력한다', async () => {
+		await ingestionService.ingest({
+			...baseEvent,
+			eventId: 'evt-other-upload',
+			eventType: 'image.upload.completed',
+			occurredAt: '2026-07-01T00:20:00.000Z',
+			imageId: 200,
+			imageKey: 'products/image/other.png',
+			name: 'other.png',
+			inputBytes: 100,
+			outputBytes: 80,
+			durationMs: 10,
+		});
+
+		const firstPage = await queryService.listImages({ limit: 1 });
+		const opaqueSecondPage = await queryService.listImages({
+			limit: 1,
+			cursor: firstPage.nextCursor,
+		});
+		const legacySecondPage = await queryService.listImages({
+			limit: 1,
+			cursor: '1',
+		});
+
+		expect(firstPage.nextCursor).toMatch(/^img\.v1\./);
+		expect(firstPage.nextCursor).not.toMatch(/^\d+$/);
+		expect(legacySecondPage.items).toEqual(opaqueSecondPage.items);
 	});
 
 	it('이미지 목록은 cacheMisses 기준으로 정렬한다', async () => {

@@ -21,6 +21,8 @@
 		"paths": {
 			"src/*": ["./src/*"],
 			"@file/database": ["../../libs/database/src"],
+			"@file/image-contracts": ["../../libs/image-contracts/src"],
+			"@file/image-contracts/*": ["../../libs/image-contracts/src/*"],
 			"@file/nest-common": ["../../libs/nest-common/src"],
 			"@file/telemetry-contracts": ["../../libs/telemetry-contracts/src"],
 			"@file/telemetry-contracts/*": ["../../libs/telemetry-contracts/src/*"]

@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
+import {
+	assertBoundedEventListQuery,
+	EventListPage,
+	EventListQuery,
+	toEventListCursor,
+} from '../telemetry/event-list-query';
 import { UnknownRecord } from '../telemetry/telemetry.types';
 import { ImageLifecycleEvent, LifecycleMetrics } from './lifecycle.types';
 import { LifecycleRepository } from './lifecycle.repository';
@@ -55,6 +61,25 @@ export class PrismaLifecycleRepository implements LifecycleRepository {
 			orderBy: [{ occurredAt: 'asc' }, { eventId: 'asc' }],
 		});
 		return rows.map(toLifecycleEvent);
+	}
+
+	async listEventPage(
+		query: EventListQuery,
+	): Promise<EventListPage<ImageLifecycleEvent>> {
+		assertBoundedEventListQuery(query);
+		const rows = await this.prisma.imageLifecycleEvent.findMany({
+			where: toLifecycleEventWhere(query),
+			orderBy: [{ occurredAt: 'desc' }, { eventId: 'desc' }],
+			take: query.take + 1,
+			skip: query.offset,
+		});
+		const hasMore = rows.length > query.take;
+		const items = rows.slice(0, query.take).map(toLifecycleEvent);
+
+		return {
+			items,
+			nextCursor: hasMore ? toEventListCursor(items.at(-1)) : undefined,
+		};
 	}
 
 	async clear(): Promise<void> {
@@ -112,6 +137,71 @@ export class PrismaLifecycleRepository implements LifecycleRepository {
 		});
 	}
 }
+
+function toLifecycleEventWhere(
+	query: EventListQuery,
+): Prisma.ImageLifecycleEventWhereInput {
+	const search = query.search?.trim();
+	return {
+		AND: [
+			{
+				eventType: query.eventType,
+				sourceApp: query.sourceApp,
+				clientServiceId: query.clientServiceId,
+				clientServiceSlug: query.clientServiceSlug,
+				status: query.status,
+				occurredAt:
+					query.from || query.to
+						? {
+								gte: query.from ? new Date(query.from) : undefined,
+								lte: query.to ? new Date(query.to) : undefined,
+							}
+						: undefined,
+				path: query.path ? { contains: query.path } : undefined,
+				name: query.name ? { contains: query.name } : undefined,
+				imageKey: query.imageKey,
+				requestId: query.requestId,
+			},
+			...(search
+				? [
+						{
+							OR: searchableLifecycleFields.map((field) => ({
+								[field]: { contains: search, mode: 'insensitive' as const },
+							})),
+						},
+					]
+				: []),
+			...(query.cursor
+				? [
+						{
+							OR: [
+								{ occurredAt: { lt: new Date(query.cursor.occurredAt) } },
+								{
+									occurredAt: new Date(query.cursor.occurredAt),
+									eventId: { lt: query.cursor.eventId },
+								},
+							],
+						},
+					]
+				: []),
+		],
+	};
+}
+
+const searchableLifecycleFields = [
+	'eventId',
+	'eventType',
+	'sourceApp',
+	'clientServiceId',
+	'clientServiceSlug',
+	'requestId',
+	'traceId',
+	'path',
+	'name',
+	'imageKey',
+	'errorCode',
+	'errorMessage',
+] as const;
 
 function toCreateInput(
 	event: ImageLifecycleEvent,

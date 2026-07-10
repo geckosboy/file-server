@@ -5,6 +5,7 @@ import { ClientServicesModule } from './modules/client-services/client-services.
 import { IngestionModule } from './modules/ingestion/ingestion.module';
 import { KafkaIngestionModule } from './modules/kafka-ingestion/kafka-ingestion.module';
 import { KafkaLifecycleModule } from './modules/kafka-lifecycle/kafka-lifecycle.module';
+import { createRetentionModuleImports } from './modules/retention/retention.module';
 
 @Module({
 	imports: [
@@ -17,6 +18,7 @@ import { KafkaLifecycleModule } from './modules/kafka-lifecycle/kafka-lifecycle.
 		ClientServicesModule,
 		KafkaIngestionModule,
 		KafkaLifecycleModule,
+		...createRetentionModuleImports(),
 	],
 })
 export class AppModule {}

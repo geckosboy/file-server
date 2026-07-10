@@ -2,6 +2,12 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
 import {
+	assertBoundedEventListQuery,
+	EventListPage,
+	EventListQuery,
+	toEventListCursor,
+} from './event-list-query';
+import {
 	ImageAssetSummary,
 	ImageTelemetryEvent,
 	ImageVariantSummary,
@@ -64,6 +70,25 @@ export class PrismaTelemetryRepository implements TelemetryRepository {
 			orderBy: [{ occurredAt: 'asc' }, { eventId: 'asc' }],
 		});
 		return rows.map(toTelemetryEvent);
+	}
+
+	async listEventPage(
+		query: EventListQuery,
+	): Promise<EventListPage<ImageTelemetryEvent>> {
+		assertBoundedEventListQuery(query);
+		const rows = await this.prisma.telemetryEvent.findMany({
+			where: toTelemetryEventWhere(query),
+			orderBy: [{ occurredAt: 'desc' }, { eventId: 'desc' }],
+			take: query.take + 1,
+			skip: query.offset,
+		});
+		const hasMore = rows.length > query.take;
+		const items = rows.slice(0, query.take).map(toTelemetryEvent);
+
+		return {
+			items,
+			nextCursor: hasMore ? toEventListCursor(items.at(-1)) : undefined,
+		};
 	}
 
 	async listAssets(): Promise<ImageAssetSummary[]> {
@@ -129,6 +154,71 @@ export class PrismaTelemetryRepository implements TelemetryRepository {
 		});
 	}
 }
+
+function toTelemetryEventWhere(
+	query: EventListQuery,
+): Prisma.TelemetryEventWhereInput {
+	const search = query.search?.trim();
+	return {
+		AND: [
+			{
+				eventType: query.eventType,
+				sourceApp: query.sourceApp,
+				clientServiceId: query.clientServiceId,
+				clientServiceSlug: query.clientServiceSlug,
+				status: query.status,
+				occurredAt:
+					query.from || query.to
+						? {
+								gte: query.from ? new Date(query.from) : undefined,
+								lte: query.to ? new Date(query.to) : undefined,
+							}
+						: undefined,
+				path: query.path ? { contains: query.path } : undefined,
+				name: query.name ? { contains: query.name } : undefined,
+				imageKey: query.imageKey,
+				requestId: query.requestId,
+			},
+			...(search
+				? [
+						{
+							OR: searchableTelemetryFields.map((field) => ({
+								[field]: { contains: search, mode: 'insensitive' as const },
+							})),
+						},
+					]
+				: []),
+			...(query.cursor
+				? [
+						{
+							OR: [
+								{ occurredAt: { lt: new Date(query.cursor.occurredAt) } },
+								{
+									occurredAt: new Date(query.cursor.occurredAt),
+									eventId: { lt: query.cursor.eventId },
+								},
+							],
+						},
+					]
+				: []),
+		],
+	};
+}
+
+const searchableTelemetryFields = [
+	'eventId',
+	'eventType',
+	'sourceApp',
+	'clientServiceId',
+	'clientServiceSlug',
+	'requestId',
+	'traceId',
+	'path',
+	'name',
+	'imageKey',
+	'errorCode',
+	'errorMessage',
+] as const;
 
 function toCreateInput(
 	event: ImageTelemetryEvent,
