@@ -3,6 +3,7 @@ import {
 	IsArray,
 	IsBoolean,
 	IsEnum,
+	IsInt,
 	IsNumber,
 	IsOptional,
 	IsString,
@@ -35,6 +36,27 @@ export class AppConfig {
 	@IsString()
 	CACHE_SERVER?: string;
 
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	@Max(268_402_689)
+	@Type(() => Number)
+	IMAGE_MAX_INPUT_PIXELS = 40_000_000;
+
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	@Max(100 * 1024 * 1024)
+	@Type(() => Number)
+	IMAGE_MAX_OUTPUT_BYTES = 20 * 1024 * 1024;
+
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	@Max(16)
+	@Type(() => Number)
+	SHARP_CONCURRENCY = 2;
+
 	@IsString()
 	KAFKA_CLIENT_BROKERS!: string;
 
@@ -43,6 +65,18 @@ export class AppConfig {
 
 	@IsString()
 	CLIENT_API_KEY_PEPPER!: string;
+
+	@IsOptional()
+	@IsNumber()
+	@Min(1)
+	@Type(() => Number)
+	HEALTH_PROBE_TIMEOUT_MS?: number;
+
+	@IsOptional()
+	@IsNumber()
+	@Min(0)
+	@Type(() => Number)
+	HEALTH_PROBE_CACHE_TTL_MS?: number;
 
 	@IsBoolean()
 	get isDevelopment() {

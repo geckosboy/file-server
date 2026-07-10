@@ -79,6 +79,9 @@ importers:
       jest:
         specifier: ^29.7.0
         version: 29.7.0(@types/node@20.19.43)(ts-node@10.9.2(@types/node@20.19.43)(typescript@5.9.3))
+      kafkajs:
+        specifier: ^2.2.4
+        version: 2.2.4
       prettier:
         specifier: ^3.4.2
         version: 3.9.4

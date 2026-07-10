@@ -4,6 +4,10 @@ import {
 	ClientServiceAuthorizationService,
 } from '.././client-service-authorization';
 import type { ClientServiceAuthContext } from '.././client-service-auth';
+import {
+	getClientServiceAuthMetricsSnapshot,
+	resetClientServiceAuthMetricsForTesting,
+} from '.././client-service-auth.metrics';
 import type { PrismaService } from '.././prisma.service';
 
 const context: ClientServiceAuthContext = {
@@ -65,6 +69,8 @@ const createPrisma = () => ({
 });
 
 describe('클라이언트 서비스 정책 평가기', () => {
+	beforeEach(() => resetClientServiceAuthMetricsForTesting());
+
 	it('서비스 정책과 key scope 교집합 안의 경로/동작만 허용한다', async () => {
 		const prisma = createPrisma();
 		prisma.clientServiceKey.findUnique.mockResolvedValue(
@@ -100,6 +106,7 @@ describe('클라이언트 서비스 정책 평가기', () => {
 				normalizedPath: 'other/products/image',
 			}),
 		).rejects.toBeInstanceOf(ForbiddenException);
+		expect(getClientServiceAuthMetricsSnapshot().authorizationDenials).toBe(2);
 	});
 
 	it('업로드 정책 크기를 초과하면 413을 반환한다', async () => {
@@ -117,6 +124,7 @@ describe('클라이언트 서비스 정책 평가기', () => {
 			}),
 		).rejects.toBeInstanceOf(PayloadTooLargeException);
 		expect(prisma.$queryRaw).not.toHaveBeenCalled();
+		expect(getClientServiceAuthMetricsSnapshot().authorizationDenials).toBe(1);
 	});
 
 	it('key pathPatterns는 service policy를 더 좁히지만 넓히지 못한다', async () => {
@@ -148,6 +156,7 @@ describe('클라이언트 서비스 정책 평가기', () => {
 				normalizedPath: 'catalog/private/image',
 			}),
 		).rejects.toBeInstanceOf(ForbiddenException);
+		expect(getClientServiceAuthMetricsSnapshot().authorizationDenials).toBe(1);
 	});
 
 	it('원자적 PostgreSQL counter가 갱신되지 않으면 replica 공통 429를 반환한다', async () => {
@@ -163,6 +172,10 @@ describe('클라이언트 서비스 정책 평가기', () => {
 			normalizedPath: 'catalog/products/image',
 		});
 		await expect(result).rejects.toMatchObject({ status: 429 });
+		expect(getClientServiceAuthMetricsSnapshot()).toMatchObject({
+			authorizationDenials: 0,
+			rateLimitRejections: 1,
+		});
 	});
 
 	it.each([
@@ -188,5 +201,6 @@ describe('클라이언트 서비스 정책 평가기', () => {
 				normalizedPath: 'catalog/products/image',
 			}),
 		).rejects.toBeInstanceOf(ForbiddenException);
+		expect(getClientServiceAuthMetricsSnapshot().authorizationDenials).toBe(1);
 	});
 });

@@ -4,6 +4,9 @@ import { LifecycleIngestionService } from '../../lifecycle/lifecycle-ingestion.s
 import { InMemoryLifecycleRepository } from '../../lifecycle/lifecycle.repository';
 import { InMemoryTelemetryRepository } from '../../telemetry/telemetry.repository';
 import { InMemoryAdminAnalyticsRepository } from '../in-memory-admin-analytics.repository';
+import { TelemetryKafkaConsumerStatusService } from '../../kafka-ingestion/kafka-ingestion.status';
+import { LifecycleKafkaConsumerStatusService } from '../../kafka-lifecycle/kafka-lifecycle.status';
+import { PrismaService } from '@file/database';
 
 const baseEvent = {
 	schemaVersion: 1,
@@ -42,6 +45,84 @@ describe('관리자 조회 서비스', () => {
 
 		expect(summary.cacheHitRate).toBe(0.5);
 		expect(summary.cacheMissRate).toBe(0.5);
+	});
+
+	it('DB 또는 enabled Kafka가 준비되지 않으면 top-level ok=false다', async () => {
+		const repository = new InMemoryTelemetryRepository();
+		const lifecycleRepository = new InMemoryLifecycleRepository();
+		jest.spyOn(repository, 'isConnected').mockResolvedValue(false);
+		const kafka = new TelemetryKafkaConsumerStatusService();
+		kafka.configure({
+			enabled: true,
+			brokers: ['kafka:9092'],
+			clientId: 'telemetry-api',
+			groupId: 'file-telemetry-api',
+			topic: 'file.image.events.v1',
+			dlqTopic: 'file.image.events.v1.dlq',
+			fromBeginning: false,
+			retryMaxAttempts: 3,
+			retryBackoffMs: 100,
+			connectRetryBackoffMs: 500,
+			connectRetryMaxBackoffMs: 10_000,
+			lagRefreshIntervalMs: 5_000,
+		});
+		const lifecycleKafka = new LifecycleKafkaConsumerStatusService();
+
+		const health = await new AdminQueryService(
+			repository,
+			lifecycleRepository,
+			new InMemoryAdminAnalyticsRepository(repository),
+			kafka,
+			lifecycleKafka,
+		).getHealth();
+
+		expect(health).toMatchObject({
+			ok: false,
+			storage: { connected: false },
+			kafka: { enabled: true, ready: false },
+			lifecycleKafka: { enabled: false, ready: true },
+		});
+	});
+
+	it('outbox pending/retry/dead-letter 상태를 operational metrics로 반환한다', async () => {
+		const repository = new InMemoryTelemetryRepository();
+		const lifecycleRepository = new InMemoryLifecycleRepository();
+		const count = jest
+			.fn()
+			.mockResolvedValueOnce(2)
+			.mockResolvedValueOnce(1)
+			.mockResolvedValueOnce(3)
+			.mockResolvedValueOnce(4)
+			.mockResolvedValueOnce(5);
+		const prisma = {
+			imageLifecycleOutbox: {
+				count,
+				aggregate: jest.fn().mockResolvedValue({
+					_sum: { attempts: 7 },
+					_min: { createdAt: new Date(Date.now() - 1_000) },
+				}),
+			},
+		} as unknown as PrismaService;
+
+		const health = await new AdminQueryService(
+			repository,
+			lifecycleRepository,
+			new InMemoryAdminAnalyticsRepository(repository),
+			undefined,
+			undefined,
+			prisma,
+		).getHealth();
+
+		expect(health.operationalMetrics.outbox).toMatchObject({
+			available: true,
+			pendingCount: 2,
+			publishingCount: 1,
+			failedCount: 3,
+			deadLetterCount: 4,
+			publishedCount: 5,
+			retryCount: 7,
+			oldestUnpublishedAgeMs: expect.any(Number),
+		});
 	});
 
 	it('캐시 이벤트가 없으면 hit율을 null로 반환한다', async () => {
@@ -413,6 +494,31 @@ describe('관리자 조회 서비스', () => {
 		expect(bySlug.items.map((item) => item.imageKey)).toEqual([
 			'service-b/image/b.png',
 		]);
+	});
+
+	it('DB health probe가 hang해도 readiness 응답은 deadline 안에 끝난다', async () => {
+		const originalTimeout = process.env.HEALTH_PROBE_TIMEOUT_MS;
+		process.env.HEALTH_PROBE_TIMEOUT_MS = '10';
+		const telemetry = new InMemoryTelemetryRepository();
+		const lifecycle = new InMemoryLifecycleRepository();
+		jest
+			.spyOn(telemetry, 'isConnected')
+			.mockImplementation(() => new Promise<boolean>(() => undefined));
+		const service = new AdminQueryService(
+			telemetry,
+			lifecycle,
+			new InMemoryAdminAnalyticsRepository(telemetry),
+		);
+
+		await expect(service.getHealth()).resolves.toMatchObject({
+			ok: false,
+			storage: { connected: false },
+		});
+
+		if (originalTimeout === undefined)
+			delete process.env.HEALTH_PROBE_TIMEOUT_MS;
+		else process.env.HEALTH_PROBE_TIMEOUT_MS = originalTimeout;
+		jest.restoreAllMocks();
 	});
 
 	async function seedFixture() {

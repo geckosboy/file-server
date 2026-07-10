@@ -3,6 +3,7 @@ import {
 	IsArray,
 	IsBoolean,
 	IsEnum,
+	IsInt,
 	IsNumber,
 	IsOptional,
 	IsString,
@@ -34,6 +35,34 @@ export class AppConfig {
 	@IsString()
 	RESIZING_SERVER!: string;
 
+	@IsOptional()
+	@IsInt()
+	@Min(100)
+	@Max(60_000)
+	@Type(() => Number)
+	UPSTREAM_HTTP_TIMEOUT_MS = 2_000;
+
+	@IsOptional()
+	@IsInt()
+	@Min(0)
+	@Max(2)
+	@Type(() => Number)
+	UPSTREAM_HTTP_MAX_RETRIES = 1;
+
+	@IsOptional()
+	@IsInt()
+	@Min(0)
+	@Max(5_000)
+	@Type(() => Number)
+	UPSTREAM_HTTP_RETRY_BACKOFF_MS = 100;
+
+	@IsOptional()
+	@IsInt()
+	@Min(1)
+	@Max(100 * 1024 * 1024)
+	@Type(() => Number)
+	UPSTREAM_IMAGE_MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
+
 	@IsString()
 	KAFKA_CLIENT_BROKERS!: string;
 
@@ -42,6 +71,18 @@ export class AppConfig {
 
 	@IsString()
 	CLIENT_API_KEY_PEPPER!: string;
+
+	@IsOptional()
+	@IsNumber()
+	@Min(1)
+	@Type(() => Number)
+	HEALTH_PROBE_TIMEOUT_MS?: number;
+
+	@IsOptional()
+	@IsNumber()
+	@Min(0)
+	@Type(() => Number)
+	HEALTH_PROBE_CACHE_TTL_MS?: number;
 
 	@IsBoolean()
 	get isDevelopment() {

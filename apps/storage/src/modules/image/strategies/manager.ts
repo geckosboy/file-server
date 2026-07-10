@@ -1,5 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import type { Sharp } from 'sharp';
+import { HttpException, Injectable, NotFoundException } from '@nestjs/common';
+import type { OutputInfo, Sharp } from 'sharp';
 import { mkdir, readFile, rm, stat } from 'fs/promises';
 import { SharpStrategy } from './sharp';
 import {
@@ -72,14 +72,25 @@ export class ImageManager {
 			`${safePath}/${variantName}`,
 		);
 		const sourceStats = await stat(sourcePath);
-		const tool = this.pathStrategy.getToolInstance();
-		const resizedImage = tool(sourcePath).resize({
-			...(width ? { width } : {}),
-			...(height ? { height } : {}),
-			fit: 'fill',
-		});
+		this.pathStrategy.assertOutputSize(sourceStats.size);
+		let outputWritten = false;
+		let result: OutputInfo;
+		try {
+			const resizedImage = this.pathStrategy.createPipeline(sourcePath).resize({
+				...(width ? { width } : {}),
+				...(height ? { height } : {}),
+				fit: 'fill',
+			});
 
-		const result = await toFormat(resizedImage, format).toFile(outputPath);
+			result = await toFormat(resizedImage, format).toFile(outputPath);
+			outputWritten = true;
+			this.pathStrategy.assertOutputSize(result.size);
+		} catch (error) {
+			if (outputWritten) {
+				await rm(outputPath, { force: true });
+			}
+			throw this.pathStrategy.toHttpException(error);
+		}
 
 		return {
 			name: variantName,
@@ -116,12 +127,18 @@ export class ImageManager {
 		const safeName = normalizeSafeFileName(name);
 
 		try {
-			const image = await readFile(
-				this.pathStrategy.getMainDirectory(`${safePath}/${safeName}`),
+			const imagePath = this.pathStrategy.getMainDirectory(
+				`${safePath}/${safeName}`,
 			);
+			const imageStats = await stat(imagePath);
+			this.pathStrategy.assertOutputSize(imageStats.size);
+			const image = await readFile(imagePath);
 
 			return { image, name: safeName };
-		} catch {
+		} catch (error) {
+			if (error instanceof HttpException) {
+				throw error;
+			}
 			throw new NotFoundException(
 				'파일이 존재하지 않거나 불러올 수 없는 상태입니다.',
 			);

@@ -13,5 +13,6 @@ export type {
 	KafkaClientSecurityOptions,
 } from './config';
 export { PickPartial } from './mapped-types';
+export * from './http/upstream-fetch';
 
 export * from './middlewares';

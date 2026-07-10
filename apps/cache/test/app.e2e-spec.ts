@@ -1,5 +1,9 @@
 jest.mock('src/config', () => ({
 	envConfig: {
+		UPSTREAM_HTTP_TIMEOUT_MS: 2_000,
+		UPSTREAM_HTTP_MAX_RETRIES: 1,
+		UPSTREAM_HTTP_RETRY_BACKOFF_MS: 0,
+		UPSTREAM_IMAGE_MAX_RESPONSE_BYTES: 20 * 1024 * 1024,
 		RESIZING_SERVER: 'http://resize.test',
 		INTERNAL_API_KEY: 'internal-test-key',
 	},
@@ -19,6 +23,7 @@ import {
 import { of } from 'rxjs';
 import request, { type Test as SuperTestRequest } from 'supertest';
 import { AppController } from '../src/app.controller';
+import { AppHealthService } from '../src/app-health.service';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageService } from '../src/modules/image/image.service';
 import {
@@ -97,6 +102,13 @@ describe('캐시 앱 e2e', () => {
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
 			providers: [
+				{
+					provide: AppHealthService,
+					useValue: {
+						getLive: () => ({ ok: true, service: 'cache' }),
+						getReady: () => Promise.resolve({ ok: true, service: 'cache' }),
+					},
+				},
 				ImageService,
 				ClientServiceApiKeyGuard,
 				{
@@ -141,6 +153,17 @@ describe('캐시 앱 e2e', () => {
 			.expect('OK');
 	});
 
+	it('live와 ready 상태를 분리해 반환한다', async () => {
+		await request(app.getHttpServer())
+			.get('/health/live')
+			.expect(200)
+			.expect(({ body }) => expect(body).toMatchObject({ ok: true }));
+		await request(app.getHttpServer())
+			.get('/health/ready')
+			.expect(200)
+			.expect(({ body }) => expect(body).toMatchObject({ ok: true }));
+	});
+
 	it('클라이언트 서비스 API 키가 없으면 이미지 조회를 거부한다', () => {
 		return request(app.getHttpServer())
 			.get('/image/public/sample.png')
@@ -177,13 +200,18 @@ describe('캐시 앱 e2e', () => {
 		expect(requestedUrl.searchParams.get('width')).toBe('32');
 		expect(requestedUrl.searchParams.get('height')).toBe('16');
 		const fetchOptions = fetchSpy.mock.calls[0][1] as RequestInit;
-		expect(fetchOptions).toEqual({
-			headers: expect.objectContaining({
-				[INTERNAL_API_KEY_HEADER]: 'internal-test-key',
-				[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
-				[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
-			}),
-		});
+		const forwardedHeaders = new Headers(fetchOptions.headers);
+		expect(fetchOptions.method).toBe('GET');
+		expect(forwardedHeaders.get(INTERNAL_API_KEY_HEADER)).toBe(
+			'internal-test-key',
+		);
+		expect(forwardedHeaders.get(INTERNAL_CLIENT_CONTEXT_HEADER)).toEqual(
+			expect.any(String),
+		);
+		expect(
+			forwardedHeaders.get(INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER),
+		).toEqual(expect.any(String));
+		expect(forwardedHeaders.get('x-request-id')).toBe(testRequestId);
 		expect(JSON.stringify(fetchOptions.headers)).not.toContain(
 			testClientApiKey,
 		);

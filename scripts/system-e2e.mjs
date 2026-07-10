@@ -31,6 +31,13 @@ const appPorts = {
 	resize: await resolvePort('SYSTEM_E2E_RESIZE_PORT'),
 	storage: await resolvePort('SYSTEM_E2E_STORAGE_PORT'),
 };
+const appBaseUrls = {
+	telemetry: `http://127.0.0.1:${appPorts.telemetry}`,
+	storage: `http://127.0.0.1:${appPorts.storage}`,
+	resize: `http://127.0.0.1:${appPorts.resize}`,
+	cache: `http://127.0.0.1:${appPorts.cache}`,
+	cacheReplica: `http://127.0.0.1:${appPorts.cacheReplica}`,
+};
 const adminToken = 'system-e2e-admin-token';
 const internalApiKey = 'system-e2e-internal-key';
 const clientApiKeyPepper = 'system-e2e-client-pepper';
@@ -43,6 +50,7 @@ const telemetryDlqTopic = `${telemetryTopic}.dlq`;
 const lifecycleTopic = 'file.image.lifecycle.v1';
 let telemetryChild;
 let storageChild;
+let resizeChild;
 
 const commonAppEnv = {
 	NODE_ENV: 'production',
@@ -59,6 +67,25 @@ const adminHeaders = {
 	'x-admin-token': adminToken,
 	'x-admin-actor': 'system-e2e',
 	'x-request-id': `system-e2e-admin-${process.pid}`,
+};
+
+const startResizeApplication = async () => {
+	const resize = spawnService({
+		name: 'resize',
+		entry: 'apps/resize/dist/apps/resize/src/main.js',
+		env: {
+			...commonAppEnv,
+			PORT: String(appPorts.resize),
+			STORAGE_SERVER: appBaseUrls.storage,
+		},
+	});
+	resizeChild = resize;
+	children.push(resize);
+	await waitForHttp(`${appBaseUrls.resize}/health/live`, {
+		child: resize,
+		timeoutMs: 45_000,
+	});
+	return resize;
 };
 
 const startApplications = async () => {
@@ -84,8 +111,7 @@ const startApplications = async () => {
 	});
 	telemetryChild = telemetry;
 	children.push(telemetry);
-	await waitForHttp(`http://127.0.0.1:${appPorts.telemetry}/api/admin/health`, {
-		headers: adminHeaders,
+	await waitForHttp(`${appBaseUrls.telemetry}/health/ready`, {
 		child: telemetry,
 		timeoutMs: 45_000,
 	});
@@ -96,28 +122,19 @@ const startApplications = async () => {
 		env: {
 			...commonAppEnv,
 			PORT: String(appPorts.storage),
-			CACHE_SERVER: `http://127.0.0.1:${appPorts.cache}`,
+			CACHE_SERVER: appBaseUrls.cache,
 			LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS: '250',
 		},
 	});
 	storageChild = storage;
 	children.push(storage);
-	await waitForHttp(`http://127.0.0.1:${appPorts.storage}/health-check`, {
+	await waitForHttp(`${appBaseUrls.storage}/health/ready`, {
 		child: storage,
 		timeoutMs: 45_000,
 	});
 
-	const resize = spawnService({
-		name: 'resize',
-		entry: 'apps/resize/dist/apps/resize/src/main.js',
-		env: {
-			...commonAppEnv,
-			PORT: String(appPorts.resize),
-			STORAGE_SERVER: `http://127.0.0.1:${appPorts.storage}`,
-		},
-	});
-	children.push(resize);
-	await waitForHttp(`http://127.0.0.1:${appPorts.resize}/health-check`, {
+	const resize = await startResizeApplication();
+	await waitForHttp(`${appBaseUrls.resize}/health/ready`, {
 		child: resize,
 		timeoutMs: 45_000,
 	});
@@ -128,11 +145,11 @@ const startApplications = async () => {
 		env: {
 			...commonAppEnv,
 			PORT: String(appPorts.cache),
-			RESIZING_SERVER: `http://127.0.0.1:${appPorts.resize}`,
+			RESIZING_SERVER: appBaseUrls.resize,
 		},
 	});
 	children.push(cache);
-	await waitForHttp(`http://127.0.0.1:${appPorts.cache}/health-check`, {
+	await waitForHttp(`${appBaseUrls.cache}/health/ready`, {
 		child: cache,
 		timeoutMs: 45_000,
 	});
@@ -143,21 +160,21 @@ const startApplications = async () => {
 		env: {
 			...commonAppEnv,
 			PORT: String(appPorts.cacheReplica),
-			RESIZING_SERVER: `http://127.0.0.1:${appPorts.resize}`,
+			RESIZING_SERVER: appBaseUrls.resize,
 		},
 	});
 	children.push(cacheReplica);
-	await waitForHttp(`http://127.0.0.1:${appPorts.cacheReplica}/health-check`, {
+	await waitForHttp(`${appBaseUrls.cacheReplica}/health/ready`, {
 		child: cacheReplica,
 		timeoutMs: 45_000,
 	});
 };
 
 const runScenario = async () => {
-	const telemetryBaseUrl = `http://127.0.0.1:${appPorts.telemetry}`;
-	const storageBaseUrl = `http://127.0.0.1:${appPorts.storage}`;
-	const cacheBaseUrl = `http://127.0.0.1:${appPorts.cache}`;
-	const cacheReplicaBaseUrl = `http://127.0.0.1:${appPorts.cacheReplica}`;
+	const telemetryBaseUrl = appBaseUrls.telemetry;
+	const storageBaseUrl = appBaseUrls.storage;
+	const cacheBaseUrl = appBaseUrls.cache;
+	const cacheReplicaBaseUrl = appBaseUrls.cacheReplica;
 
 	const service = await fetchJson(
 		`${telemetryBaseUrl}/api/admin/client-services`,
@@ -379,12 +396,165 @@ const runScenario = async () => {
 		200,
 	);
 
+	await proveRequiredUpstreamHealth({
+		cacheBaseUrl,
+		cacheReplicaBaseUrl,
+	});
+	await proveKafkaOutageHealth();
 	await provePoisonDlqProgress({ telemetryBaseUrl });
-	await proveDatabaseOutageRedelivery({ telemetryBaseUrl, storageBaseUrl });
+	await proveDatabaseOutageRedelivery({ telemetryBaseUrl });
 
 	console.log(
 		`System E2E 통과: upload=${uploadBody.imageKey}, cross-tenant 403, shared replica rate-limit 429, cache/resize/storage chain, telemetry, lifecycle`,
 	);
+};
+
+const readHealthResponse = async (url, headers) => {
+	const response = await fetch(url, {
+		headers,
+		signal: AbortSignal.timeout(5_000),
+	});
+	const text = await response.text();
+	let body;
+	try {
+		body = text ? JSON.parse(text) : undefined;
+	} catch {
+		body = text;
+	}
+	const health =
+		body?.message &&
+		typeof body.message === 'object' &&
+		!Array.isArray(body.message)
+			? body.message
+			: body;
+	return { status: response.status, body, health };
+};
+
+const assertHealthEventually = (
+	url,
+	{ label, expectedStatus, expectedOk, headers, timeoutMs = 45_000 } = {},
+) =>
+	poll(
+		async () => {
+			const result = await readHealthResponse(url, headers);
+			assert.notEqual(
+				result.status,
+				404,
+				`${label ?? url} health endpoint가 404를 반환했습니다.`,
+			);
+			const expectedStatuses = Array.isArray(expectedStatus)
+				? expectedStatus
+				: [expectedStatus];
+			assert.ok(
+				expectedStatuses.includes(result.status),
+				`${label ?? url} status=${result.status}, expected=${expectedStatuses.join('|')}, body=${JSON.stringify(result.body)}`,
+			);
+			assert.equal(
+				result.health?.ok,
+				expectedOk,
+				`${label ?? url} ok=${String(result.health?.ok)}, body=${JSON.stringify(result.body)}`,
+			);
+			return result.health;
+		},
+		{ timeoutMs, intervalMs: 300 },
+	);
+
+const assertServiceUnavailableButLive = (baseUrl, label) =>
+	Promise.all([
+		assertHealthEventually(`${baseUrl}/health/live`, {
+			label: `${label} live`,
+			expectedStatus: 200,
+			expectedOk: true,
+		}),
+		assertHealthEventually(`${baseUrl}/health/ready`, {
+			label: `${label} ready`,
+			expectedStatus: 503,
+			expectedOk: false,
+		}),
+	]);
+
+const assertServiceReady = (baseUrl, label, timeoutMs = 60_000) =>
+	assertHealthEventually(`${baseUrl}/health/ready`, {
+		label: `${label} ready recovery`,
+		expectedStatus: 200,
+		expectedOk: true,
+		timeoutMs,
+	});
+
+const assertTelemetryTopLevelHealth = (expectedOk, label) =>
+	assertHealthEventually(`${appBaseUrls.telemetry}/api/admin/health`, {
+		label,
+		expectedStatus: [200, 503],
+		expectedOk,
+		headers: adminHeaders,
+		timeoutMs: 60_000,
+	});
+
+const proveRequiredUpstreamHealth = async ({
+	cacheBaseUrl,
+	cacheReplicaBaseUrl,
+}) => {
+	const startedAt = Date.now();
+	let replacementStarted = false;
+	await stopChild(resizeChild);
+
+	try {
+		await Promise.all([
+			assertServiceUnavailableButLive(cacheBaseUrl, 'cache resize outage'),
+			assertServiceUnavailableButLive(
+				cacheReplicaBaseUrl,
+				'cache replica resize outage',
+			),
+		]);
+
+		await startResizeApplication();
+		replacementStarted = true;
+		await Promise.all([
+			assertServiceReady(cacheBaseUrl, 'cache resize recovery'),
+			assertServiceReady(cacheReplicaBaseUrl, 'cache replica resize recovery'),
+		]);
+		console.log(
+			`System E2E required upstream health 복구 통과: cache live=200, ready=503->200, ${Date.now() - startedAt}ms`,
+		);
+	} finally {
+		if (!replacementStarted) {
+			await stopChild(resizeChild);
+			await startResizeApplication();
+		}
+	}
+};
+
+const proveKafkaOutageHealth = async () => {
+	const startedAt = Date.now();
+	let kafkaStopped = false;
+	const affectedServices = Object.entries(appBaseUrls);
+
+	try {
+		await stopInfrastructureService(infrastructure, 'kafka');
+		kafkaStopped = true;
+		await Promise.all([
+			...affectedServices.map(([name, baseUrl]) =>
+				assertServiceUnavailableButLive(baseUrl, `${name} Kafka outage`),
+			),
+			assertTelemetryTopLevelHealth(false, 'telemetry top-level Kafka outage'),
+		]);
+
+		await startInfrastructureService(infrastructure, 'kafka');
+		kafkaStopped = false;
+		await Promise.all([
+			...affectedServices.map(([name, baseUrl]) =>
+				assertServiceReady(baseUrl, `${name} Kafka recovery`, 90_000),
+			),
+			assertTelemetryTopLevelHealth(true, 'telemetry top-level Kafka recovery'),
+		]);
+		console.log(
+			`System E2E Kafka health 복구 통과: live=200, ready=503->200, telemetry ok=false->true, ${Date.now() - startedAt}ms`,
+		);
+	} finally {
+		if (kafkaStopped) {
+			await startInfrastructureService(infrastructure, 'kafka');
+		}
+	}
 };
 
 const provePoisonDlqProgress = async ({ telemetryBaseUrl }) => {
@@ -426,10 +596,7 @@ const provePoisonDlqProgress = async ({ telemetryBaseUrl }) => {
 	);
 };
 
-const proveDatabaseOutageRedelivery = async ({
-	telemetryBaseUrl,
-	storageBaseUrl,
-}) => {
+const proveDatabaseOutageRedelivery = async ({ telemetryBaseUrl }) => {
 	const startedAt = Date.now();
 	const validEvent = createTelemetryProbeEvent('postgres-outage');
 	const logStart = telemetryChild?.capturedLines?.length ?? 0;
@@ -440,6 +607,15 @@ const proveDatabaseOutageRedelivery = async ({
 	try {
 		await stopInfrastructureService(infrastructure, 'postgres');
 		postgresStopped = true;
+		await Promise.all([
+			...Object.entries(appBaseUrls).map(([name, baseUrl]) =>
+				assertServiceUnavailableButLive(baseUrl, `${name} PostgreSQL outage`),
+			),
+			assertTelemetryTopLevelHealth(
+				false,
+				'telemetry top-level PostgreSQL outage',
+			),
+		]);
 		const record = await produceKafkaValue({
 			broker: infrastructure.kafkaBroker,
 			topic: telemetryTopic,
@@ -487,10 +663,15 @@ const proveDatabaseOutageRedelivery = async ({
 
 		await startInfrastructureService(infrastructure, 'postgres');
 		postgresStopped = false;
-		await waitForHttp(`${storageBaseUrl}/health-check`, {
-			child: storageChild,
-			timeoutMs: 30_000,
-		});
+		await Promise.all([
+			...Object.entries(appBaseUrls).map(([name, baseUrl]) =>
+				assertServiceReady(baseUrl, `${name} PostgreSQL recovery`, 90_000),
+			),
+			assertTelemetryTopLevelHealth(
+				true,
+				'telemetry top-level PostgreSQL recovery',
+			),
+		]);
 		await assertTelemetryEventEventually(telemetryBaseUrl, validEvent.eventId, {
 			timeoutMs: 45_000,
 		});
@@ -521,7 +702,7 @@ const proveDatabaseOutageRedelivery = async ({
 			{ timeoutMs: 20_000, intervalMs: 300 },
 		);
 		console.log(
-			`System E2E PostgreSQL redelivery/storage outbox 복구 통과: event=${validEvent.eventId}, outbox=${outboxProbe.event.eventId}, outageCommit=${committedDuringOutage}, message=${record.offset}, ${Date.now() - startedAt}ms`,
+			`System E2E PostgreSQL redelivery/storage outbox/health 복구 통과: live=200, ready=503->200, telemetry ok=false->true, event=${validEvent.eventId}, outbox=${outboxProbe.event.eventId}, outageCommit=${committedDuringOutage}, message=${record.offset}, ${Date.now() - startedAt}ms`,
 		);
 	} finally {
 		if (postgresStopped) {

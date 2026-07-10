@@ -12,6 +12,7 @@ import {
 } from '@file/image-contracts';
 import { PrismaService } from './prisma.service';
 import type { ClientServiceAuthContext } from './client-service-auth';
+import { incrementClientServiceAuthMetric } from './client-service-auth.metrics';
 
 const ACTIVE_CLIENT_SERVICE_STATUS = 'ACTIVE';
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -70,6 +71,7 @@ export class ClientServiceAuthorizationService {
 			matchingPolicies.length === 0 ||
 			!isActionAllowedByKeyScopes(key.scopes, input.action, normalizedPath)
 		) {
+			incrementClientServiceAuthMetric('authorizationDenials');
 			throw new ForbiddenException(
 				'이 클라이언트 서비스는 요청한 이미지 경로와 동작에 대한 권한이 없습니다.',
 			);
@@ -84,6 +86,7 @@ export class ClientServiceAuthorizationService {
 			maxUploadBytes !== undefined &&
 			input.uploadBytes > maxUploadBytes
 		) {
+			incrementClientServiceAuthMetric('authorizationDenials');
 			throw new PayloadTooLargeException(
 				`업로드 파일은 정책 제한 ${maxUploadBytes} bytes를 초과할 수 없습니다.`,
 			);
@@ -126,6 +129,7 @@ export class ClientServiceAuthorizationService {
 			(key.expiresAt && key.expiresAt.getTime() <= Date.now()) ||
 			key.clientService.status !== ACTIVE_CLIENT_SERVICE_STATUS
 		) {
+			incrementClientServiceAuthMetric('authorizationDenials');
 			throw new ForbiddenException(
 				'클라이언트 서비스 인증 컨텍스트가 더 이상 유효하지 않습니다.',
 			);
@@ -171,6 +175,7 @@ export class ClientServiceAuthorizationService {
 		);
 
 		if (rows.length === 0) {
+			incrementClientServiceAuthMetric('rateLimitRejections');
 			throw new HttpException(
 				'클라이언트 서비스 요청 한도를 초과했습니다.',
 				HttpStatus.TOO_MANY_REQUESTS,

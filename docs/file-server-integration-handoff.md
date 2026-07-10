@@ -1,12 +1,12 @@
 # File Server Integration Handoff
 
 - 기준일: 2026-07-10
-- 기준 상태: 아키텍처 개선 계획의 단계 0~3 완료
+- 기준 상태: 아키텍처 개선 계획의 단계 0~4 구현, Stage 4 통합 인프라 gate는 final HEAD에서 실행
 - 대상: 이 저장소를 호출하거나 lifecycle 이벤트를 소비할 다른 프로젝트와 해당 프로젝트를 설계하는 AI
 
 ## 1. 먼저 알아야 할 결론
 
-현재 저장소는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리, DB 중심 telemetry 조회와 bounded retention을 확보했다. 공유 storage와 authoritative asset 수명주기는 이후 단계의 범위다.
+현재 저장소는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리, DB 중심 telemetry 조회와 bounded retention, 호출 timeout/cache stampede 제어와 실제 dependency health를 확보했다. 공유 storage와 authoritative asset 수명주기는 이후 단계의 범위다.
 
 - API key 인증 뒤 `ClientServicePolicy ∩ key scopes`를 read/upload/delete마다 강제한다.
 - canonical storage path와 제한된 glob(`*`, `**`)으로 tenant path 소유권을 판정한다.
@@ -405,12 +405,27 @@ interface FileServerClient {
 
 ### 단계 4 — 호출 복원력과 health
 
-예정 변경:
+구현된 변경:
 
-- upstream timeout과 정확한 HTTP status 전달
-- cache singleflight와 byte budget
-- `/health/live`, `/health/ready`
-- 실제 Kafka lag/outbox/DLQ metric
+- cache → resize → storage idempotent GET의 configurable deadline, bounded retry, 정확한 401/403/404/502/503/504 mapping
+- response byte/pixel/Sharp concurrency 상한과 cache singleflight/byte budget
+- `/health/live`, `/health/ready`, legacy `/health-check` compatibility adapter
+- PostgreSQL/Kafka/upstream/storage read-write readiness indicator
+- broker high offset과 consumer group offset 차이 기반 Kafka lag, 최초 connect 실패 reconnect/capped backoff
+- upstream/cache/singleflight/lag/DLQ/outbox operational metric
+- Stage 5 전까지 reconciliation metric은 `supported=false`, `orphanCount=null`
+
+endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순서는 [`stage4-resilience-health-runbook.md`](stage4-resilience-health-runbook.md)를 따른다.
+
+#### 최종 통합 검증
+
+최종 통합 gate는 안정적인 clean HEAD `ef071601e384a532276fa7e37f3a3f6ba36ffd9a`에서 실행했다.
+
+- `pnpm test:system:e2e` — PASS (93s), Kafka outage/recovery, poison DLQ, PostgreSQL redelivery 검증 포함
+- `pnpm docker:build` — PASS (293s)
+- `pnpm test:docker:smoke` — PASS (38s)
+
+작업 소유 임시 리소스 `fs-system-e2e-38529`와 `fs-docker-smoke-98050`은 container, network, volume, 일치하는 process를 남기지 않고 정리되었다. 동시에 존재한 `travel-cloud-phase0` 리소스는 관련 없는 것으로 기록하고 건드리지 않았다. 로그는 `/tmp/stage4-task20-ef071601e384-20260710T095524Z/{system,docker-build,docker-smoke}.log`에 있다.
 
 다른 프로젝트 영향:
 
@@ -452,8 +467,8 @@ interface FileServerClient {
 - telemetry의 무손실 전달
 - cache replica 간 일관성
 - storage replica 간 파일 공유
-- 모든 upstream 호출의 timeout/circuit breaker
-- top-level health 응답의 실제 dependency readiness
+- 모든 호출에 대한 circuit breaker(현재는 deadline/bounded retry이며 circuit breaker는 도입하지 않음)
+- 여러 replica/region을 하나로 집계한 전역 health(각 endpoint는 해당 process와 dependency snapshot)
 - 원본 삭제 시 모든 variant와 cache의 즉시 삭제
 - admin 화면의 이미지 목록이 authoritative asset 원장이라는 보장
 
@@ -534,7 +549,7 @@ interface FileServerClient {
 - 완료된 단계 2의 공유 event contract, 서버 계산 client topic, SASL/TLS, 수동 offset/retry/DLQ,
   동일 eventId dual-publish, provisioning/최소 ACL을 그대로 수용한다.
 - 완료된 단계 3의 opaque keyset cursor, DB 집계, bounded retention 계약을 수용한다.
-- 단계 4~5의 예정 변경(timeout/health, async ImageAsset/ImageVariant lifecycle)을 adapter 뒤에서 수용한다.
+- 완료된 단계 4의 timeout/status/readiness 계약과 단계 5의 예정 async ImageAsset/ImageVariant lifecycle을 adapter 뒤에서 수용한다.
 
 금지:
 - frontend에 API key 노출

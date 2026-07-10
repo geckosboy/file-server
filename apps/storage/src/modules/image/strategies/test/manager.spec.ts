@@ -1,4 +1,8 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+	BadRequestException,
+	NotFoundException,
+	PayloadTooLargeException,
+} from '@nestjs/common';
 import { copyFile, mkdir, rm, stat, writeFile } from 'fs/promises';
 import * as path from 'path';
 import sharp from 'sharp';
@@ -32,6 +36,9 @@ describe('스토리지 이미지 매니저', () => {
 	let strategy: CopyStrategy;
 
 	beforeEach(async () => {
+		process.env.IMAGE_MAX_INPUT_PIXELS = '1000';
+		process.env.IMAGE_MAX_OUTPUT_BYTES = String(1024 * 1024);
+		process.env.SHARP_CONCURRENCY = '1';
 		manager = new ImageManager();
 		strategy = new CopyStrategy();
 		await rm(assetRoot, { recursive: true, force: true });
@@ -132,6 +139,32 @@ describe('스토리지 이미지 매니저', () => {
 				format: 'jpeg',
 			}),
 		).toBe('hero.banner__w320_hauto.jpeg');
+	});
+
+	it('storage Sharp concurrency와 input pixel 한도를 강제한다', async () => {
+		expect(sharp.concurrency()).toBe(1);
+		const source = await sharp({
+			create: {
+				width: 40,
+				height: 40,
+				channels: 3,
+				background: '#ffffff',
+			},
+		})
+			.png()
+			.toBuffer();
+		await mkdir(path.resolve(assetRoot, 'image'), { recursive: true });
+		await writeFile(path.resolve(assetRoot, 'image', 'large.png'), source);
+
+		await expect(
+			manager.createPreGeneratedVariant({
+				path: 'unit-manager/image',
+				name: 'large.png',
+				width: 4,
+				height: 4,
+				format: 'webp',
+			}),
+		).rejects.toBeInstanceOf(PayloadTooLargeException);
 	});
 
 	it('이미지로 끝나지 않는 메인 경로를 거부한다', async () => {

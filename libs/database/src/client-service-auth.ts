@@ -15,6 +15,7 @@ import {
 	hashClientApiKey,
 	isSameClientApiKeyHash,
 } from './client-api-key';
+import { incrementClientServiceAuthMetric } from './client-service-auth.metrics';
 
 export const CLIENT_SERVICE_API_KEY_HEADER = 'x-client-api-key';
 export const CLIENT_SERVICE_REQUEST_ID_HEADER = 'x-request-id';
@@ -30,6 +31,8 @@ const INTERNAL_CONTEXT_DEFAULT_TTL_SECONDS = 30;
 const INTERNAL_CONTEXT_MAX_TTL_SECONDS = 60;
 const INTERNAL_CONTEXT_CLOCK_SKEW_SECONDS = 5;
 const INTERNAL_SERVICE_ACCESS_METADATA = Symbol('internal-service-access');
+const LAST_USED_AT_WRITE_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_LAST_USED_AT_COALESCE_KEYS = 10_000;
 
 export interface ClientServiceAuthContext {
 	clientServiceId: string;
@@ -113,6 +116,9 @@ type InternalClientServiceContextPayload =
 
 @Injectable()
 export class ClientServiceAuthService {
+	private readonly lastUsedAtWriteByKey = new Map<string, number>();
+	private readonly lastUsedAtWriteInFlight = new Map<string, Promise<void>>();
+
 	constructor(private readonly prisma: PrismaService) {}
 
 	async authenticate(
@@ -133,7 +139,7 @@ export class ClientServiceAuthService {
 			return null;
 		}
 
-		await this.touchLastUsedAt(key.id);
+		await this.touchLastUsedAt(key.id, key.lastUsedAt ?? undefined);
 
 		return {
 			clientService: {
@@ -150,15 +156,61 @@ export class ClientServiceAuthService {
 		};
 	}
 
-	private async touchLastUsedAt(keyId: string) {
+	private async touchLastUsedAt(keyId: string, persistedLastUsedAt?: Date) {
+		const now = Date.now();
+		const latestRecordedAt = Math.max(
+			persistedLastUsedAt?.getTime() ?? 0,
+			this.lastUsedAtWriteByKey.get(keyId) ?? 0,
+		);
+		if (now - latestRecordedAt < LAST_USED_AT_WRITE_INTERVAL_MS) {
+			return;
+		}
+
+		const inFlight = this.lastUsedAtWriteInFlight.get(keyId);
+		if (inFlight) {
+			await inFlight;
+			return;
+		}
+
+		const write = this.writeLastUsedAt(keyId, now).finally(() => {
+			if (this.lastUsedAtWriteInFlight.get(keyId) === write) {
+				this.lastUsedAtWriteInFlight.delete(keyId);
+			}
+		});
+		this.lastUsedAtWriteInFlight.set(keyId, write);
+		await write;
+	}
+
+	private async writeLastUsedAt(keyId: string, now: number): Promise<void> {
 		try {
 			await this.prisma.clientServiceKey.update({
 				where: { id: keyId },
-				data: { lastUsedAt: new Date() },
+				data: { lastUsedAt: new Date(now) },
 			});
+			this.rememberLastUsedAtWrite(keyId, now);
 		} catch {
-			// 인증 성공 이후의 lastUsedAt 기록 실패는 요청 자체를 막지 않는다.
+			// 인증 성공 이후의 lastUsedAt 기록 실패는 요청 자체를 막지 않고 다음 요청이 재시도한다.
 		}
+	}
+
+	private rememberLastUsedAtWrite(keyId: string, now: number): void {
+		if (
+			this.lastUsedAtWriteByKey.size >= MAX_LAST_USED_AT_COALESCE_KEYS &&
+			!this.lastUsedAtWriteByKey.has(keyId)
+		) {
+			for (const [candidateKey, writtenAt] of this.lastUsedAtWriteByKey) {
+				if (now - writtenAt >= LAST_USED_AT_WRITE_INTERVAL_MS) {
+					this.lastUsedAtWriteByKey.delete(candidateKey);
+				}
+			}
+			if (this.lastUsedAtWriteByKey.size >= MAX_LAST_USED_AT_COALESCE_KEYS) {
+				const oldestKey = this.lastUsedAtWriteByKey.keys().next().value;
+				if (oldestKey) {
+					this.lastUsedAtWriteByKey.delete(oldestKey);
+				}
+			}
+		}
+		this.lastUsedAtWriteByKey.set(keyId, now);
 	}
 }
 
@@ -173,11 +225,13 @@ export class ClientServiceApiKeyGuard implements CanActivate {
 		const apiKey = readClientServiceApiKey(request);
 
 		if (!apiKey) {
+			incrementClientServiceAuthMetric('externalApiKeyDenials');
 			throw new UnauthorizedException('클라이언트 서비스 API 키가 필요합니다.');
 		}
 
 		const authenticated = await this.authService.authenticate(apiKey);
 		if (!authenticated) {
+			incrementClientServiceAuthMetric('externalApiKeyDenials');
 			throw new UnauthorizedException(
 				'클라이언트 서비스 API 키가 올바르지 않습니다.',
 			);
@@ -212,42 +266,49 @@ export class ClientServiceApiKeyGuard implements CanActivate {
 @Injectable()
 export class InternalServiceGuard implements CanActivate {
 	canActivate(context: ExecutionContext): boolean {
-		const request = context
-			.switchToHttp()
-			.getRequest<ClientServiceAuthenticatedRequest>();
-		const internalApiKey = normalizeInternalApiKey(
-			process.env.INTERNAL_API_KEY,
-		);
-		const presentedApiKey = readHeader(request, INTERNAL_API_KEY_HEADER);
+		try {
+			const request = context
+				.switchToHttp()
+				.getRequest<ClientServiceAuthenticatedRequest>();
+			const internalApiKey = normalizeInternalApiKey(
+				process.env.INTERNAL_API_KEY,
+			);
+			const presentedApiKey = readHeader(request, INTERNAL_API_KEY_HEADER);
 
-		if (!internalApiKey) {
-			throw new UnauthorizedException('내부 API 키 설정이 필요합니다.');
+			if (!internalApiKey) {
+				throw new UnauthorizedException('내부 API 키 설정이 필요합니다.');
+			}
+
+			if (
+				!presentedApiKey ||
+				!isConstantTimeEqual(presentedApiKey, internalApiKey)
+			) {
+				throw new UnauthorizedException('내부 API 키가 올바르지 않습니다.');
+			}
+
+			const accessRequirement = readInternalServiceAccessRequirement(context);
+			const signedContext = readSignedInternalClientServiceContext(
+				request,
+				internalApiKey,
+				accessRequirement,
+			);
+			request.clientServiceContext = signedContext.context;
+			request.internalServiceAccess = signedContext.access;
+			request.headers[CLIENT_SERVICE_REQUEST_ID_HEADER] =
+				request.clientServiceContext.requestId;
+			if (request.clientServiceContext.traceId) {
+				request.headers[CLIENT_SERVICE_TRACE_ID_HEADER] =
+					request.clientServiceContext.traceId;
+			}
+			attachClientServiceLogContext(request, request.clientServiceContext);
+
+			return true;
+		} catch (error) {
+			if (error instanceof UnauthorizedException) {
+				incrementClientServiceAuthMetric('internalContextDenials');
+			}
+			throw error;
 		}
-
-		if (
-			!presentedApiKey ||
-			!isConstantTimeEqual(presentedApiKey, internalApiKey)
-		) {
-			throw new UnauthorizedException('내부 API 키가 올바르지 않습니다.');
-		}
-
-		const accessRequirement = readInternalServiceAccessRequirement(context);
-		const signedContext = readSignedInternalClientServiceContext(
-			request,
-			internalApiKey,
-			accessRequirement,
-		);
-		request.clientServiceContext = signedContext.context;
-		request.internalServiceAccess = signedContext.access;
-		request.headers[CLIENT_SERVICE_REQUEST_ID_HEADER] =
-			request.clientServiceContext.requestId;
-		if (request.clientServiceContext.traceId) {
-			request.headers[CLIENT_SERVICE_TRACE_ID_HEADER] =
-				request.clientServiceContext.traceId;
-		}
-		attachClientServiceLogContext(request, request.clientServiceContext);
-
-		return true;
 	}
 }
 

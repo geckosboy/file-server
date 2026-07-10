@@ -6,6 +6,7 @@ import { IngestionModule } from './modules/ingestion/ingestion.module';
 import { KafkaIngestionModule } from './modules/kafka-ingestion/kafka-ingestion.module';
 import { KafkaLifecycleModule } from './modules/kafka-lifecycle/kafka-lifecycle.module';
 import { createRetentionModuleImports } from './modules/retention/retention.module';
+import { HealthController } from './health.controller';
 
 @Module({
 	imports: [
@@ -20,5 +21,6 @@ import { createRetentionModuleImports } from './modules/retention/retention.modu
 		KafkaLifecycleModule,
 		...createRetentionModuleImports(),
 	],
+	controllers: [HealthController],
 })
 export class AppModule {}

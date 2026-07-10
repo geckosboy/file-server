@@ -1,8 +1,8 @@
 import {
+	GatewayTimeoutException,
 	Inject,
 	Injectable,
 	Logger,
-	NotFoundException,
 	Optional,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
@@ -16,6 +16,7 @@ import { performance } from 'perf_hooks';
 import { URLSearchParams } from 'url';
 
 import { ImageEntity } from '@file/image-contracts';
+import { fetchUpstreamBuffer } from '@file/nest-common';
 import {
 	createFailedTelemetryFields,
 	createImageTelemetryEvent,
@@ -28,9 +29,27 @@ import {
 import { CacheService } from '../node-cache/cache.service';
 import { envConfig } from 'src/config';
 
+const DEFAULT_SINGLEFLIGHT_TIMEOUT_MS = 5_000;
+
+export interface ImageSingleflightMetrics {
+	inFlight: number;
+	waiters: number;
+	coalescedRequests: number;
+}
+
 @Injectable()
 export class ImageService {
 	private readonly logger = new Logger(ImageService.name);
+	private readonly singleflight = new Map<
+		string,
+		Promise<{ imageBuffer: Buffer; contentType: string }>
+	>();
+	private readonly singleflightTimeoutMs = readPositiveInteger(
+		process.env.CACHE_SINGLEFLIGHT_TIMEOUT_MS,
+		DEFAULT_SINGLEFLIGHT_TIMEOUT_MS,
+	);
+	private singleflightWaiters = 0;
+	private coalescedRequests = 0;
 
 	constructor(
 		private readonly cacheService: CacheService,
@@ -45,6 +64,14 @@ export class ImageService {
 			event,
 			logger: this.logger,
 		});
+	}
+
+	getSingleflightMetrics(): ImageSingleflightMetrics {
+		return {
+			inFlight: this.singleflight.size,
+			waiters: this.singleflightWaiters,
+			coalescedRequests: this.coalescedRequests,
+		};
 	}
 
 	/** Object 형식 QueryString으로 변환 */
@@ -98,16 +125,16 @@ export class ImageService {
 			{ audience: 'resize', action: 'image.read' },
 		);
 		const imageUrl = this.getImageUrl(image);
-		const response =
-			Object.keys(headers).length > 0
-				? await fetch(imageUrl, { headers })
-				: await fetch(imageUrl);
-		if (!response.ok) {
-			throw new NotFoundException('존재하지 않는 이미지 파일입니다.');
-		}
-
-		const imageArrayBuffer = await response.arrayBuffer();
-		const imageBuffer = Buffer.from(imageArrayBuffer);
+		const { body: imageBuffer, response } = await fetchUpstreamBuffer({
+			upstream: 'resize',
+			url: imageUrl,
+			headers,
+			requestContext: clientServiceContext,
+			timeoutMs: envConfig.UPSTREAM_HTTP_TIMEOUT_MS,
+			maxRetries: envConfig.UPSTREAM_HTTP_MAX_RETRIES,
+			retryBackoffMs: envConfig.UPSTREAM_HTTP_RETRY_BACKOFF_MS,
+			maxResponseBytes: envConfig.UPSTREAM_IMAGE_MAX_RESPONSE_BYTES,
+		});
 		const contentType =
 			response.headers.get('content-type') ||
 			lookup(image.name) ||
@@ -174,35 +201,34 @@ export class ImageService {
 
 		/** 없다면 리사이징 서버로부터 데이터 가져옴 */
 		try {
-			const { imageBuffer, contentType } = await this.getImageFromMain(
-				params,
-				clientServiceContext,
-			);
-			/** 리사이징 결과물 캐싱 */
-			this.cacheService.cacheImage(cacheKey, { imageBuffer, contentType });
+			return await this.singleflightCacheMiss(cacheKey, async () => {
+				const { imageBuffer, contentType } = await this.getImageFromMain(
+					params,
+					clientServiceContext,
+				);
+				/** 리사이징 결과물 캐싱 */
+				this.cacheService.cacheImage(cacheKey, { imageBuffer, contentType });
 
-			this.publishTelemetryEvent(
-				createImageTelemetryEvent({
-					eventType: ImageTelemetryEventType.CacheStored,
-					sourceApp: 'cache',
-					path,
-					name,
-					cacheKey,
-					width,
-					height,
-					format,
-					outputBytes: imageBuffer.byteLength,
-					durationMs: performance.now() - startedAt,
-					status: 'success',
-					...telemetryContext,
-				}),
-			);
+				this.publishTelemetryEvent(
+					createImageTelemetryEvent({
+						eventType: ImageTelemetryEventType.CacheStored,
+						sourceApp: 'cache',
+						path,
+						name,
+						cacheKey,
+						width,
+						height,
+						format,
+						outputBytes: imageBuffer.byteLength,
+						durationMs: performance.now() - startedAt,
+						status: 'success',
+						...telemetryContext,
+					}),
+				);
 
-			this.logger.log(`cache not hit: ${JSON.stringify(params)}`);
-			return {
-				imageBuffer,
-				contentType,
-			};
+				this.logger.log(`cache not hit: ${JSON.stringify(params)}`);
+				return { imageBuffer, contentType };
+			});
 		} catch (err) {
 			this.logger.error(err);
 			this.publishTelemetryEvent(
@@ -226,6 +252,50 @@ export class ImageService {
 		}
 	}
 
+	private singleflightCacheMiss(
+		cacheKey: string,
+		loader: () => Promise<{ imageBuffer: Buffer; contentType: string }>,
+	): Promise<{ imageBuffer: Buffer; contentType: string }> {
+		const existing = this.singleflight.get(cacheKey);
+		if (existing) {
+			this.coalescedRequests += 1;
+			this.singleflightWaiters += 1;
+			return existing.finally(() => {
+				this.singleflightWaiters = Math.max(0, this.singleflightWaiters - 1);
+			});
+		}
+
+		const origin = Promise.resolve().then(loader);
+		const tracked = this.withSingleflightTimeout(origin).finally(() => {
+			if (this.singleflight.get(cacheKey) === tracked) {
+				this.singleflight.delete(cacheKey);
+			}
+		});
+		this.singleflight.set(cacheKey, tracked);
+		return tracked;
+	}
+
+	private withSingleflightTimeout<T>(promise: Promise<T>): Promise<T> {
+		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<T>((_resolve, reject) => {
+			timeoutHandle = setTimeout(
+				() =>
+					reject(
+						new GatewayTimeoutException(
+							'캐시 원본 조회 대기가 시간 초과되었습니다.',
+						),
+					),
+				this.singleflightTimeoutMs,
+			);
+		});
+
+		return Promise.race([promise, timeout]).finally(() => {
+			if (timeoutHandle) {
+				clearTimeout(timeoutHandle);
+			}
+		});
+	}
+
 	deleteCacheImage(
 		params: Pick<ImageEntity, 'path' | 'name'> & { clientServiceId: string },
 	) {
@@ -237,4 +307,12 @@ export class ImageService {
 
 		return { deletedCount };
 	}
+}
+
+function readPositiveInteger(
+	value: string | undefined,
+	fallback: number,
+): number {
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }

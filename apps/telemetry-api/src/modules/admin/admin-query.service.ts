@@ -5,6 +5,7 @@ import {
 	NotFoundException,
 	Optional,
 } from '@nestjs/common';
+import { PrismaService } from '@file/database';
 import { TelemetryRepository } from '../telemetry/telemetry.repository';
 import { TelemetryKafkaConsumerStatusService } from '../kafka-ingestion/kafka-ingestion.status';
 import { LifecycleKafkaConsumerStatusService } from '../kafka-lifecycle/kafka-lifecycle.status';
@@ -146,44 +147,156 @@ export class AdminQueryService {
 		private readonly kafkaStatusService?: TelemetryKafkaConsumerStatusService,
 		@Optional()
 		private readonly lifecycleKafkaStatusService?: LifecycleKafkaConsumerStatusService,
+		@Optional()
+		private readonly prisma?: PrismaService,
 	) {}
 
 	async getHealth() {
+		const timeoutMs = readHealthTimeoutMs();
+		const [storageConnected, lifecycleStorageConnected] = await Promise.all([
+			withHealthTimeout(this.repository.isConnected(), timeoutMs, false),
+			withHealthTimeout(
+				this.lifecycleRepository.isConnected(),
+				timeoutMs,
+				false,
+			),
+		]);
+		const kafka =
+			this.kafkaStatusService?.getHealth() ?? disabledTelemetryKafkaHealth();
+		const lifecycleKafka =
+			this.lifecycleKafkaStatusService?.getHealth() ??
+			disabledLifecycleKafkaHealth();
+		const [metrics, lifecycleMetrics, outbox] = await Promise.all([
+			withHealthTimeout(
+				readMetrics(() => this.repository.getMetrics()),
+				timeoutMs,
+				unavailableMetrics(),
+			),
+			withHealthTimeout(
+				readMetrics(() => this.lifecycleRepository.getMetrics()),
+				timeoutMs,
+				unavailableMetrics(),
+			),
+			withHealthTimeout(
+				this.getOutboxMetrics(storageConnected && lifecycleStorageConnected),
+				timeoutMs,
+				unavailableOutboxMetrics(),
+			),
+		]);
+		const ok =
+			storageConnected &&
+			lifecycleStorageConnected &&
+			kafka.ready &&
+			lifecycleKafka.ready;
+
 		return {
-			ok: true,
+			ok,
 			service: 'telemetry-api',
 			checkedAt: new Date().toISOString(),
 			storage: {
 				kind: this.repository.getStorageKind(),
-				connected: await this.repository.isConnected(),
+				connected: storageConnected,
 			},
-			kafka: this.kafkaStatusService?.getHealth() ?? {
-				enabled: false,
-				connected: false,
-				consumerLag: null,
-				brokers: [],
-				clientId: 'telemetry-api',
-				groupId: 'file-telemetry-api',
-				topic: 'file.image.events.v1',
-				lastConsumedAt: null,
-				lastError: null,
-				disabledReason: 'Kafka consumer status provider가 없습니다.',
+			lifecycleStorage: {
+				kind: this.lifecycleRepository.getStorageKind(),
+				connected: lifecycleStorageConnected,
 			},
-			lifecycleKafka: this.lifecycleKafkaStatusService?.getHealth() ?? {
-				enabled: false,
-				connected: false,
-				consumerLag: null,
-				brokers: [],
-				clientId: 'telemetry-api-lifecycle',
-				groupId: 'file-telemetry-api-lifecycle',
-				topic: 'file.image.lifecycle.v1',
-				lastConsumedAt: null,
-				lastError: null,
-				disabledReason: 'Kafka lifecycle consumer status provider가 없습니다.',
+			kafka,
+			lifecycleKafka,
+			metrics,
+			lifecycleMetrics,
+			operationalMetrics: {
+				kafka: {
+					consumerLag: kafka.consumerLag,
+					dlqCount: kafka.dlqCount,
+					reconnectAttempts: kafka.reconnectAttempts,
+				},
+				lifecycleKafka: {
+					consumerLag: lifecycleKafka.consumerLag,
+					dlqCount: lifecycleKafka.dlqCount,
+					reconnectAttempts: lifecycleKafka.reconnectAttempts,
+				},
+				outbox,
+				reconciliation: {
+					supported: false,
+					orphanCount: null,
+					disabledReason:
+						'Authoritative asset reconciliation belongs to Stage 5.',
+				},
 			},
-			metrics: await this.repository.getMetrics(),
-			lifecycleMetrics: await this.lifecycleRepository.getMetrics(),
 		};
+	}
+
+	private async getOutboxMetrics(databaseReady: boolean) {
+		if (!databaseReady || !this.prisma) {
+			return {
+				available: false,
+				pendingCount: null,
+				publishingCount: null,
+				failedCount: null,
+				deadLetterCount: null,
+				publishedCount: null,
+				retryCount: null,
+				oldestUnpublishedAgeMs: null,
+			};
+		}
+
+		try {
+			const activeStatuses = ['PENDING', 'PUBLISHING', 'FAILED'];
+			const [
+				pendingCount,
+				publishingCount,
+				failedCount,
+				deadLetterCount,
+				publishedCount,
+				active,
+			] = await Promise.all([
+				this.prisma.imageLifecycleOutbox.count({
+					where: { status: 'PENDING' },
+				}),
+				this.prisma.imageLifecycleOutbox.count({
+					where: { status: 'PUBLISHING' },
+				}),
+				this.prisma.imageLifecycleOutbox.count({
+					where: { status: 'FAILED' },
+				}),
+				this.prisma.imageLifecycleOutbox.count({
+					where: { status: 'DEAD_LETTER' },
+				}),
+				this.prisma.imageLifecycleOutbox.count({
+					where: { status: 'PUBLISHED' },
+				}),
+				this.prisma.imageLifecycleOutbox.aggregate({
+					where: { status: { in: activeStatuses } },
+					_sum: { attempts: true },
+					_min: { createdAt: true },
+				}),
+			]);
+			const oldestCreatedAt = active._min.createdAt;
+			return {
+				available: true,
+				pendingCount,
+				publishingCount,
+				failedCount,
+				deadLetterCount,
+				publishedCount,
+				retryCount: active._sum.attempts ?? 0,
+				oldestUnpublishedAgeMs: oldestCreatedAt
+					? Math.max(0, Date.now() - oldestCreatedAt.getTime())
+					: null,
+			};
+		} catch {
+			return {
+				available: false,
+				pendingCount: null,
+				publishingCount: null,
+				failedCount: null,
+				deadLetterCount: null,
+				publishedCount: null,
+				retryCount: null,
+				oldestUnpublishedAgeMs: null,
+			};
+		}
 	}
 
 	async getSummary(query: Partial<EventFilter>): Promise<DashboardSummary> {
@@ -316,4 +429,115 @@ function toEventListQuery(
 
 function isValidDate(value: string): boolean {
 	return Number.isFinite(new Date(value).getTime());
+}
+
+async function readMetrics(
+	read: () => Promise<{
+		validationFailureCount: number;
+		insertFailureCount: number;
+		lastConsumedEventAt: string | null;
+	}>,
+) {
+	try {
+		return { available: true, ...(await read()) };
+	} catch {
+		return {
+			available: false,
+			validationFailureCount: null,
+			insertFailureCount: null,
+			lastConsumedEventAt: null,
+		};
+	}
+}
+
+function disabledTelemetryKafkaHealth() {
+	return disabledKafkaHealth({
+		clientId: 'telemetry-api',
+		groupId: 'file-telemetry-api',
+		topic: 'file.image.events.v1',
+		disabledReason: 'Kafka consumer status provider가 없습니다.',
+	});
+}
+
+function disabledLifecycleKafkaHealth() {
+	return disabledKafkaHealth({
+		clientId: 'telemetry-api-lifecycle',
+		groupId: 'file-telemetry-api-lifecycle',
+		topic: 'file.image.lifecycle.v1',
+		disabledReason: 'Kafka lifecycle consumer status provider가 없습니다.',
+	});
+}
+
+function disabledKafkaHealth(input: {
+	clientId: string;
+	groupId: string;
+	topic: string;
+	disabledReason: string;
+}) {
+	return {
+		enabled: false,
+		connected: false,
+		brokerConnected: false,
+		ready: true,
+		consumerLag: null,
+		partitionLag: [],
+		brokers: [],
+		clientId: input.clientId,
+		groupId: input.groupId,
+		topic: input.topic,
+		lastConsumedAt: null,
+		lastError: null,
+		lastLagError: null,
+		lagCheckedAt: null,
+		reconnectAttempts: 0,
+		nextReconnectAt: null,
+		dlqCount: 0,
+		disabledReason: input.disabledReason,
+	};
+}
+
+function unavailableMetrics() {
+	return {
+		available: false,
+		validationFailureCount: null,
+		insertFailureCount: null,
+		lastConsumedEventAt: null,
+	};
+}
+
+function unavailableOutboxMetrics() {
+	return {
+		available: false,
+		pendingCount: null,
+		publishingCount: null,
+		failedCount: null,
+		deadLetterCount: null,
+		publishedCount: null,
+		retryCount: null,
+		oldestUnpublishedAgeMs: null,
+	};
+}
+
+function readHealthTimeoutMs(): number {
+	const parsed = Number(process.env.HEALTH_PROBE_TIMEOUT_MS);
+	return Number.isInteger(parsed) && parsed > 0 ? parsed : 2_000;
+}
+
+async function withHealthTimeout<T>(
+	promise: Promise<T>,
+	timeoutMs: number,
+	fallback: T,
+): Promise<T> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<T>((resolve) => {
+				timer = setTimeout(() => resolve(fallback), timeoutMs);
+				timer.unref?.();
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
 }

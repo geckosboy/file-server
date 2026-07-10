@@ -34,6 +34,11 @@ export {
 } from './client-service-auth';
 export { ClientServiceAuthModule } from './client-service-auth.module';
 export {
+	getClientServiceAuthMetricsSnapshot,
+	resetClientServiceAuthMetricsForTesting,
+	type ClientServiceAuthMetricsSnapshot,
+} from './client-service-auth.metrics';
+export {
 	ClientServiceAction,
 	ClientServiceAuthorizationService,
 	type ClientServiceAuthorizationDecision,

@@ -2,10 +2,17 @@ import { Injectable } from '@nestjs/common';
 import { Consumer, Kafka, logLevel, Producer } from 'kafkajs';
 import { readKafkaClientSecurityOptions } from '@file/nest-common';
 import { TelemetryKafkaConsumerConfig } from './kafka-ingestion.config';
+import { KafkaLagProbe } from '../kafka/kafka-consumer-lag';
 
 export type TelemetryKafkaConsumer = Pick<
 	Consumer,
-	'commitOffsets' | 'connect' | 'disconnect' | 'run' | 'subscribe'
+	| 'commitOffsets'
+	| 'connect'
+	| 'disconnect'
+	| 'events'
+	| 'on'
+	| 'run'
+	| 'subscribe'
 >;
 
 export type TelemetryKafkaDlqProducer = Pick<
@@ -18,6 +25,7 @@ export interface TelemetryKafkaConsumerFactory {
 	createDlqProducer(
 		config: TelemetryKafkaConsumerConfig,
 	): TelemetryKafkaDlqProducer;
+	createLagProbe(config: TelemetryKafkaConsumerConfig): KafkaLagProbe;
 }
 
 export const TELEMETRY_KAFKA_CONSUMER_FACTORY = Symbol(
@@ -37,6 +45,10 @@ export class KafkaJsTelemetryKafkaConsumerFactory implements TelemetryKafkaConsu
 		return createKafkaClient(config).producer({
 			allowAutoTopicCreation: false,
 		});
+	}
+
+	createLagProbe(config: TelemetryKafkaConsumerConfig): KafkaLagProbe {
+		return createKafkaClient(config).admin();
 	}
 }
 

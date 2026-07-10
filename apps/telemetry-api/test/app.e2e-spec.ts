@@ -113,6 +113,29 @@ describe('텔레메트리 API e2e', () => {
 			});
 	});
 
+	it('인증 없는 live/ready와 health-check 호환 endpoint를 제공한다', async () => {
+		await request(app.getHttpServer())
+			.get('/health/live')
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body).toMatchObject({ ok: true, service: 'telemetry-api' });
+			});
+		await request(app.getHttpServer())
+			.get('/health/ready')
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body).toMatchObject({
+					ok: true,
+					storage: { connected: true },
+					lifecycleStorage: { connected: true },
+				});
+			});
+		await request(app.getHttpServer())
+			.get('/health-check')
+			.expect(200)
+			.expect('OK');
+	});
+
 	it('대시보드 요약 요청에 핵심 지표를 반환한다', async () => {
 		await seedEvents(app);
 

@@ -20,6 +20,15 @@ describe('admin-web proxy 경계', () => {
 		expect(response.status).toBe(401);
 	});
 
+	it('health endpoint는 관리자 인증 dependency 없이 통과한다', () => {
+		setEnv('NODE_ENV', 'production');
+		delete process.env.ADMIN_WEB_PROXY_SECRET;
+
+		const response = proxy(new NextRequest('http://admin.test/health/ready'));
+
+		expect(response.status).toBe(200);
+	});
+
 	it('올바른 reverse proxy 헤더는 actor/requestId를 내부 요청에 전달한다', () => {
 		setEnv('NODE_ENV', 'production');
 		process.env.ADMIN_WEB_PROXY_SECRET = 'proxy-secret';

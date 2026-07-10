@@ -10,6 +10,9 @@ export interface LifecycleKafkaConsumerConfig {
 	fromBeginning: boolean;
 	retryMaxAttempts: number;
 	retryBackoffMs: number;
+	connectRetryBackoffMs: number;
+	connectRetryMaxBackoffMs: number;
+	lagRefreshIntervalMs: number;
 	disabledReason?: string;
 }
 
@@ -17,6 +20,9 @@ const DEFAULT_CLIENT_ID = 'telemetry-api-lifecycle';
 const DEFAULT_GROUP_ID = 'file-telemetry-api-lifecycle';
 const DEFAULT_RETRY_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_BACKOFF_MS = 100;
+const DEFAULT_CONNECT_RETRY_BACKOFF_MS = 500;
+const DEFAULT_CONNECT_RETRY_MAX_BACKOFF_MS = 10_000;
+const DEFAULT_LAG_REFRESH_INTERVAL_MS = 5_000;
 
 export const readLifecycleKafkaConsumerConfig = (
 	env: NodeJS.ProcessEnv = process.env,
@@ -49,6 +55,21 @@ export const readLifecycleKafkaConsumerConfig = (
 			env.LIFECYCLE_KAFKA_RETRY_BACKOFF_MS,
 			DEFAULT_RETRY_BACKOFF_MS,
 			0,
+		),
+		connectRetryBackoffMs: parseInteger(
+			env.LIFECYCLE_KAFKA_CONNECT_RETRY_BACKOFF_MS,
+			DEFAULT_CONNECT_RETRY_BACKOFF_MS,
+			1,
+		),
+		connectRetryMaxBackoffMs: parseInteger(
+			env.LIFECYCLE_KAFKA_CONNECT_RETRY_MAX_BACKOFF_MS,
+			DEFAULT_CONNECT_RETRY_MAX_BACKOFF_MS,
+			1,
+		),
+		lagRefreshIntervalMs: parseInteger(
+			env.LIFECYCLE_KAFKA_LAG_REFRESH_INTERVAL_MS,
+			DEFAULT_LAG_REFRESH_INTERVAL_MS,
+			1,
 		),
 		...(enabled
 			? {}

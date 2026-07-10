@@ -80,11 +80,20 @@ pnpm file:lifecycle-consumer-tester start:dev
 
 ## 확인 API
 
-Health:
+Health (legacy compatibility):
 
 ```bash
 curl -s http://127.0.0.1:3110/health | python3 -m json.tool
 ```
+
+Process liveness와 Kafka consumer readiness:
+
+```bash
+curl -s http://127.0.0.1:3110/health/live | python3 -m json.tool
+curl -i http://127.0.0.1:3110/health/ready
+```
+
+`/health/live`는 process 생존만 확인합니다. `/health/ready`는 Kafka consumer가 활성화되고 연결된 경우에만 200이며, 비활성 또는 연결 실패 상태에서는 consumer 상세와 `storedEvents`를 포함한 503을 반환합니다. 기존 `/health`는 consumer 상세와 `storedEvents`, disabled 호환 동작을 유지합니다.
 
 Consumer 상태:
 
@@ -147,7 +156,7 @@ limit 10;
 
 이 앱은 기존 `storage` / `resize` / `cache`와 같은 `@file/nest-common` request logger를 사용합니다.
 
-- `/health`는 health check 노이즈를 줄이기 위해 request log에서 제외합니다.
+- `/health`, `/health/live`, `/health/ready`는 health check 노이즈를 줄이기 위해 request log에서 제외합니다.
 - `/consumer/status`, `/events`, `DELETE /events` 요청은 `lifecycle-consumer-tester` context로 로그가 찍힙니다.
 - Kafka lifecycle event가 저장되면 아래 형태의 로그가 찍힙니다.
 
@@ -168,24 +177,24 @@ Lifecycle event stored: eventId=... eventType=image.upload.completed status=succ
 
 ```json
 {
-  "count": 1,
-  "items": [
-    {
-      "receivedAt": "2026-07-07T00:00:00.000Z",
-      "topic": "file.image.lifecycle.v1",
-      "partition": 0,
-      "offset": "1",
-      "key": "local-demo:demo/image/sample.png:image.upload.completed",
-      "event": {
-        "schemaVersion": 1,
-        "eventId": "...",
-        "eventType": "image.upload.completed",
-        "sourceApp": "storage",
-        "status": "success",
-        "imageKey": "demo/image/sample.png"
-      }
-    }
-  ]
+	"count": 1,
+	"items": [
+		{
+			"receivedAt": "2026-07-07T00:00:00.000Z",
+			"topic": "file.image.lifecycle.v1",
+			"partition": 0,
+			"offset": "1",
+			"key": "local-demo:demo/image/sample.png:image.upload.completed",
+			"event": {
+				"schemaVersion": 1,
+				"eventId": "...",
+				"eventType": "image.upload.completed",
+				"sourceApp": "storage",
+				"status": "success",
+				"imageKey": "demo/image/sample.png"
+			}
+		}
+	]
 }
 ```
 

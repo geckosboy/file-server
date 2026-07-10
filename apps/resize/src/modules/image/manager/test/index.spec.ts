@@ -1,3 +1,12 @@
+jest.mock('src/config', () => ({
+	envConfig: {
+		IMAGE_MAX_INPUT_PIXELS: 1_000,
+		IMAGE_MAX_OUTPUT_BYTES: 1024 * 1024,
+		SHARP_CONCURRENCY: 1,
+	},
+}));
+
+import { PayloadTooLargeException } from '@nestjs/common';
 import sharp from 'sharp';
 import { ImageManager } from '.././index';
 
@@ -67,5 +76,27 @@ describe('리사이즈 이미지 매니저', () => {
 		expect(metadata.width).toBe(10);
 		expect(metadata.height).toBe(5);
 		expect(metadata.format).toBe('webp');
+	});
+
+	it('Sharp worker concurrency를 설정값으로 제한한다', () => {
+		new ImageManager();
+		expect(sharp.concurrency()).toBe(1);
+	});
+
+	it('입력 이미지가 pixel 한도를 넘으면 처리를 거부한다', async () => {
+		const sourceImage = await sharp({
+			create: {
+				width: 40,
+				height: 40,
+				channels: 3,
+				background: '#ffffff',
+			},
+		})
+			.png()
+			.toBuffer();
+
+		await expect(
+			new ImageManager().validate(sourceImage),
+		).rejects.toBeInstanceOf(PayloadTooLargeException);
 	});
 });

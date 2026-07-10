@@ -15,7 +15,7 @@ import { LifecycleEventStoreService } from './consumer/lifecycle-event-store.ser
 	imports: [
 		LoggerModule.forRoot({
 			appName: 'lifecycle-consumer-tester',
-			exclude: ['/health'],
+			exclude: ['/health', '/health/live', '/health/ready'],
 		}),
 	],
 	controllers: [HealthController, ConsumerController, EventsController],

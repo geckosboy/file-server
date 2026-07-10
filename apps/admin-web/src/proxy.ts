@@ -8,6 +8,12 @@ import {
 } from './lib/admin-auth-policy';
 
 export function proxy(request: NextRequest) {
+	if (
+		request.nextUrl.pathname === '/health/live' ||
+		request.nextUrl.pathname === '/health/ready'
+	) {
+		return NextResponse.next();
+	}
 	try {
 		const session = authenticateAdminWebHeaders(request.headers);
 		const forwardedHeaders = new Headers(request.headers);

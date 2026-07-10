@@ -2,12 +2,17 @@ jest.mock('src/config', () => ({
 	envConfig: {
 		STORAGE_SERVER: 'http://storage.test',
 		INTERNAL_API_KEY: 'internal-test-key',
+		UPSTREAM_HTTP_TIMEOUT_MS: 20,
+		UPSTREAM_HTTP_MAX_RETRIES: 1,
+		UPSTREAM_HTTP_RETRY_BACKOFF_MS: 0,
+		UPSTREAM_IMAGE_MAX_RESPONSE_BYTES: 1_024,
 	},
 }));
 
 import {
-	InternalServerErrorException,
+	BadGatewayException,
 	NotFoundException,
+	ServiceUnavailableException,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import {
@@ -17,6 +22,10 @@ import {
 	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
 } from '@file/database';
 import { of } from 'rxjs';
+import {
+	getUpstreamFetchMetricsSnapshot,
+	resetUpstreamFetchMetricsForTesting,
+} from '@file/nest-common';
 import { ImageManager } from '.././manager';
 import {
 	IMAGE_TELEMETRY_TOPIC,
@@ -40,6 +49,7 @@ const clientServiceContext: ClientServiceAuthContext = {
 	clientServiceKeyId: 'key-1',
 	keyPrefix: 'prefix-1',
 	requestId: 'req-resize-1',
+	traceId: 'trace-resize-1',
 };
 
 type KafkaEmitPayload = { key: string; value: string };
@@ -48,7 +58,7 @@ const parseKafkaPayload = (payload: KafkaEmitPayload) =>
 	JSON.parse(payload.value) as Record<string, unknown>;
 
 describe('리사이즈 이미지 서비스', () => {
-	let imageManager: jest.Mocked<Pick<ImageManager, 'resize'>>;
+	let imageManager: jest.Mocked<Pick<ImageManager, 'resize' | 'validate'>>;
 	let service: ImageService;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
@@ -59,8 +69,10 @@ describe('리사이즈 이미지 서비스', () => {
 			.map(([, payload]) => parseKafkaPayload(payload as KafkaEmitPayload));
 
 	beforeEach(() => {
+		resetUpstreamFetchMetricsForTesting();
 		imageManager = {
 			resize: jest.fn(),
+			validate: jest.fn().mockResolvedValue(undefined),
 		};
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
@@ -93,20 +105,32 @@ describe('리사이즈 이미지 서비스', () => {
 			expect.any(Object),
 		);
 		const fetchOptions = fetchSpy.mock.calls[0][1] as RequestInit;
-		expect(fetchOptions).toEqual({
-			method: 'get',
-			headers: expect.objectContaining({
-				[INTERNAL_API_KEY_HEADER]: 'internal-test-key',
-				[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
-				[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
-			}),
-		});
+		const forwardedHeaders = new Headers(fetchOptions.headers);
+		expect(fetchOptions.method).toBe('GET');
+		expect(fetchOptions.signal).toBeInstanceOf(AbortSignal);
+		expect(forwardedHeaders.get(INTERNAL_API_KEY_HEADER)).toBe(
+			'internal-test-key',
+		);
+		expect(forwardedHeaders.get(INTERNAL_CLIENT_CONTEXT_HEADER)).toEqual(
+			expect.any(String),
+		);
+		expect(
+			forwardedHeaders.get(INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER),
+		).toEqual(expect.any(String));
+		expect(forwardedHeaders.get('x-request-id')).toBe('req-resize-1');
+		expect(forwardedHeaders.get('x-trace-id')).toBe('trace-resize-1');
 		expect(JSON.stringify(fetchOptions.headers)).not.toContain(
 			'fs_prefix_secret',
 		);
 		expect(result.imageBuffer.equals(originalImage)).toBe(true);
 		expect(result.contentType).toBe('image/png');
 		expect(result.preGeneratedVariantHit).toBe(false);
+		expect(getUpstreamFetchMetricsSnapshot().storage).toEqual({
+			requestCount: 1,
+			timeoutCount: 0,
+			transportFailureCount: 0,
+			finalStatusCounts: { '200': 1 },
+		});
 	});
 
 	it('스토리지 앱이 404를 반환하면 NotFoundException을 던진다', async () => {
@@ -122,7 +146,7 @@ describe('리사이즈 이미지 서비스', () => {
 		).rejects.toBeInstanceOf(NotFoundException);
 	});
 
-	it('스토리지 앱이 404가 아닌 오류를 반환하면 InternalServerErrorException을 던진다', async () => {
+	it('스토리지 앱이 500을 반환하면 BadGatewayException을 던진다', async () => {
 		fetchSpy.mockResolvedValue(
 			createFetchResponse(Buffer.from('error'), { status: 500 }),
 		);
@@ -132,7 +156,21 @@ describe('리사이즈 이미지 서비스', () => {
 				{ path: 'public', name: 'error.png' },
 				clientServiceContext,
 			),
-		).rejects.toBeInstanceOf(InternalServerErrorException);
+		).rejects.toBeInstanceOf(BadGatewayException);
+	});
+
+	it('스토리지 503은 한 번만 retry한 뒤 ServiceUnavailableException을 유지한다', async () => {
+		fetchSpy.mockResolvedValue(
+			createFetchResponse(Buffer.from('unavailable'), { status: 503 }),
+		);
+
+		await expect(
+			service.getImageFromMain(
+				{ path: 'public', name: 'error.png' },
+				clientServiceContext,
+			),
+		).rejects.toBeInstanceOf(ServiceUnavailableException);
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
 	});
 
 	it('스토리지 앱이 빈 본문을 반환하면 NotFoundException을 던진다', async () => {
@@ -281,6 +319,7 @@ describe('리사이즈 이미지 서비스', () => {
 			expect.any(Object),
 		);
 		expect(imageManager.resize).not.toHaveBeenCalled();
+		expect(imageManager.validate).toHaveBeenCalledWith(variantImage);
 		expect(result).toEqual({
 			imageBuffer: variantImage,
 			contentType: 'image/webp',

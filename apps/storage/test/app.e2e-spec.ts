@@ -20,6 +20,7 @@ import request, { type Test as SuperTestRequest } from 'supertest';
 import sharp from 'sharp';
 import { Root } from '../src/enum';
 import { AppController } from '../src/app.controller';
+import { AppHealthService } from '../src/app-health.service';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageService } from '../src/modules/image/image.service';
 import { PolicyAwareImageUploadInterceptor } from '../src/modules/image/policy-aware-image-upload.interceptor';
@@ -163,6 +164,13 @@ describe('스토리지 앱 e2e', () => {
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
 			providers: [
+				{
+					provide: AppHealthService,
+					useValue: {
+						getLive: () => ({ ok: true, service: 'storage' }),
+						getReady: () => Promise.resolve({ ok: true, service: 'storage' }),
+					},
+				},
 				ImageService,
 				PolicyAwareImageUploadInterceptor,
 				ClientServiceApiKeyGuard,
@@ -219,6 +227,11 @@ describe('스토리지 앱 e2e', () => {
 			.get('/health-check')
 			.expect(200)
 			.expect('OK');
+	});
+
+	it('live와 ready 상태를 분리해 반환한다', async () => {
+		await request(app.getHttpServer()).get('/health/live').expect(200);
+		await request(app.getHttpServer()).get('/health/ready').expect(200);
 	});
 
 	it('클라이언트 서비스 API 키가 없으면 이미지 업로드를 거부한다', async () => {

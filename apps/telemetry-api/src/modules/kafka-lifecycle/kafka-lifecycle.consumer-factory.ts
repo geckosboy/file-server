@@ -2,10 +2,17 @@ import { Injectable } from '@nestjs/common';
 import { Consumer, Kafka, logLevel, Producer } from 'kafkajs';
 import { readKafkaClientSecurityOptions } from '@file/nest-common';
 import { LifecycleKafkaConsumerConfig } from './kafka-lifecycle.config';
+import { KafkaLagProbe } from '../kafka/kafka-consumer-lag';
 
 export type LifecycleKafkaConsumer = Pick<
 	Consumer,
-	'commitOffsets' | 'connect' | 'disconnect' | 'run' | 'subscribe'
+	| 'commitOffsets'
+	| 'connect'
+	| 'disconnect'
+	| 'events'
+	| 'on'
+	| 'run'
+	| 'subscribe'
 >;
 
 export type LifecycleKafkaDlqProducer = Pick<
@@ -18,6 +25,7 @@ export interface LifecycleKafkaConsumerFactory {
 	createDlqProducer(
 		config: LifecycleKafkaConsumerConfig,
 	): LifecycleKafkaDlqProducer;
+	createLagProbe(config: LifecycleKafkaConsumerConfig): KafkaLagProbe;
 }
 
 export const LIFECYCLE_KAFKA_CONSUMER_FACTORY = Symbol(
@@ -37,6 +45,10 @@ export class KafkaJsLifecycleKafkaConsumerFactory implements LifecycleKafkaConsu
 		return createKafkaClient(config).producer({
 			allowAutoTopicCreation: false,
 		});
+	}
+
+	createLagProbe(config: LifecycleKafkaConsumerConfig): KafkaLagProbe {
+		return createKafkaClient(config).admin();
 	}
 }
 

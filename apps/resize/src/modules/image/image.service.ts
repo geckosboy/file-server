@@ -1,10 +1,4 @@
-import {
-	Inject,
-	Injectable,
-	InternalServerErrorException,
-	Logger,
-	NotFoundException,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import {
 	ClientServiceAuthContext,
@@ -15,6 +9,7 @@ import { lookup } from 'mime-types';
 import { performance } from 'perf_hooks';
 
 import { ImageEntity } from '@file/image-contracts';
+import { fetchUpstreamBuffer } from '@file/nest-common';
 import {
 	createFailedTelemetryFields,
 	createImageTelemetryEvent,
@@ -88,37 +83,28 @@ export class ImageService {
 			Partial<Pick<ImageEntity, 'width' | 'height' | 'format'>>,
 		clientServiceContext?: ClientServiceAuthContext,
 	): Promise<StorageImageResult> {
-		let result: Response;
 		const headers = createInternalServiceForwardHeaders(
 			clientServiceContext,
 			process.env.INTERNAL_API_KEY ?? envConfig.INTERNAL_API_KEY,
 			{ audience: 'storage', action: 'image.read' },
 		);
-		try {
-			result = await fetch(this.getImageUrl(imageInfo), {
-				method: 'get',
-				...(Object.keys(headers).length > 0 ? { headers } : {}),
-			});
-		} catch (error) {
-			this.logger.error(error);
-			throw new InternalServerErrorException('파일 서버에 연결할 수 없습니다.');
-		}
-
-		if (!result.ok) {
-			if (result.status === 404) {
-				throw new NotFoundException('존재하지 않는 파일입니다.');
-			}
-			throw new InternalServerErrorException('파일을 불러올 수 없습니다.');
-		}
-
-		const image = await result.arrayBuffer();
+		const { body: image, response: result } = await fetchUpstreamBuffer({
+			upstream: 'storage',
+			url: this.getImageUrl(imageInfo),
+			headers,
+			requestContext: clientServiceContext,
+			timeoutMs: envConfig.UPSTREAM_HTTP_TIMEOUT_MS,
+			maxRetries: envConfig.UPSTREAM_HTTP_MAX_RETRIES,
+			retryBackoffMs: envConfig.UPSTREAM_HTTP_RETRY_BACKOFF_MS,
+			maxResponseBytes: envConfig.UPSTREAM_IMAGE_MAX_RESPONSE_BYTES,
+		});
 		/** 데이터가 없을 시 클라이언트에서 잘못 요청하거나 DB에 주소나 이름 값이 잘못된거임 */
 		if (!image.byteLength) {
 			throw new NotFoundException('존재하지 않는 파일입니다.');
 		}
 
 		return {
-			imageBuffer: Buffer.from(image),
+			imageBuffer: image,
 			contentType:
 				result.headers.get('content-type') ||
 				lookup(imageInfo.name) ||
@@ -161,6 +147,7 @@ export class ImageService {
 				clientServiceContext,
 			);
 			if (fetchedImage.preGeneratedVariantHit) {
+				await this.imageManager.validate(fetchedImage.imageBuffer);
 				const durationMs = performance.now() - requestedAt;
 				this.logger.log(
 					`${path}/${name} - pre-generated ${format} ${size.width ?? '-'}/${size.height ?? '-'}px ${fetchedImage.imageBuffer.byteLength}byte +${Math.round(durationMs)}ms `,

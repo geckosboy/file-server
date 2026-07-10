@@ -17,8 +17,10 @@ describe('telemetry-api Kafka factory security wiring', () => {
 	};
 	const consumer = { connect: jest.fn() };
 	const producer = { connect: jest.fn() };
+	const admin = { connect: jest.fn() };
 	const consumerFactory = jest.fn(() => consumer);
 	const producerFactory = jest.fn(() => producer);
+	const adminFactory = jest.fn(() => admin);
 
 	beforeEach(() => {
 		jest.clearAllMocks();
@@ -28,6 +30,7 @@ describe('telemetry-api Kafka factory security wiring', () => {
 		KafkaConstructor.mockImplementation(() => ({
 			consumer: consumerFactory,
 			producer: producerFactory,
+			admin: adminFactory,
 		}));
 	});
 
@@ -55,6 +58,9 @@ describe('telemetry-api Kafka factory security wiring', () => {
 				fromBeginning: false,
 				retryMaxAttempts: 3,
 				retryBackoffMs: 100,
+				connectRetryBackoffMs: 500,
+				connectRetryMaxBackoffMs: 10_000,
+				lagRefreshIntervalMs: 5_000,
 			},
 		],
 		[
@@ -70,6 +76,9 @@ describe('telemetry-api Kafka factory security wiring', () => {
 				fromBeginning: false,
 				retryMaxAttempts: 3,
 				retryBackoffMs: 100,
+				connectRetryBackoffMs: 500,
+				connectRetryMaxBackoffMs: 10_000,
+				lagRefreshIntervalMs: 5_000,
 			},
 		],
 	])(
@@ -77,8 +86,9 @@ describe('telemetry-api Kafka factory security wiring', () => {
 		(_name, factory, config) => {
 			factory.create(config);
 			factory.createDlqProducer(config);
+			factory.createLagProbe(config);
 
-			expect(KafkaConstructor).toHaveBeenCalledTimes(2);
+			expect(KafkaConstructor).toHaveBeenCalledTimes(3);
 			for (const [kafkaConfig] of KafkaConstructor.mock.calls) {
 				expect(kafkaConfig).toEqual(
 					expect.objectContaining({

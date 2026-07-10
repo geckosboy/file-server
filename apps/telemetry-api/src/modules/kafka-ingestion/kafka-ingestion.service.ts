@@ -20,6 +20,10 @@ import {
 import { TelemetryKafkaConsumerStatusService } from './kafka-ingestion.status';
 import { parseKafkaMessageValue } from '../kafka/kafka-message.parser';
 import { processKafkaMessageWithResilience } from '../kafka/kafka-consumer-resilience';
+import {
+	KafkaLagProbe,
+	readKafkaConsumerLag,
+} from '../kafka/kafka-consumer-lag';
 
 @Injectable()
 export class TelemetryKafkaConsumerService
@@ -28,7 +32,14 @@ export class TelemetryKafkaConsumerService
 	private readonly logger = new Logger(TelemetryKafkaConsumerService.name);
 	private consumer?: TelemetryKafkaConsumer;
 	private dlqProducer?: TelemetryKafkaDlqProducer;
+	private lagProbe?: KafkaLagProbe;
 	private config?: ReturnType<typeof readTelemetryKafkaConsumerConfig>;
+	private reconnectTimer?: NodeJS.Timeout;
+	private lagRefreshTimer?: NodeJS.Timeout;
+	private reconnectAttempt = 0;
+	private consumerGeneration = 0;
+	private consumerEventUnsubscribers: Array<() => void> = [];
+	private shuttingDown = false;
 
 	constructor(
 		private readonly ingestionService: IngestionService,
@@ -48,33 +59,12 @@ export class TelemetryKafkaConsumerService
 			return;
 		}
 
-		try {
-			this.consumer = this.consumerFactory.create(config);
-			this.dlqProducer = this.consumerFactory.createDlqProducer(config);
-			await this.consumer.connect();
-			await this.dlqProducer.connect();
-			await this.consumer.subscribe({
-				topic: config.topic,
-				fromBeginning: config.fromBeginning,
-			});
-			await this.consumer.run({
-				autoCommit: false,
-				eachMessage: (payload) => this.handleMessage(payload),
-			});
-			this.statusService.markConnected();
-			this.logger.log(
-				`Kafka telemetry consumer connected: ${config.topic} group=${config.groupId}`,
-			);
-		} catch (error) {
-			await this.disconnectClients();
-			this.statusService.markDisconnected(error);
-			this.logger.error(
-				`Kafka telemetry consumer 연결 실패: ${errorToMessage(error)}`,
-			);
-		}
+		await this.connectConsumer();
 	}
 
 	async onApplicationShutdown() {
+		this.shuttingDown = true;
+		this.clearTimers();
 		try {
 			await this.disconnectClients();
 		} finally {
@@ -110,6 +100,7 @@ export class TelemetryKafkaConsumerService
 		});
 		this.statusService.markConsumed();
 		if (processing.outcome === 'dead-lettered') {
+			this.statusService.markDeadLettered();
 			this.logger.warn(
 				`Kafka telemetry event DLQ 처리: ${processing.ingestion.reason ?? 'unknown reason'}`,
 			);
@@ -147,10 +138,159 @@ export class TelemetryKafkaConsumerService
 	}
 
 	private async disconnectClients(): Promise<void> {
+		this.consumerGeneration += 1;
+		this.detachConsumerStatusHandlers();
+		const consumer = this.consumer;
+		const dlqProducer = this.dlqProducer;
+		const lagProbe = this.lagProbe;
+		this.consumer = undefined;
+		this.dlqProducer = undefined;
+		this.lagProbe = undefined;
 		await Promise.allSettled([
-			this.consumer?.disconnect(),
-			this.dlqProducer?.disconnect(),
+			consumer?.disconnect(),
+			dlqProducer?.disconnect(),
+			lagProbe?.disconnect(),
 		]);
+	}
+
+	private async connectConsumer(): Promise<void> {
+		const config = this.requireConfig();
+		if (this.shuttingDown) {
+			return;
+		}
+
+		try {
+			const generation = ++this.consumerGeneration;
+			this.consumer = this.consumerFactory.create(config);
+			this.attachConsumerStatusHandlers(this.consumer, generation);
+			this.dlqProducer = this.consumerFactory.createDlqProducer(config);
+			this.lagProbe = this.consumerFactory.createLagProbe(config);
+			await this.consumer.connect();
+			await this.dlqProducer.connect();
+			await this.lagProbe.connect();
+			await this.consumer.subscribe({
+				topic: config.topic,
+				fromBeginning: config.fromBeginning,
+			});
+			await this.consumer.run({
+				autoCommit: false,
+				eachMessage: (payload) => this.handleMessage(payload),
+			});
+			await this.refreshLag();
+			this.reconnectAttempt = 0;
+			this.startLagRefresh();
+			this.logger.log(
+				`Kafka telemetry consumer run loop started: ${config.topic} group=${config.groupId}`,
+			);
+		} catch (error) {
+			await this.disconnectClients();
+			this.statusService.markDisconnected(error);
+			this.logger.error(
+				`Kafka telemetry consumer 연결 실패: ${errorToMessage(error)}`,
+			);
+			this.scheduleReconnect();
+		}
+	}
+
+	private attachConsumerStatusHandlers(
+		consumer: TelemetryKafkaConsumer,
+		generation: number,
+	): void {
+		const isCurrent = () =>
+			!this.shuttingDown &&
+			this.consumer === consumer &&
+			this.consumerGeneration === generation;
+		this.consumerEventUnsubscribers = [
+			consumer.on(consumer.events.CRASH, (event) => {
+				if (isCurrent()) {
+					this.statusService.markConsumerInactive(event.payload.error);
+				}
+			}),
+			consumer.on(consumer.events.REBALANCING, () => {
+				if (isCurrent()) {
+					this.statusService.markConsumerInactive();
+				}
+			}),
+			consumer.on(consumer.events.STOP, () => {
+				if (isCurrent()) {
+					this.statusService.markConsumerInactive();
+				}
+			}),
+			consumer.on(consumer.events.DISCONNECT, () => {
+				if (isCurrent()) {
+					this.statusService.markConsumerInactive();
+				}
+			}),
+			consumer.on(consumer.events.GROUP_JOIN, () => {
+				if (isCurrent()) {
+					this.statusService.markConnected();
+				}
+			}),
+		];
+	}
+
+	private detachConsumerStatusHandlers(): void {
+		for (const unsubscribe of this.consumerEventUnsubscribers.splice(0)) {
+			unsubscribe();
+		}
+	}
+
+	private scheduleReconnect(): void {
+		const config = this.requireConfig();
+		if (this.shuttingDown || this.reconnectTimer) {
+			return;
+		}
+		this.reconnectAttempt += 1;
+		const delayMs = Math.min(
+			config.connectRetryBackoffMs * 2 ** (this.reconnectAttempt - 1),
+			config.connectRetryMaxBackoffMs,
+		);
+		this.statusService.markReconnectScheduled(this.reconnectAttempt, delayMs);
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = undefined;
+			void this.connectConsumer();
+		}, delayMs);
+		this.reconnectTimer.unref?.();
+	}
+
+	private startLagRefresh(): void {
+		const config = this.requireConfig();
+		if (this.lagRefreshTimer) {
+			clearInterval(this.lagRefreshTimer);
+		}
+		this.lagRefreshTimer = setInterval(() => {
+			void this.refreshLag().catch((error) => {
+				this.statusService.markLagUnavailable(error);
+				this.logger.error(
+					`Kafka telemetry lag 조회 실패: ${errorToMessage(error)}`,
+				);
+			});
+		}, config.lagRefreshIntervalMs);
+		this.lagRefreshTimer.unref?.();
+	}
+
+	private async refreshLag(): Promise<void> {
+		const config = this.requireConfig();
+		if (!this.lagProbe) {
+			throw new Error('Kafka telemetry lag probe is not initialized');
+		}
+		this.statusService.markLag(
+			await readKafkaConsumerLag(this.lagProbe, {
+				topic: config.topic,
+				groupId: config.groupId,
+			}),
+		);
+	}
+
+	private clearTimers(): void {
+		if (this.reconnectTimer) {
+			clearTimeout(this.reconnectTimer);
+			this.reconnectTimer = undefined;
+		}
+		if (this.lagRefreshTimer) {
+			clearInterval(this.lagRefreshTimer);
+			this.lagRefreshTimer = undefined;
+		}
 	}
 }
 

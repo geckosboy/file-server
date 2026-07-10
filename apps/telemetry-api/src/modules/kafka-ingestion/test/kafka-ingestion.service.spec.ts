@@ -11,6 +11,7 @@ import {
 import { TelemetryKafkaConsumerService } from '.././kafka-ingestion.service';
 import { parseKafkaMessageValue } from '../../kafka/kafka-message.parser';
 import { TelemetryKafkaConsumerStatusService } from '.././kafka-ingestion.status';
+import { KafkaLagProbe } from '../../kafka/kafka-consumer-lag';
 
 const uploadEvent: ImageTelemetryEvent = {
 	schemaVersion: 1,
@@ -53,6 +54,15 @@ const createKafkaMessagePayload = (
 	pause: jest.fn().mockReturnValue(jest.fn()),
 });
 
+type TestConsumerEvent = {
+	id: number;
+	type: string;
+	timestamp: number;
+	payload: Record<string, unknown>;
+};
+
+type TestConsumerEventListener = (event: TestConsumerEvent) => void;
+
 describe('Kafka 텔레메트리 consumer 설정', () => {
 	it('test 환경에서는 명시적으로 켜지 않으면 비활성화한다', () => {
 		expect(
@@ -83,6 +93,9 @@ describe('Kafka 텔레메트리 consumer 설정', () => {
 			fromBeginning: false,
 			retryMaxAttempts: 3,
 			retryBackoffMs: 100,
+			connectRetryBackoffMs: 500,
+			connectRetryMaxBackoffMs: 10_000,
+			lagRefreshIntervalMs: 5_000,
 		});
 	});
 
@@ -95,11 +108,17 @@ describe('Kafka 텔레메트리 consumer 설정', () => {
 				TELEMETRY_KAFKA_DLQ_TOPIC: 'file.telemetry.poison.v1',
 				TELEMETRY_KAFKA_RETRY_MAX_ATTEMPTS: '5',
 				TELEMETRY_KAFKA_RETRY_BACKOFF_MS: '25',
+				TELEMETRY_KAFKA_CONNECT_RETRY_BACKOFF_MS: '20',
+				TELEMETRY_KAFKA_CONNECT_RETRY_MAX_BACKOFF_MS: '200',
+				TELEMETRY_KAFKA_LAG_REFRESH_INTERVAL_MS: '250',
 			}),
 		).toMatchObject({
 			dlqTopic: 'file.telemetry.poison.v1',
 			retryMaxAttempts: 5,
 			retryBackoffMs: 25,
+			connectRetryBackoffMs: 20,
+			connectRetryMaxBackoffMs: 200,
+			lagRefreshIntervalMs: 250,
 		});
 	});
 });
@@ -142,30 +161,80 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 	let statusService: TelemetryKafkaConsumerStatusService;
 	let consumer: jest.Mocked<TelemetryKafkaConsumer>;
 	let dlqProducer: jest.Mocked<TelemetryKafkaDlqProducer>;
+	let lagProbe: jest.Mocked<KafkaLagProbe>;
 	let factory: jest.Mocked<TelemetryKafkaConsumerFactory>;
 	let service: TelemetryKafkaConsumerService;
 	let originalEnv: NodeJS.ProcessEnv;
+	let emitConsumerEvent: (
+		eventName: string,
+		payload: Record<string, unknown>,
+	) => void;
 
 	beforeEach(() => {
 		originalEnv = { ...process.env };
 		repository = new InMemoryTelemetryRepository();
 		ingestionService = new IngestionService(repository);
 		statusService = new TelemetryKafkaConsumerStatusService();
+		const eventListeners = new Map<string, Set<TestConsumerEventListener>>();
+		emitConsumerEvent = (eventName, payload) => {
+			for (const listener of eventListeners.get(eventName) ?? []) {
+				listener({
+					id: 1,
+					type: eventName,
+					timestamp: Date.now(),
+					payload,
+				});
+			}
+		};
+		const events = {
+			CRASH: 'consumer.crash',
+			REBALANCING: 'consumer.rebalancing',
+			STOP: 'consumer.stop',
+			DISCONNECT: 'consumer.disconnect',
+			GROUP_JOIN: 'consumer.group_join',
+		} as unknown as TelemetryKafkaConsumer['events'];
 		consumer = {
 			commitOffsets: jest.fn().mockResolvedValue(undefined),
 			connect: jest.fn().mockResolvedValue(undefined),
 			disconnect: jest.fn().mockResolvedValue(undefined),
-			run: jest.fn().mockResolvedValue(undefined),
+			events,
+			on: jest.fn((eventName: string, listener: TestConsumerEventListener) => {
+				const listeners = eventListeners.get(eventName) ?? new Set();
+				listeners.add(listener);
+				eventListeners.set(eventName, listeners);
+				return () => listeners.delete(listener);
+			}),
+			run: jest.fn().mockImplementation(async () => {
+				emitConsumerEvent(events.GROUP_JOIN, {
+					groupId: 'file-telemetry-api',
+				});
+			}),
 			subscribe: jest.fn().mockResolvedValue(undefined),
-		};
+		} as unknown as jest.Mocked<TelemetryKafkaConsumer>;
 		dlqProducer = {
 			connect: jest.fn().mockResolvedValue(undefined),
 			disconnect: jest.fn().mockResolvedValue(undefined),
 			send: jest.fn().mockResolvedValue([]),
 		};
+		lagProbe = {
+			connect: jest.fn().mockResolvedValue(undefined),
+			disconnect: jest.fn().mockResolvedValue(undefined),
+			fetchTopicOffsets: jest
+				.fn()
+				.mockResolvedValue([
+					{ partition: 0, offset: '3', high: '3', low: '0' },
+				]),
+			fetchOffsets: jest.fn().mockResolvedValue([
+				{
+					topic: 'file.image.events.v1',
+					partitions: [{ partition: 0, offset: '1', metadata: null }],
+				},
+			]),
+		};
 		factory = {
 			create: jest.fn().mockReturnValue(consumer),
 			createDlqProducer: jest.fn().mockReturnValue(dlqProducer),
+			createLagProbe: jest.fn().mockReturnValue(lagProbe),
 		};
 		service = new TelemetryKafkaConsumerService(
 			ingestionService,
@@ -360,6 +429,98 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 		expect(statusService.getHealth()).toMatchObject({
 			enabled: true,
 			connected: true,
+			brokerConnected: true,
+			ready: true,
+			consumerLag: 2,
+		});
+	});
+
+	it('최초 연결 실패 후 capped backoff로 다시 연결한다', async () => {
+		jest.useFakeTimers();
+		process.env.NODE_ENV = 'development';
+		process.env.KAFKA_CLIENT_BROKERS = 'localhost:9094';
+		process.env.TELEMETRY_KAFKA_CONNECT_RETRY_BACKOFF_MS = '10';
+		process.env.TELEMETRY_KAFKA_CONNECT_RETRY_MAX_BACKOFF_MS = '10';
+		consumer.connect
+			.mockRejectedValueOnce(new Error('broker unavailable'))
+			.mockResolvedValue(undefined);
+
+		await service.onApplicationBootstrap();
+
+		expect(statusService.getHealth()).toMatchObject({
+			connected: false,
+			ready: false,
+			reconnectAttempts: 1,
+			lastError: 'broker unavailable',
+		});
+
+		await jest.advanceTimersByTimeAsync(10);
+
+		expect(consumer.connect).toHaveBeenCalledTimes(2);
+		expect(statusService.getHealth()).toMatchObject({
+			connected: true,
+			ready: true,
+			reconnectAttempts: 0,
+		});
+		await service.onApplicationShutdown();
+		jest.useRealTimers();
+	});
+
+	it('consumer crash/rebalance/stop/disconnect 동안 ready=false이고 group join 후에만 복구한다', async () => {
+		await enableConsumer(service);
+		const expectInactiveUntilGroupJoin = (eventName: string) => {
+			emitConsumerEvent(eventName, {});
+			expect(statusService.getHealth()).toMatchObject({
+				connected: false,
+				ready: false,
+			});
+			emitConsumerEvent(consumer.events.GROUP_JOIN, {
+				groupId: 'file-telemetry-api',
+			});
+			expect(statusService.getHealth()).toMatchObject({
+				connected: true,
+				ready: true,
+			});
+		};
+
+		expectInactiveUntilGroupJoin(consumer.events.STOP);
+		expectInactiveUntilGroupJoin(consumer.events.DISCONNECT);
+
+		emitConsumerEvent(consumer.events.REBALANCING, {
+			groupId: 'file-telemetry-api',
+			memberId: 'member-1',
+		});
+		expect(statusService.getHealth()).toMatchObject({
+			connected: false,
+			ready: false,
+		});
+
+		emitConsumerEvent(consumer.events.GROUP_JOIN, {
+			groupId: 'file-telemetry-api',
+		});
+		expect(statusService.getHealth()).toMatchObject({
+			connected: true,
+			ready: true,
+		});
+
+		emitConsumerEvent(consumer.events.CRASH, {
+			error: new Error('consumer crashed'),
+			groupId: 'file-telemetry-api',
+			restart: true,
+		});
+		expect(statusService.getHealth()).toMatchObject({
+			connected: false,
+			ready: false,
+			lastError: 'consumer crashed',
+		});
+
+		emitConsumerEvent(consumer.events.GROUP_JOIN, {
+			groupId: 'file-telemetry-api',
+		});
+		expect(statusService.getHealth()).toMatchObject({
+			connected: true,
+			ready: true,
+			lastError: null,
 		});
 	});
 
@@ -372,6 +533,11 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 
 		expect(consumer.disconnect).toHaveBeenCalledTimes(1);
 		expect(dlqProducer.disconnect).toHaveBeenCalledTimes(1);
+		expect(lagProbe.disconnect).toHaveBeenCalledTimes(1);
+		expect(statusService.getHealth().connected).toBe(false);
+		emitConsumerEvent(consumer.events.GROUP_JOIN, {
+			groupId: 'file-telemetry-api',
+		});
 		expect(statusService.getHealth().connected).toBe(false);
 	});
 });

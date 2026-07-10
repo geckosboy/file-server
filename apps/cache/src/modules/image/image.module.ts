@@ -6,11 +6,16 @@ import { ImageService } from './image.service';
 import { ClientServiceAuthModule } from '@file/database';
 import { readKafkaClientSecurityOptions } from '@file/nest-common';
 import { CacheModule } from '../node-cache/cache.module';
+import { CacheService } from '../node-cache/cache.service';
 import { envConfig } from 'src/config';
 import {
 	IMAGE_TELEMETRY_KAFKA_RETRY_OPTIONS,
 	IMAGE_TELEMETRY_KAFKA_SEND_OPTIONS,
 } from '@file/telemetry-contracts/events';
+import {
+	CACHE_HEALTH_METRICS,
+	CACHE_SINGLEFLIGHT_HEALTH_METRICS,
+} from '../../app-health.metrics';
 
 const KafkaModule = ClientsModule.register([
 	{
@@ -36,6 +41,14 @@ const KafkaModule = ClientsModule.register([
 @Module({
 	imports: [CacheModule.register(600), KafkaModule, ClientServiceAuthModule],
 	controllers: [ImageController],
-	providers: [ImageService],
+	providers: [
+		ImageService,
+		{ provide: CACHE_HEALTH_METRICS, useExisting: CacheService },
+		{
+			provide: CACHE_SINGLEFLIGHT_HEALTH_METRICS,
+			useExisting: ImageService,
+		},
+	],
+	exports: [CACHE_HEALTH_METRICS, CACHE_SINGLEFLIGHT_HEALTH_METRICS],
 })
 export class ImageModule {}

@@ -18,6 +18,10 @@ import {
 	extractClientApiKeyPrefix,
 	generateClientApiKey,
 } from '.././client-api-key';
+import {
+	getClientServiceAuthMetricsSnapshot,
+	resetClientServiceAuthMetricsForTesting,
+} from '.././client-service-auth.metrics';
 import { PrismaService } from '.././prisma.service';
 
 type PrismaMock = {
@@ -137,6 +141,97 @@ describe('클라이언트 서비스 API 키 인증 서비스', () => {
 		});
 	});
 
+	it('같은 키의 연속 인증은 DB에서 매번 조회하되 lastUsedAt write는 5분간 합친다', async () => {
+		const { generated, record } = createKeyRecord();
+		prisma.clientServiceKey.findUnique.mockResolvedValue(record);
+
+		await service.authenticate(generated.apiKey);
+		await service.authenticate(generated.apiKey);
+
+		expect(prisma.clientServiceKey.findUnique).toHaveBeenCalledTimes(2);
+		expect(prisma.clientServiceKey.update).toHaveBeenCalledTimes(1);
+	});
+
+	it('같은 키의 동시 인증은 하나의 lastUsedAt write를 공유한다', async () => {
+		const { generated, record } = createKeyRecord();
+		prisma.clientServiceKey.findUnique.mockResolvedValue(record);
+		let resolveUpdate: (() => void) | undefined;
+		prisma.clientServiceKey.update.mockReturnValue(
+			new Promise<void>((resolve) => {
+				resolveUpdate = resolve;
+			}),
+		);
+
+		const authentications = Array.from({ length: 100 }, () =>
+			service.authenticate(generated.apiKey),
+		);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(prisma.clientServiceKey.findUnique).toHaveBeenCalledTimes(100);
+		expect(prisma.clientServiceKey.update).toHaveBeenCalledTimes(1);
+		resolveUpdate?.();
+		await expect(Promise.all(authentications)).resolves.toHaveLength(100);
+	});
+
+	it('lastUsedAt write 실패는 인증을 막지 않고 다음 요청에서 재시도한다', async () => {
+		const { generated, record } = createKeyRecord();
+		prisma.clientServiceKey.findUnique.mockResolvedValue(record);
+		prisma.clientServiceKey.update
+			.mockRejectedValueOnce(new Error('database unavailable'))
+			.mockResolvedValueOnce(undefined);
+
+		await expect(
+			service.authenticate(generated.apiKey),
+		).resolves.not.toBeNull();
+		await expect(
+			service.authenticate(generated.apiKey),
+		).resolves.not.toBeNull();
+
+		expect(prisma.clientServiceKey.update).toHaveBeenCalledTimes(2);
+	});
+
+	it('DB의 lastUsedAt이 coalesce 구간 안이면 첫 인증도 write를 생략한다', async () => {
+		const now = new Date();
+		const { generated, record } = createKeyRecord({ lastUsedAt: now });
+		prisma.clientServiceKey.findUnique.mockResolvedValue(record);
+		jest.spyOn(Date, 'now').mockReturnValue(now.getTime());
+
+		await expect(
+			service.authenticate(generated.apiKey),
+		).resolves.not.toBeNull();
+
+		expect(prisma.clientServiceKey.update).not.toHaveBeenCalled();
+	});
+
+	it('coalesce 구간이 지나면 같은 키의 lastUsedAt을 다시 기록한다', async () => {
+		const { generated, record } = createKeyRecord();
+		prisma.clientServiceKey.findUnique.mockResolvedValue(record);
+		const now = new Date('2026-07-10T00:00:00.000Z').getTime();
+		const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
+
+		await service.authenticate(generated.apiKey);
+		nowSpy.mockReturnValue(now + 5 * 60 * 1000);
+		await service.authenticate(generated.apiKey);
+
+		expect(prisma.clientServiceKey.update).toHaveBeenCalledTimes(2);
+	});
+
+	it('인증 결과를 캐시하지 않아 이전에 유효했던 키의 폐기를 즉시 반영한다', async () => {
+		const { generated, record } = createKeyRecord();
+		prisma.clientServiceKey.findUnique
+			.mockResolvedValueOnce(record)
+			.mockResolvedValueOnce({ ...record, revokedAt: new Date() });
+
+		await expect(
+			service.authenticate(generated.apiKey),
+		).resolves.not.toBeNull();
+		await expect(service.authenticate(generated.apiKey)).resolves.toBeNull();
+
+		expect(prisma.clientServiceKey.findUnique).toHaveBeenCalledTimes(2);
+		expect(prisma.clientServiceKey.update).toHaveBeenCalledTimes(1);
+	});
+
 	it('폐기, 만료, 비활성 서비스 키는 인증하지 않는다', async () => {
 		const revoked = createKeyRecord({ revokedAt: new Date() });
 		prisma.clientServiceKey.findUnique.mockResolvedValue(revoked.record);
@@ -228,6 +323,7 @@ describe('클라이언트 서비스 API 키 가드', () => {
 	let guard: ClientServiceApiKeyGuard;
 
 	beforeEach(() => {
+		resetClientServiceAuthMetricsForTesting();
 		authService = {
 			authenticate: jest.fn().mockResolvedValue({
 				clientService: {
@@ -251,6 +347,22 @@ describe('클라이언트 서비스 API 키 가드', () => {
 		await expect(
 			guard.canActivate(createContext(createRequest())),
 		).rejects.toBeInstanceOf(UnauthorizedException);
+		expect(getClientServiceAuthMetricsSnapshot().externalApiKeyDenials).toBe(1);
+	});
+
+	it('API 키가 유효하지 않으면 외부 인증 거부를 기록한다', async () => {
+		authService.authenticate.mockResolvedValue(null);
+
+		await expect(
+			guard.canActivate(
+				createContext(
+					createRequest({
+						[CLIENT_SERVICE_API_KEY_HEADER]: 'fs_invalid_secret',
+					}),
+				),
+			),
+		).rejects.toBeInstanceOf(UnauthorizedException);
+		expect(getClientServiceAuthMetricsSnapshot().externalApiKeyDenials).toBe(1);
 	});
 
 	it('유효한 API 키이면 요청 컨텍스트와 요청 ID를 붙인다', async () => {
@@ -351,6 +463,7 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 	};
 
 	beforeEach(() => {
+		resetClientServiceAuthMetricsForTesting();
 		process.env.INTERNAL_API_KEY = internalApiKey;
 	});
 
@@ -412,6 +525,9 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 			clientServiceName: 'Local Demo',
 			clientServiceKeyId: 'key-1',
 		});
+		expect(getClientServiceAuthMetricsSnapshot().internalContextDenials).toBe(
+			0,
+		);
 	});
 
 	it('내부 API key가 없거나 서명이 변조되면 요청을 거부한다', () => {
@@ -436,6 +552,9 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 				),
 			),
 		).toThrow(UnauthorizedException);
+		expect(getClientServiceAuthMetricsSnapshot().internalContextDenials).toBe(
+			2,
+		);
 	});
 
 	it('audience/action이 다르거나 만료된 서명 컨텍스트는 재사용할 수 없다', () => {
@@ -465,6 +584,9 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 				createContext(createRequest(expired), signedInternalHandler),
 			),
 		).toThrow(UnauthorizedException);
+		expect(getClientServiceAuthMetricsSnapshot().internalContextDenials).toBe(
+			2,
+		);
 	});
 
 	it('내부 guard를 사용하는 route에 audience/action metadata가 없으면 fail-closed한다', () => {
@@ -478,5 +600,8 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 				createContext(createRequest(headers)),
 			),
 		).toThrow(UnauthorizedException);
+		expect(getClientServiceAuthMetricsSnapshot().internalContextDenials).toBe(
+			1,
+		);
 	});
 });
