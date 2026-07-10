@@ -62,13 +62,15 @@ export class ImageService {
 
 	/** Name, path 등으로 CacheKey 생성 */
 	private convertToCacheKey({
+		clientServiceId,
 		format,
 		name,
 		path,
 		height,
 		width,
-	}: ImageEntity) {
+	}: ImageEntity & { clientServiceId: string }) {
 		return [
+			encodeURIComponent(clientServiceId),
 			encodeURIComponent(path),
 			width ?? 'x',
 			height ?? 'x',
@@ -92,6 +94,7 @@ export class ImageService {
 		const headers = createInternalServiceForwardHeaders(
 			clientServiceContext,
 			process.env.INTERNAL_API_KEY ?? envConfig.INTERNAL_API_KEY,
+			{ audience: 'resize', action: 'image.read' },
 		);
 		const imageUrl = this.getImageUrl(image);
 		const response =
@@ -116,7 +119,13 @@ export class ImageService {
 		params: ImageEntity,
 		clientServiceContext?: ClientServiceAuthContext,
 	) {
-		const cacheKey = this.convertToCacheKey(params);
+		if (!clientServiceContext) {
+			throw new Error('클라이언트 서비스 컨텍스트가 필요합니다.');
+		}
+		const cacheKey = this.convertToCacheKey({
+			...params,
+			clientServiceId: clientServiceContext.clientServiceId,
+		});
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
 		const startedAt = performance.now();
@@ -215,7 +224,9 @@ export class ImageService {
 		}
 	}
 
-	deleteCacheImage(params: Pick<ImageEntity, 'path' | 'name'>) {
+	deleteCacheImage(
+		params: Pick<ImageEntity, 'path' | 'name'> & { clientServiceId: string },
+	) {
 		const deletedCount = this.cacheService.deleteCachedImagesForImage(params);
 
 		this.logger.log(

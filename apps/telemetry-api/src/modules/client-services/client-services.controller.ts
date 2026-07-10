@@ -8,7 +8,8 @@ import {
 	Post,
 	UseGuards,
 } from '@nestjs/common';
-import { AdminAuthGuard } from '../admin/admin-auth.guard';
+import { AdminAuthGuard, AdminRequestContext } from '../admin/admin-auth.guard';
+import type { AdminActionContext } from './client-services.types';
 import { ClientServicesService } from './client-services.service';
 
 @UseGuards(AdminAuthGuard)
@@ -37,18 +38,72 @@ export class ClientServicesController {
 	}
 
 	@Post(':id/keys')
-	createKey(@Param('id') id: string, @Body() body: unknown) {
-		return this.clientServicesService.createKey(id, body);
+	createKey(
+		@Param('id') id: string,
+		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.createKey(id, body, adminContext);
 	}
 
 	@Post(':id/keys/:keyId/revoke')
-	revokeKey(@Param('id') id: string, @Param('keyId') keyId: string) {
-		return this.clientServicesService.revokeKey(id, keyId);
+	revokeKey(
+		@Param('id') id: string,
+		@Param('keyId') keyId: string,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.revokeKey(id, keyId, adminContext);
+	}
+
+	@Post(':id/policies')
+	createPolicy(
+		@Param('id') id: string,
+		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.createPolicy(id, body, adminContext);
+	}
+
+	@Patch(':id/policies/:policyId')
+	updatePolicy(
+		@Param('id') id: string,
+		@Param('policyId') policyId: string,
+		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.updatePolicy(
+			id,
+			policyId,
+			body,
+			adminContext,
+		);
+	}
+
+	@Delete(':id/policies/:policyId')
+	deletePolicy(
+		@Param('id') id: string,
+		@Param('policyId') policyId: string,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.deletePolicy(id, policyId, adminContext);
+	}
+
+	@Get(':id/audit-logs')
+	listAuditLogs(@Param('id') id: string) {
+		return this.clientServicesService.listAuditLogs(id);
 	}
 
 	@Post(':id/lifecycle-subscriptions')
-	createLifecycleSubscription(@Param('id') id: string, @Body() body: unknown) {
-		return this.clientServicesService.createLifecycleSubscription(id, body);
+	createLifecycleSubscription(
+		@Param('id') id: string,
+		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.createLifecycleSubscription(
+			id,
+			body,
+			adminContext,
+		);
 	}
 
 	@Patch(':id/lifecycle-subscriptions/:subscriptionId')
@@ -56,11 +111,13 @@ export class ClientServicesController {
 		@Param('id') id: string,
 		@Param('subscriptionId') subscriptionId: string,
 		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
 	) {
 		return this.clientServicesService.updateLifecycleSubscription(
 			id,
 			subscriptionId,
 			body,
+			adminContext,
 		);
 	}
 
@@ -70,13 +127,29 @@ export class ClientServicesController {
 	}
 
 	@Patch(':id/image-resize-policy')
-	updateImageResizePolicy(@Param('id') id: string, @Body() body: unknown) {
-		return this.clientServicesService.updateImageResizePolicy(id, body);
+	updateImageResizePolicy(
+		@Param('id') id: string,
+		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.updateImageResizePolicy(
+			id,
+			body,
+			adminContext,
+		);
 	}
 
 	@Post(':id/image-resize-policy/variants')
-	createImageResizeVariant(@Param('id') id: string, @Body() body: unknown) {
-		return this.clientServicesService.createImageResizeVariant(id, body);
+	createImageResizeVariant(
+		@Param('id') id: string,
+		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
+	) {
+		return this.clientServicesService.createImageResizeVariant(
+			id,
+			body,
+			adminContext,
+		);
 	}
 
 	@Patch(':id/image-resize-policy/variants/:variantId')
@@ -84,11 +157,13 @@ export class ClientServicesController {
 		@Param('id') id: string,
 		@Param('variantId') variantId: string,
 		@Body() body: unknown,
+		@AdminRequestContext() adminContext: AdminActionContext,
 	) {
 		return this.clientServicesService.updateImageResizeVariant(
 			id,
 			variantId,
 			body,
+			adminContext,
 		);
 	}
 
@@ -96,7 +171,12 @@ export class ClientServicesController {
 	deleteImageResizeVariant(
 		@Param('id') id: string,
 		@Param('variantId') variantId: string,
+		@AdminRequestContext() adminContext: AdminActionContext,
 	) {
-		return this.clientServicesService.deleteImageResizeVariant(id, variantId);
+		return this.clientServicesService.deleteImageResizeVariant(
+			id,
+			variantId,
+			adminContext,
+		);
 	}
 }

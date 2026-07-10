@@ -9,8 +9,8 @@ import {
 	ClientServiceApiKeyGuard,
 	ClientServiceAuthService,
 	ClientServiceAuthenticatedRequest,
+	InternalServiceAccess,
 	InternalServiceGuard,
-	createClientServiceForwardHeaders,
 	createInternalServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 } from '.././client-service-auth';
@@ -66,12 +66,22 @@ const createKeyRecord = (overrides: Record<string, unknown> = {}) => {
 
 const createContext = (
 	request: Partial<ClientServiceAuthenticatedRequest>,
+	handler: () => void = () => undefined,
 ): ExecutionContext =>
 	({
 		switchToHttp: () => ({
 			getRequest: () => request,
 		}),
-	}) as ExecutionContext;
+		getHandler: () => handler,
+		getClass: () => class TestController {},
+	}) as unknown as ExecutionContext;
+
+class SignedInternalRoute {
+	@InternalServiceAccess('resize', 'image.read')
+	handle() {}
+}
+
+const signedInternalHandler = SignedInternalRoute.prototype.handle;
 
 const createRequest = (
 	headers: Record<string, string> = {},
@@ -261,9 +271,9 @@ describe('클라이언트 서비스 API 키 가드', () => {
 			keyPrefix: 'prefix-1',
 			requestId: 'req-1',
 			traceId: 'trace-1',
-			apiKey: 'fs_prefix_secret',
 		});
 		expect(request.reqId).toBe('req-1');
+		expect(request.headers[CLIENT_SERVICE_API_KEY_HEADER]).toBeUndefined();
 		expect(request.requestLogContext).toEqual({
 			requestId: 'req-1',
 			traceId: 'trace-1',
@@ -283,13 +293,9 @@ describe('클라이언트 서비스 API 키 가드', () => {
 			requestId: 'req-1',
 			traceId: 'trace-1',
 		});
-		expect(
-			createClientServiceForwardHeaders(request.clientServiceContext),
-		).toEqual({
-			[CLIENT_SERVICE_API_KEY_HEADER]: 'fs_prefix_secret',
-			[CLIENT_SERVICE_REQUEST_ID_HEADER]: 'req-1',
-			[CLIENT_SERVICE_TRACE_ID_HEADER]: 'trace-1',
-		});
+		expect(JSON.stringify(request.clientServiceContext)).not.toContain(
+			'fs_prefix_secret',
+		);
 	});
 
 	it('기존 requestLogContext가 있으면 같은 객체에 서비스 정보를 합친다', async () => {
@@ -342,7 +348,6 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 		keyPrefix: 'prefix-1',
 		requestId: 'req-internal-1',
 		traceId: 'trace-internal-1',
-		apiKey: 'fs_prefix_secret',
 	};
 
 	beforeEach(() => {
@@ -361,6 +366,7 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 		const headers = createInternalServiceForwardHeaders(
 			clientServiceContext,
 			internalApiKey,
+			{ audience: 'resize', action: 'image.read' },
 		);
 
 		expect(headers).toEqual({
@@ -375,11 +381,14 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 		const headers = createInternalServiceForwardHeaders(
 			clientServiceContext,
 			internalApiKey,
+			{ audience: 'resize', action: 'image.read' },
 		);
 		const request = createRequest(headers);
 		const guard = new InternalServiceGuard();
 
-		expect(guard.canActivate(createContext(request))).toBe(true);
+		expect(
+			guard.canActivate(createContext(request, signedInternalHandler)),
+		).toBe(true);
 		expect(request.clientServiceContext).toEqual({
 			clientServiceId: 'service-1',
 			clientServiceSlug: 'local-demo',
@@ -388,6 +397,12 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 			keyPrefix: 'prefix-1',
 			requestId: 'req-internal-1',
 			traceId: 'trace-internal-1',
+		});
+		expect(request.internalServiceAccess).toMatchObject({
+			audience: 'resize',
+			action: 'image.read',
+			issuedAt: expect.any(Number),
+			expiresAt: expect.any(Number),
 		});
 		expect(request.requestLogContext).toEqual({
 			requestId: 'req-internal-1',
@@ -404,11 +419,12 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 		const headers = createInternalServiceForwardHeaders(
 			clientServiceContext,
 			internalApiKey,
+			{ audience: 'resize', action: 'image.read' },
 		);
 
-		expect(() => guard.canActivate(createContext(createRequest()))).toThrow(
-			UnauthorizedException,
-		);
+		expect(() =>
+			guard.canActivate(createContext(createRequest(), signedInternalHandler)),
+		).toThrow(UnauthorizedException);
 		expect(() =>
 			guard.canActivate(
 				createContext(
@@ -416,7 +432,50 @@ describe('내부 서비스 가드와 서명된 컨텍스트 전달', () => {
 						...headers,
 						[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: 'tampered',
 					}),
+					signedInternalHandler,
 				),
+			),
+		).toThrow(UnauthorizedException);
+	});
+
+	it('audience/action이 다르거나 만료된 서명 컨텍스트는 재사용할 수 없다', () => {
+		const guard = new InternalServiceGuard();
+		const wrongAudience = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			internalApiKey,
+			{ audience: 'storage', action: 'image.read' },
+		);
+		const expired = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			internalApiKey,
+			{
+				audience: 'resize',
+				action: 'image.read',
+				now: new Date(Date.now() - 120_000),
+			},
+		);
+
+		expect(() =>
+			guard.canActivate(
+				createContext(createRequest(wrongAudience), signedInternalHandler),
+			),
+		).toThrow(UnauthorizedException);
+		expect(() =>
+			guard.canActivate(
+				createContext(createRequest(expired), signedInternalHandler),
+			),
+		).toThrow(UnauthorizedException);
+	});
+
+	it('내부 guard를 사용하는 route에 audience/action metadata가 없으면 fail-closed한다', () => {
+		const headers = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			internalApiKey,
+			{ audience: 'resize', action: 'image.read' },
+		);
+		expect(() =>
+			new InternalServiceGuard().canActivate(
+				createContext(createRequest(headers)),
 			),
 		).toThrow(UnauthorizedException);
 	});

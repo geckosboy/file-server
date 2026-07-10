@@ -2,6 +2,7 @@ import {
 	CanActivate,
 	ExecutionContext,
 	Injectable,
+	SetMetadata,
 	UnauthorizedException,
 	createParamDecorator,
 } from '@nestjs/common';
@@ -25,6 +26,10 @@ export const INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER =
 
 const ACTIVE_CLIENT_SERVICE_STATUS = 'ACTIVE';
 const MAX_CORRELATION_ID_LENGTH = 128;
+const INTERNAL_CONTEXT_DEFAULT_TTL_SECONDS = 30;
+const INTERNAL_CONTEXT_MAX_TTL_SECONDS = 60;
+const INTERNAL_CONTEXT_CLOCK_SKEW_SECONDS = 5;
+const INTERNAL_SERVICE_ACCESS_METADATA = Symbol('internal-service-access');
 
 export interface ClientServiceAuthContext {
 	clientServiceId: string;
@@ -34,12 +39,25 @@ export interface ClientServiceAuthContext {
 	keyPrefix: string;
 	requestId: string;
 	traceId?: string;
-	/**
-	 * 외부 Client Service가 보낸 원본 API key다.
-	 * 외부 인증 guard에서만 설정하고, 내부 앱 간 호출에는 전달하지 않는다.
-	 * 로그, 응답, 텔레메트리 payload에 넣으면 안 된다.
-	 */
-	apiKey?: string;
+}
+
+export interface InternalServiceAccessRequirement {
+	audience: string;
+	actions: readonly string[];
+}
+
+export interface InternalServiceAccessContext {
+	audience: string;
+	action: string;
+	issuedAt: number;
+	expiresAt: number;
+}
+
+export interface CreateInternalServiceForwardHeadersOptions {
+	audience: string;
+	action: string;
+	ttlSeconds?: number;
+	now?: Date;
 }
 
 export type ClientServiceTelemetryFields = Pick<
@@ -49,6 +67,7 @@ export type ClientServiceTelemetryFields = Pick<
 
 export interface ClientServiceAuthenticatedRequest extends Request {
 	clientServiceContext?: ClientServiceAuthContext;
+	internalServiceAccess?: InternalServiceAccessContext;
 	reqId?: string;
 	requestLogContext?: {
 		requestId: string;
@@ -78,7 +97,7 @@ type ClientServiceKeyWithService = Prisma.ClientServiceKeyGetPayload<{
 	include: { clientService: true };
 }>;
 
-type InternalClientServiceContextPayload = Pick<
+type InternalClientServiceIdentityPayload = Pick<
 	ClientServiceAuthContext,
 	| 'clientServiceId'
 	| 'clientServiceSlug'
@@ -88,6 +107,9 @@ type InternalClientServiceContextPayload = Pick<
 	| 'requestId'
 	| 'traceId'
 >;
+
+type InternalClientServiceContextPayload =
+	InternalClientServiceIdentityPayload & InternalServiceAccessContext;
 
 @Injectable()
 export class ClientServiceAuthService {
@@ -170,6 +192,7 @@ export class ClientServiceApiKeyGuard implements CanActivate {
 			readHeader(request, CLIENT_SERVICE_TRACE_ID_HEADER),
 		);
 
+		removePresentedClientApiKey(request);
 		request.headers[CLIENT_SERVICE_REQUEST_ID_HEADER] = requestId;
 		request.clientServiceContext = {
 			clientServiceId: authenticated.clientService.id,
@@ -179,7 +202,6 @@ export class ClientServiceApiKeyGuard implements CanActivate {
 			keyPrefix: authenticated.key.keyPrefix,
 			requestId,
 			traceId,
-			apiKey,
 		};
 		attachClientServiceLogContext(request, request.clientServiceContext);
 
@@ -209,10 +231,14 @@ export class InternalServiceGuard implements CanActivate {
 			throw new UnauthorizedException('내부 API 키가 올바르지 않습니다.');
 		}
 
-		request.clientServiceContext = readSignedInternalClientServiceContext(
+		const accessRequirement = readInternalServiceAccessRequirement(context);
+		const signedContext = readSignedInternalClientServiceContext(
 			request,
 			internalApiKey,
+			accessRequirement,
 		);
+		request.clientServiceContext = signedContext.context;
+		request.internalServiceAccess = signedContext.access;
 		request.headers[CLIENT_SERVICE_REQUEST_ID_HEADER] =
 			request.clientServiceContext.requestId;
 		if (request.clientServiceContext.traceId) {
@@ -236,6 +262,19 @@ export const getClientServiceContext = (
 	request?: Pick<ClientServiceAuthenticatedRequest, 'clientServiceContext'>,
 ): ClientServiceAuthContext | undefined => request?.clientServiceContext;
 
+export const getInternalServiceAccess = (
+	request?: Pick<ClientServiceAuthenticatedRequest, 'internalServiceAccess'>,
+): InternalServiceAccessContext | undefined => request?.internalServiceAccess;
+
+export const InternalServiceAccess = (
+	audience: string,
+	actions: string | readonly string[],
+) =>
+	SetMetadata(INTERNAL_SERVICE_ACCESS_METADATA, {
+		audience,
+		actions: typeof actions === 'string' ? [actions] : [...actions],
+	} satisfies InternalServiceAccessRequirement);
+
 export const createClientServiceTelemetryFields = (
 	context?: ClientServiceAuthContext | null,
 ): Partial<ClientServiceTelemetryFields> => {
@@ -251,25 +290,10 @@ export const createClientServiceTelemetryFields = (
 	};
 };
 
-export const createClientServiceForwardHeaders = (
-	context?: ClientServiceAuthContext | null,
-): Record<string, string> => {
-	if (!context?.apiKey) {
-		return {};
-	}
-
-	return {
-		[CLIENT_SERVICE_API_KEY_HEADER]: context.apiKey,
-		[CLIENT_SERVICE_REQUEST_ID_HEADER]: context.requestId,
-		...(context.traceId
-			? { [CLIENT_SERVICE_TRACE_ID_HEADER]: context.traceId }
-			: {}),
-	};
-};
-
 export const createInternalServiceForwardHeaders = (
 	context: ClientServiceAuthContext | null | undefined,
 	internalApiKey: string | null | undefined,
+	options: CreateInternalServiceForwardHeadersOptions,
 ): Record<string, string> => {
 	const normalizedInternalApiKey = normalizeInternalApiKey(internalApiKey);
 	if (!normalizedInternalApiKey) {
@@ -279,7 +303,24 @@ export const createInternalServiceForwardHeaders = (
 		throw new Error('클라이언트 서비스 컨텍스트가 필요합니다.');
 	}
 
-	const payload = pickInternalClientServiceContextPayload(context);
+	const ttlSeconds = options.ttlSeconds ?? INTERNAL_CONTEXT_DEFAULT_TTL_SECONDS;
+	if (
+		!Number.isInteger(ttlSeconds) ||
+		ttlSeconds <= 0 ||
+		ttlSeconds > INTERNAL_CONTEXT_MAX_TTL_SECONDS
+	) {
+		throw new Error(
+			`내부 클라이언트 컨텍스트 TTL은 1~${INTERNAL_CONTEXT_MAX_TTL_SECONDS}초여야 합니다.`,
+		);
+	}
+	const issuedAt = Math.floor((options.now ?? new Date()).getTime() / 1000);
+	const payload: InternalClientServiceContextPayload = {
+		...pickInternalClientServiceIdentityPayload(context),
+		audience: readRequiredInternalOption(options.audience, 'audience'),
+		action: readRequiredInternalOption(options.action, 'action'),
+		issuedAt,
+		expiresAt: issuedAt + ttlSeconds,
+	};
 	const encodedContext = encodeInternalContext(payload);
 
 	return {
@@ -346,10 +387,21 @@ function readClientServiceApiKey(request: Request): string | undefined {
 	return scheme?.toLowerCase() === 'bearer' && value ? value : undefined;
 }
 
+function removePresentedClientApiKey(request: Request) {
+	delete request.headers[CLIENT_SERVICE_API_KEY_HEADER];
+	const authorizationHeader = normalizeHeaderValue(
+		request.headers.authorization,
+	);
+	if (authorizationHeader?.toLowerCase().startsWith('bearer ')) {
+		delete request.headers.authorization;
+	}
+}
+
 function readSignedInternalClientServiceContext(
 	request: Request,
 	internalApiKey: string,
-): ClientServiceAuthContext {
+	requirement: InternalServiceAccessRequirement,
+): { context: ClientServiceAuthContext; access: InternalServiceAccessContext } {
 	const encodedContext = readHeader(request, INTERNAL_CLIENT_CONTEXT_HEADER);
 	const signature = readHeader(
 		request,
@@ -372,7 +424,10 @@ function readSignedInternalClientServiceContext(
 		const payload = JSON.parse(
 			decodeInternalContext(encodedContext),
 		) as Partial<Record<keyof InternalClientServiceContextPayload, unknown>>;
-		return pickInternalClientServiceContextPayload(payload);
+		const identity = pickInternalClientServiceIdentityPayload(payload);
+		const access = pickInternalServiceAccessContext(payload);
+		assertInternalServiceAccess(access, requirement);
+		return { context: identity, access };
 	} catch (error) {
 		if (error instanceof UnauthorizedException) {
 			throw error;
@@ -383,9 +438,9 @@ function readSignedInternalClientServiceContext(
 	}
 }
 
-function pickInternalClientServiceContextPayload(
+function pickInternalClientServiceIdentityPayload(
 	context: Partial<Record<keyof InternalClientServiceContextPayload, unknown>>,
-): InternalClientServiceContextPayload {
+): InternalClientServiceIdentityPayload {
 	const traceId = normalizeOptionalCorrelationId(
 		readInternalStringField(context, 'traceId', { optional: true }),
 	);
@@ -401,6 +456,82 @@ function pickInternalClientServiceContextPayload(
 		),
 		...(traceId ? { traceId } : {}),
 	};
+}
+
+function pickInternalServiceAccessContext(
+	context: Partial<Record<keyof InternalClientServiceContextPayload, unknown>>,
+): InternalServiceAccessContext {
+	return {
+		audience: readInternalStringField(context, 'audience'),
+		action: readInternalStringField(context, 'action'),
+		issuedAt: readInternalIntegerField(context, 'issuedAt'),
+		expiresAt: readInternalIntegerField(context, 'expiresAt'),
+	};
+}
+
+function assertInternalServiceAccess(
+	access: InternalServiceAccessContext,
+	requirement: InternalServiceAccessRequirement,
+) {
+	const now = Math.floor(Date.now() / 1000);
+	if (
+		access.audience !== requirement.audience ||
+		!requirement.actions.includes(access.action) ||
+		access.issuedAt > now + INTERNAL_CONTEXT_CLOCK_SKEW_SECONDS ||
+		access.expiresAt <= now ||
+		access.expiresAt <= access.issuedAt ||
+		access.expiresAt - access.issuedAt > INTERNAL_CONTEXT_MAX_TTL_SECONDS
+	) {
+		throw new UnauthorizedException(
+			'내부 클라이언트 컨텍스트의 대상, 동작 또는 유효 시간이 올바르지 않습니다.',
+		);
+	}
+}
+
+function readInternalServiceAccessRequirement(
+	context: ExecutionContext,
+): InternalServiceAccessRequirement {
+	const handler = context.getHandler?.();
+	const controller = context.getClass?.();
+	const requirement =
+		(handler
+			? Reflect.getMetadata(INTERNAL_SERVICE_ACCESS_METADATA, handler)
+			: undefined) ??
+		(controller
+			? Reflect.getMetadata(INTERNAL_SERVICE_ACCESS_METADATA, controller)
+			: undefined);
+	if (
+		!requirement ||
+		typeof requirement.audience !== 'string' ||
+		!Array.isArray(requirement.actions) ||
+		requirement.actions.length === 0
+	) {
+		throw new UnauthorizedException(
+			'내부 route의 audience/action 설정이 필요합니다.',
+		);
+	}
+	return requirement as InternalServiceAccessRequirement;
+}
+
+function readInternalIntegerField(
+	context: Partial<Record<keyof InternalClientServiceContextPayload, unknown>>,
+	field: 'issuedAt' | 'expiresAt',
+) {
+	const value = context[field];
+	if (!Number.isSafeInteger(value)) {
+		throw new UnauthorizedException(
+			'내부 클라이언트 컨텍스트 형식이 잘못되었습니다.',
+		);
+	}
+	return value as number;
+}
+
+function readRequiredInternalOption(value: string, label: string) {
+	const trimmed = value?.trim();
+	if (!trimmed || trimmed.length > 128) {
+		throw new Error(`내부 호출 ${label} 값이 필요합니다.`);
+	}
+	return trimmed;
 }
 
 function readInternalStringField(

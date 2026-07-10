@@ -14,6 +14,7 @@
 		"test": "pnpm exec jest --passWithNoTests"
 	},
 	"dependencies": {
+		"@file/image-contracts": "workspace:*",
 		"@nestjs/common": "^11.1.27",
 		"@prisma/adapter-pg": "^7.8.0",
 		"@prisma/client": "^7.8.0",
@@ -37,6 +38,10 @@
 			"**/*.(t|j)s"
 		],
 		"coverageDirectory": "../coverage",
-		"testEnvironment": "node"
+		"testEnvironment": "node",
+		"moduleNameMapper": {
+			"^@file/image-contracts$": "<rootDir>/../../image-contracts/src",
+			"^@file/image-contracts/(.*)$": "<rootDir>/../../image-contracts/src/$1"
+		}
 	}
 }

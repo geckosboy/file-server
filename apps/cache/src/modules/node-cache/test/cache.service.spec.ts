@@ -26,22 +26,28 @@ describe('캐시 서비스', () => {
 			contentType: 'image/png',
 		};
 
-		service.cacheImage('products|100|x|sample.png', cachedImage);
-		service.cacheImage('products|200|200|sample.png', cachedImage);
-		service.cacheImage('products|100|x|other.png', cachedImage);
+		service.cacheImage('service-1|products|100|x|png|sample.png', cachedImage);
+		service.cacheImage(
+			'service-1|products|200|200|png|sample.png',
+			cachedImage,
+		);
+		service.cacheImage('service-2|products|100|x|png|sample.png', cachedImage);
 
 		const deletedCount = service.deleteCachedImagesForImage({
+			clientServiceId: 'service-1',
 			path: 'products',
 			name: 'sample.png',
 		});
 
 		expect(deletedCount).toBe(2);
-		expect(service.getCachedImage('products|100|x|sample.png')).toBeUndefined();
 		expect(
-			service.getCachedImage('products|200|200|sample.png'),
+			service.getCachedImage('service-1|products|100|x|png|sample.png'),
 		).toBeUndefined();
-		expect(service.getCachedImage('products|100|x|other.png')).toBe(
-			cachedImage,
-		);
+		expect(
+			service.getCachedImage('service-1|products|200|200|png|sample.png'),
+		).toBeUndefined();
+		expect(
+			service.getCachedImage('service-2|products|100|x|png|sample.png'),
+		).toBe(cachedImage);
 	});
 });

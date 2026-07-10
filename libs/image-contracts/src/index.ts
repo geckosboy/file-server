@@ -13,6 +13,17 @@ import {
 	ValidateIf,
 } from 'class-validator';
 
+export {
+	matchesClientServicePathPattern,
+	normalizeClientServicePathPattern,
+	normalizeImageStoragePath,
+	normalizeSafeFileName,
+	normalizeSafeRelativePath,
+	resolveInside,
+	splitAndNormalizeImageKey,
+	toImageStoragePath,
+} from './path-security';
+
 /** Cache/Resize 앱에서 공유하는 이미지 조회 계약입니다. */
 export class ImageEntity {
 	@Type(() => Number)

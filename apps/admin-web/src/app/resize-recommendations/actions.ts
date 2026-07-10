@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { requireAdminWebSession } from '@/lib/admin-session';
 import {
 	TelemetryApiError,
 	createClientServiceImageResizeVariant,
@@ -21,6 +22,7 @@ export async function applyResizeRecommendationAction(
 	formData: FormData,
 ): Promise<ResizeRecommendationActionState> {
 	try {
+		await requireAdminWebSession();
 		const serviceId = readRequiredFormString(formData, 'serviceId');
 		const variantInput = {
 			width: readOptionalPositiveInteger(formData, 'width'),

@@ -1,23 +1,28 @@
 import { Injectable } from '@nestjs/common';
 import {
+	AdminAuditLogRecord,
 	ClientServiceImageResizePolicyRecord,
 	ClientServiceImageResizeVariantRecord,
 	ClientServiceLifecycleSubscriptionRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
+	ClientServicePolicyRecord,
 	ClientServiceStatus,
 	CreateClientServiceImageResizeVariantInput,
 	CreateClientServiceLifecycleSubscriptionInput,
 	CreateClientServiceInput,
+	CreateClientServicePolicyInput,
 	JsonObject,
 	UpdateClientServiceImageResizePolicyInput,
 	UpdateClientServiceImageResizeVariantInput,
 	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
+	UpdateClientServicePolicyInput,
 } from './client-services.types';
 
 export class ClientServiceNotFoundError extends Error {}
 export class ClientServiceKeyNotFoundError extends Error {}
+export class ClientServicePolicyNotFoundError extends Error {}
 export class ClientServiceLifecycleSubscriptionNotFoundError extends Error {}
 export class ClientServiceImageResizePolicyNotFoundError extends Error {}
 export class ClientServiceImageResizeVariantNotFoundError extends Error {}
@@ -49,6 +54,29 @@ export interface ClientServicesRepository {
 		keyId: string;
 		revokedAt: string;
 	}): Promise<ClientServiceKeyRecord>;
+	createPolicy(
+		input: CreateClientServicePolicyInput & { clientServiceId: string },
+	): Promise<ClientServicePolicyRecord>;
+	updatePolicy(
+		input: UpdateClientServicePolicyInput & {
+			clientServiceId: string;
+			policyId: string;
+		},
+	): Promise<ClientServicePolicyRecord>;
+	deletePolicy(input: {
+		clientServiceId: string;
+		policyId: string;
+	}): Promise<ClientServicePolicyRecord>;
+	createAuditLog(input: {
+		clientServiceId?: string;
+		actor: string;
+		requestId: string;
+		action: string;
+		targetType: string;
+		targetId: string;
+		metadata?: JsonObject;
+	}): Promise<AdminAuditLogRecord>;
+	listAuditLogs(clientServiceId: string): Promise<AdminAuditLogRecord[]>;
 	createLifecycleSubscription(
 		input: CreateClientServiceLifecycleSubscriptionInput & {
 			clientServiceId: string;
@@ -112,6 +140,28 @@ interface MutableClientServiceKey {
 	createdAt: string;
 }
 
+interface MutableClientServicePolicy {
+	id: string;
+	clientServiceId: string;
+	pathPattern: string;
+	canRead: boolean;
+	canUpload: boolean;
+	canDelete: boolean;
+	maxUploadBytes?: number;
+	rateLimitPerMin?: number;
+	metadata?: JsonObject;
+	createdAt: string;
+	updatedAt: string;
+}
+
+interface MutableAdminAuditLog extends Omit<
+	AdminAuditLogRecord,
+	'id' | 'createdAt'
+> {
+	id: string;
+	createdAt: string;
+}
+
 interface MutableClientServiceLifecycleSubscription {
 	id: string;
 	clientServiceId: string;
@@ -147,6 +197,8 @@ interface MutableClientServiceImageResizeVariant {
 export class InMemoryClientServicesRepository implements ClientServicesRepository {
 	private readonly services = new Map<string, MutableClientService>();
 	private readonly keys = new Map<string, MutableClientServiceKey>();
+	private readonly policies = new Map<string, MutableClientServicePolicy>();
+	private readonly auditLogs = new Map<string, MutableAdminAuditLog>();
 	private readonly lifecycleSubscriptions = new Map<
 		string,
 		MutableClientServiceLifecycleSubscription
@@ -277,6 +329,103 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 		const next = { ...key, revokedAt: input.revokedAt };
 		this.keys.set(key.id, next);
 		return toKeyRecord(next);
+	}
+
+	async createPolicy(
+		input: CreateClientServicePolicyInput & { clientServiceId: string },
+	): Promise<ClientServicePolicyRecord> {
+		if (!this.services.has(input.clientServiceId)) {
+			throw new ClientServiceNotFoundError(input.clientServiceId);
+		}
+		const now = new Date().toISOString();
+		const policy: MutableClientServicePolicy = {
+			id: `access_policy_${++this.sequence}`,
+			clientServiceId: input.clientServiceId,
+			pathPattern: input.pathPattern,
+			canRead: input.canRead ?? true,
+			canUpload: input.canUpload ?? false,
+			canDelete: input.canDelete ?? false,
+			maxUploadBytes: input.maxUploadBytes,
+			rateLimitPerMin: input.rateLimitPerMin,
+			metadata: input.metadata,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.policies.set(policy.id, policy);
+		return toPolicyRecord(policy);
+	}
+
+	async updatePolicy(
+		input: UpdateClientServicePolicyInput & {
+			clientServiceId: string;
+			policyId: string;
+		},
+	): Promise<ClientServicePolicyRecord> {
+		const policy = this.policies.get(input.policyId);
+		if (!policy || policy.clientServiceId !== input.clientServiceId) {
+			throw new ClientServicePolicyNotFoundError(input.policyId);
+		}
+		const next: MutableClientServicePolicy = {
+			...policy,
+			...stripUndefined({
+				pathPattern: input.pathPattern,
+				canRead: input.canRead,
+				canUpload: input.canUpload,
+				canDelete: input.canDelete,
+			}),
+			maxUploadBytes:
+				input.maxUploadBytes === null
+					? undefined
+					: (input.maxUploadBytes ?? policy.maxUploadBytes),
+			rateLimitPerMin:
+				input.rateLimitPerMin === null
+					? undefined
+					: (input.rateLimitPerMin ?? policy.rateLimitPerMin),
+			metadata:
+				input.metadata === null
+					? undefined
+					: (input.metadata ?? policy.metadata),
+			updatedAt: new Date().toISOString(),
+		};
+		this.policies.set(policy.id, next);
+		return toPolicyRecord(next);
+	}
+
+	async deletePolicy(input: {
+		clientServiceId: string;
+		policyId: string;
+	}): Promise<ClientServicePolicyRecord> {
+		const policy = this.policies.get(input.policyId);
+		if (!policy || policy.clientServiceId !== input.clientServiceId) {
+			throw new ClientServicePolicyNotFoundError(input.policyId);
+		}
+		this.policies.delete(policy.id);
+		return toPolicyRecord(policy);
+	}
+
+	async createAuditLog(input: {
+		clientServiceId?: string;
+		actor: string;
+		requestId: string;
+		action: string;
+		targetType: string;
+		targetId: string;
+		metadata?: JsonObject;
+	}): Promise<AdminAuditLogRecord> {
+		const auditLog: MutableAdminAuditLog = {
+			id: `audit_${++this.sequence}`,
+			...input,
+			createdAt: new Date().toISOString(),
+		};
+		this.auditLogs.set(auditLog.id, auditLog);
+		return { ...auditLog };
+	}
+
+	async listAuditLogs(clientServiceId: string): Promise<AdminAuditLogRecord[]> {
+		return [...this.auditLogs.values()]
+			.filter((log) => log.clientServiceId === clientServiceId)
+			.reverse()
+			.map((log) => ({ ...log }));
 	}
 
 	async createLifecycleSubscription(
@@ -429,6 +578,8 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 	async clear(): Promise<void> {
 		this.services.clear();
 		this.keys.clear();
+		this.policies.clear();
+		this.auditLogs.clear();
 		this.lifecycleSubscriptions.clear();
 		this.imageResizePolicies.clear();
 		this.imageResizeVariants.clear();
@@ -455,6 +606,9 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 		const imageResizePolicy = [...this.imageResizePolicies.values()].find(
 			(policy) => policy.clientServiceId === service.id,
 		);
+		const policies = [...this.policies.values()]
+			.filter((policy) => policy.clientServiceId === service.id)
+			.sort((left, right) => left.pathPattern.localeCompare(right.pathPattern));
 		return {
 			id: service.id,
 			slug: service.slug,
@@ -470,7 +624,9 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 			activeSubscriptionCount: lifecycleSubscriptions.filter(
 				(subscription) => subscription.isEnabled,
 			).length,
+			policyCount: policies.length,
 			...(includeKeys ? { keys: keys.map(toKeyRecord) } : {}),
+			...(includeKeys ? { policies: policies.map(toPolicyRecord) } : {}),
 			...(includeKeys
 				? {
 						lifecycleSubscriptions: lifecycleSubscriptions.map(
@@ -605,6 +761,12 @@ function toKeyRecord(key: MutableClientServiceKey): ClientServiceKeyRecord {
 		lastUsedAt: key.lastUsedAt,
 		createdAt: key.createdAt,
 	};
+}
+
+function toPolicyRecord(
+	policy: MutableClientServicePolicy,
+): ClientServicePolicyRecord {
+	return { ...policy };
 }
 
 function toLifecycleSubscriptionRecord(

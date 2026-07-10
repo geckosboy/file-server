@@ -20,6 +20,7 @@ const resolvePort = async (environmentName) =>
 const appPorts = {
 	telemetry: await resolvePort('SYSTEM_E2E_TELEMETRY_PORT'),
 	cache: await resolvePort('SYSTEM_E2E_CACHE_PORT'),
+	cacheReplica: await resolvePort('SYSTEM_E2E_CACHE_REPLICA_PORT'),
 	resize: await resolvePort('SYSTEM_E2E_RESIZE_PORT'),
 	storage: await resolvePort('SYSTEM_E2E_STORAGE_PORT'),
 };
@@ -43,6 +44,8 @@ const commonAppEnv = {
 const adminHeaders = {
 	'content-type': 'application/json',
 	'x-admin-token': adminToken,
+	'x-admin-actor': 'system-e2e',
+	'x-request-id': `system-e2e-admin-${process.pid}`,
 };
 
 const startApplications = async () => {
@@ -115,12 +118,28 @@ const startApplications = async () => {
 		child: cache,
 		timeoutMs: 45_000,
 	});
+
+	const cacheReplica = spawnService({
+		name: 'cache-replica',
+		entry: 'apps/cache/dist/apps/cache/src/main.js',
+		env: {
+			...commonAppEnv,
+			PORT: String(appPorts.cacheReplica),
+			RESIZING_SERVER: `http://127.0.0.1:${appPorts.resize}`,
+		},
+	});
+	children.push(cacheReplica);
+	await waitForHttp(`http://127.0.0.1:${appPorts.cacheReplica}/health-check`, {
+		child: cacheReplica,
+		timeoutMs: 45_000,
+	});
 };
 
 const runScenario = async () => {
 	const telemetryBaseUrl = `http://127.0.0.1:${appPorts.telemetry}`;
 	const storageBaseUrl = `http://127.0.0.1:${appPorts.storage}`;
 	const cacheBaseUrl = `http://127.0.0.1:${appPorts.cache}`;
+	const cacheReplicaBaseUrl = `http://127.0.0.1:${appPorts.cacheReplica}`;
 
 	const service = await fetchJson(
 		`${telemetryBaseUrl}/api/admin/client-services`,
@@ -136,6 +155,22 @@ const runScenario = async () => {
 		201,
 	);
 	assert.equal(typeof service.id, 'string');
+	await fetchJson(
+		`${telemetryBaseUrl}/api/admin/client-services/${service.id}/policies`,
+		{
+			method: 'POST',
+			headers: adminHeaders,
+			body: JSON.stringify({
+				pathPattern: 'system-e2e/image',
+				canRead: true,
+				canUpload: true,
+				canDelete: true,
+				maxUploadBytes: 1_048_576,
+				rateLimitPerMin: 3,
+			}),
+		},
+		201,
+	);
 
 	const keyResult = await fetchJson(
 		`${telemetryBaseUrl}/api/admin/client-services/${service.id}/keys`,
@@ -148,6 +183,46 @@ const runScenario = async () => {
 	);
 	assert.equal(typeof keyResult.apiKey, 'string');
 	const clientHeaders = { 'x-client-api-key': keyResult.apiKey };
+
+	const otherService = await fetchJson(
+		`${telemetryBaseUrl}/api/admin/client-services`,
+		{
+			method: 'POST',
+			headers: adminHeaders,
+			body: JSON.stringify({
+				slug: `system-e2e-other-${process.pid}`,
+				name: 'System E2E Other',
+				owner: 'ci',
+			}),
+		},
+		201,
+	);
+	await fetchJson(
+		`${telemetryBaseUrl}/api/admin/client-services/${otherService.id}/policies`,
+		{
+			method: 'POST',
+			headers: adminHeaders,
+			body: JSON.stringify({
+				pathPattern: 'system-e2e-other/image',
+				canRead: true,
+				canUpload: true,
+				canDelete: true,
+			}),
+		},
+		201,
+	);
+	const otherKeyResult = await fetchJson(
+		`${telemetryBaseUrl}/api/admin/client-services/${otherService.id}/keys`,
+		{
+			method: 'POST',
+			headers: adminHeaders,
+			body: JSON.stringify({ name: 'system-e2e-other' }),
+		},
+		201,
+	);
+	const otherClientHeaders = {
+		'x-client-api-key': otherKeyResult.apiKey,
+	};
 
 	const imageBuffer = Buffer.from(
 		'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR42mP8z8AARAwMjDAGAAANHQEDasKb6QAAAABJRU5ErkJggg==',
@@ -184,10 +259,46 @@ const runScenario = async () => {
 	assert.match(firstRead.headers.get('content-type') ?? '', /^image\/webp/);
 	assert.ok(firstBytes.byteLength > 0);
 
+	const crossTenantRead = await fetch(imageUrl, {
+		headers: otherClientHeaders,
+	});
+	assert.equal(crossTenantRead.status, 403);
+
+	const unauthorizedUploadForm = new FormData();
+	unauthorizedUploadForm.set('path', 'system-e2e/image');
+	unauthorizedUploadForm.set(
+		'file',
+		new Blob([imageBuffer], { type: 'image/png' }),
+		'cross-tenant.png',
+	);
+	const crossTenantUpload = await fetch(`${storageBaseUrl}/image`, {
+		method: 'POST',
+		headers: otherClientHeaders,
+		body: unauthorizedUploadForm,
+	});
+	assert.equal(crossTenantUpload.status, 403);
+
+	const crossTenantDelete = await fetch(
+		`${storageBaseUrl}/image?imageKey=${encodeURIComponent(uploadBody.imageKey)}`,
+		{ method: 'DELETE', headers: otherClientHeaders },
+	);
+	assert.equal(crossTenantDelete.status, 403);
+
 	const secondRead = await fetch(imageUrl, { headers: clientHeaders });
 	const secondBytes = Buffer.from(await secondRead.arrayBuffer());
 	assert.equal(secondRead.status, 200);
 	assert.deepEqual(secondBytes, firstBytes);
+
+	const replicaImageUrl = new URL(imageUrl.pathname, cacheReplicaBaseUrl);
+	replicaImageUrl.search = imageUrl.search;
+	const replicaAllowedRead = await fetch(replicaImageUrl, {
+		headers: clientHeaders,
+	});
+	assert.equal(replicaAllowedRead.status, 200);
+	const replicaRateLimitedRead = await fetch(replicaImageUrl, {
+		headers: clientHeaders,
+	});
+	assert.equal(replicaRateLimitedRead.status, 429);
 
 	await poll(async () => {
 		const result = await fetchJson(
@@ -226,7 +337,7 @@ const runScenario = async () => {
 	);
 
 	console.log(
-		`System E2E 통과: upload=${uploadBody.imageKey}, cache/resize/storage chain, telemetry, lifecycle`,
+		`System E2E 통과: upload=${uploadBody.imageKey}, cross-tenant 403, shared replica rate-limit 429, cache/resize/storage chain, telemetry, lifecycle`,
 	);
 };
 

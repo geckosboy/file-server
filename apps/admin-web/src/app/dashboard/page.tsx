@@ -20,6 +20,7 @@ import {
 	fetchDashboardSummary,
 	fetchDashboardTimeseries,
 	fetchImages,
+	isAdminFixtureFallbackEnabled,
 	type ClientServiceItem,
 	type DashboardData,
 	type DashboardQuery,
@@ -222,6 +223,32 @@ async function fetchDashboardData(
 			filters,
 		};
 	} catch {
+		if (!isAdminFixtureFallbackEnabled()) {
+			return {
+				data: {
+					summary: {
+						range: { from: query.from!, to: query.to! },
+						totalEvents: 0,
+						totalReads: 0,
+						totalUploads: 0,
+						totalResizes: 0,
+						cacheHitRate: null,
+						cacheMissRate: null,
+						failureRate: null,
+						avgDurationMs: null,
+						p95DurationMs: null,
+						totalInputBytes: 0,
+						totalOutputBytes: 0,
+					},
+					timeseries: [],
+					topImages: [],
+				},
+				services: [],
+				filters,
+				errorMessage:
+					'텔레메트리 API에 연결할 수 없습니다. 운영 데이터 대신 빈 상태를 표시합니다.',
+			};
+		}
 		return {
 			data: dashboardDataFixture,
 			services: clientServicesFixture,

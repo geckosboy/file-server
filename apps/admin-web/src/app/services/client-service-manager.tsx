@@ -5,6 +5,7 @@ import { formatDateTime } from '@/lib/format';
 import type {
 	ClientServiceImageResizeVariantItem,
 	ClientServiceItem,
+	ClientServicePolicyItem,
 } from '@/lib/telemetry-api';
 import { submitClientServiceAction, type ServicesActionState } from './actions';
 
@@ -138,6 +139,10 @@ function ServiceCard({
 					<span>활성 key</span>
 				</div>
 				<div>
+					<strong>{service.policyCount}</strong>
+					<span>접근 정책</span>
+				</div>
+				<div>
 					<strong>{service.subscriptionCount}</strong>
 					<span>전체 subscription</span>
 				</div>
@@ -160,6 +165,12 @@ function ServiceCard({
 					<span>최근 수정</span>
 				</div>
 			</div>
+
+			<AccessPolicySection
+				formAction={formAction}
+				isPending={isPending}
+				service={service}
+			/>
 
 			<form action={formAction} className="sub-form">
 				<input name="intent" type="hidden" value="update-service" />
@@ -204,7 +215,7 @@ function ServiceCard({
 					scopes JSON
 					<textarea
 						name="scopes"
-						defaultValue={'{"telemetry":"write"}'}
+						defaultValue={'{"actions":["read","upload","delete"]}'}
 						rows={3}
 					/>
 				</label>
@@ -410,6 +421,206 @@ function ServiceCard({
 				service={service}
 			/>
 		</article>
+	);
+}
+
+function AccessPolicySection({
+	service,
+	formAction,
+	isPending,
+}: {
+	service: ClientServiceItem;
+	formAction: (payload: FormData) => void;
+	isPending: boolean;
+}) {
+	const policies = service.policies ?? [];
+	return (
+		<section className="key-list" aria-label={`${service.name} 접근 정책`}>
+			<div className="panel-heading">
+				<div>
+					<h3>Tenant path 접근 정책</h3>
+					<p>
+						canonical storage path 기준으로 read/upload/delete, 업로드 크기와
+						분당 요청 한도를 설정합니다. *는 한 segment, **는 여러
+						segment입니다.
+					</p>
+				</div>
+			</div>
+
+			<form action={formAction} className="sub-form">
+				<input name="intent" type="hidden" value="create-access-policy" />
+				<input name="serviceId" type="hidden" value={service.id} />
+				<label>
+					path pattern
+					<input name="pathPattern" placeholder="catalog/**/image" required />
+				</label>
+				<PolicyBooleanSelect label="read" name="canRead" value />
+				<PolicyBooleanSelect label="upload" name="canUpload" value={false} />
+				<PolicyBooleanSelect label="delete" name="canDelete" value={false} />
+				<label>
+					max upload bytes
+					<input min={1} name="maxUploadBytes" type="number" />
+				</label>
+				<label>
+					rate limit / min
+					<input min={1} name="rateLimitPerMin" type="number" />
+				</label>
+				<label>
+					metadata JSON
+					<textarea
+						name="metadata"
+						placeholder='{"owner":"commerce"}'
+						rows={2}
+					/>
+				</label>
+				<button className="button" disabled={isPending} type="submit">
+					접근 정책 등록
+				</button>
+			</form>
+
+			{policies.length ? (
+				<table>
+					<thead>
+						<tr>
+							<th>pattern / permissions</th>
+							<th>limits</th>
+							<th>관리</th>
+						</tr>
+					</thead>
+					<tbody>
+						{policies.map((policy) => (
+							<PolicyRow
+								formAction={formAction}
+								isPending={isPending}
+								key={policy.id}
+								policy={policy}
+								serviceId={service.id}
+							/>
+						))}
+					</tbody>
+				</table>
+			) : (
+				<p className="empty-state">
+					접근 정책이 없어 모든 이미지 동작이 기본 거부됩니다.
+				</p>
+			)}
+		</section>
+	);
+}
+
+function PolicyRow({
+	policy,
+	serviceId,
+	formAction,
+	isPending,
+}: {
+	policy: ClientServicePolicyItem;
+	serviceId: string;
+	formAction: (payload: FormData) => void;
+	isPending: boolean;
+}) {
+	return (
+		<tr>
+			<td>
+				<strong>{policy.pathPattern}</strong>
+				<br />
+				R:{String(policy.canRead)} U:{String(policy.canUpload)} D:
+				{String(policy.canDelete)}
+			</td>
+			<td>
+				{policy.maxUploadBytes ?? 'global'} bytes /{' '}
+				{policy.rateLimitPerMin ?? 'unlimited'} rpm
+			</td>
+			<td>
+				<form action={formAction} className="inline-form">
+					<input name="intent" type="hidden" value="update-access-policy" />
+					<input name="serviceId" type="hidden" value={serviceId} />
+					<input name="policyId" type="hidden" value={policy.id} />
+					<input
+						aria-label="path pattern"
+						defaultValue={policy.pathPattern}
+						name="pathPattern"
+						required
+					/>
+					<PolicyBooleanSelect
+						label="read"
+						name="canRead"
+						value={policy.canRead}
+					/>
+					<PolicyBooleanSelect
+						label="upload"
+						name="canUpload"
+						value={policy.canUpload}
+					/>
+					<PolicyBooleanSelect
+						label="delete"
+						name="canDelete"
+						value={policy.canDelete}
+					/>
+					<input
+						aria-label="max upload bytes"
+						defaultValue={policy.maxUploadBytes ?? ''}
+						min={1}
+						name="maxUploadBytes"
+						type="number"
+					/>
+					<input
+						aria-label="rate limit per minute"
+						defaultValue={policy.rateLimitPerMin ?? ''}
+						min={1}
+						name="rateLimitPerMin"
+						type="number"
+					/>
+					<textarea
+						aria-label="policy metadata"
+						defaultValue={
+							policy.metadata ? JSON.stringify(policy.metadata) : ''
+						}
+						name="metadata"
+						rows={2}
+					/>
+					<button
+						className="button button-secondary"
+						disabled={isPending}
+						type="submit"
+					>
+						저장
+					</button>
+				</form>
+				<form action={formAction}>
+					<input name="intent" type="hidden" value="delete-access-policy" />
+					<input name="serviceId" type="hidden" value={serviceId} />
+					<input name="policyId" type="hidden" value={policy.id} />
+					<button
+						className="button button-danger"
+						disabled={isPending}
+						type="submit"
+					>
+						삭제
+					</button>
+				</form>
+			</td>
+		</tr>
+	);
+}
+
+function PolicyBooleanSelect({
+	label,
+	name,
+	value,
+}: {
+	label: string;
+	name: string;
+	value: boolean;
+}) {
+	return (
+		<label>
+			{label}
+			<select defaultValue={String(value)} name={name}>
+				<option value="true">허용</option>
+				<option value="false">거부</option>
+			</select>
+		</label>
 	);
 }
 

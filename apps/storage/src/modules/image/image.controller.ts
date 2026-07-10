@@ -5,7 +5,6 @@ import {
 	Delete,
 	Get,
 	HttpStatus,
-	MaxFileSizeValidator,
 	Param,
 	ParseFilePipe,
 	Post,
@@ -15,41 +14,60 @@ import {
 	UseGuards,
 	UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { File } from '@file/global';
 import {
+	ClientServiceAction,
 	ClientServiceApiKeyGuard,
 	ClientServiceAuthContext,
+	ClientServiceAuthorizationService,
 	ClientServiceContext,
+	InternalServiceAccess,
 	InternalServiceGuard,
 } from '@file/database';
 import { Response } from 'express';
 import { lookup } from 'mime-types';
 import { ImageService } from './image.service';
-import imageMulterOptions from './storages/diskStorage';
 import {
 	DeleteImageDto,
 	GetImageDto,
 	ImageQueryDto,
 	UploadImageDto,
+	normalizeImageStoragePath,
+	normalizeSafeFileName,
+	normalizeSafeRelativePath,
+	splitAndNormalizeImageKey,
+	toImageStoragePath,
 } from '@file/image-contracts';
+import { PolicyAwareImageUploadInterceptor } from './policy-aware-image-upload.interceptor';
 
 @Controller('image')
 export class ImageController {
-	constructor(private readonly imageService: ImageService) {}
+	constructor(
+		private readonly imageService: ImageService,
+		private readonly authorization: ClientServiceAuthorizationService,
+	) {}
 
 	@Get(':path/:name')
 	@UseGuards(InternalServiceGuard)
+	@InternalServiceAccess('storage', 'image.read')
 	async getFile(
 		@Param() imageDto: GetImageDto,
 		@Query() imageQuery: ImageQueryDto,
 		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Res() res: Response,
 	) {
+		const path = normalizeSafeRelativePath(imageDto.path, 'image path');
+		const normalizedName = normalizeSafeFileName(imageDto.name);
+		await this.authorization.authorize({
+			context: clientServiceContext,
+			action: ClientServiceAction.Read,
+			normalizedPath: toImageStoragePath(path),
+			consumeRateLimit: false,
+		});
 		const { image, name, preGeneratedVariant } =
 			await this.imageService.getImage(
 				{
-					...imageDto,
+					path,
+					name: normalizedName,
 					...imageQuery,
 				},
 				clientServiceContext,
@@ -70,20 +88,13 @@ export class ImageController {
 
 	@Post()
 	@UseGuards(ClientServiceApiKeyGuard)
-	@UseInterceptors(FileInterceptor('file', imageMulterOptions))
+	@UseInterceptors(PolicyAwareImageUploadInterceptor)
 	async uploadFile(
 		@Res()
 		res: Response,
 		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Body() imageDto: UploadImageDto,
-		@UploadedFile(
-			new ParseFilePipe({
-				validators: [
-					new MaxFileSizeValidator({ maxSize: File.FileMaximumSize.Image }),
-				],
-			}),
-		)
-		file: Express.Multer.File,
+		@UploadedFile(new ParseFilePipe()) file: Express.Multer.File,
 	) {
 		const result = await this.imageService.uploadFile({
 			file,
@@ -103,6 +114,12 @@ export class ImageController {
 		@Query() imageDto: DeleteImageDto,
 	) {
 		const target = resolveDeleteImageTarget(imageDto);
+		await this.authorization.authorize({
+			context: clientServiceContext,
+			action: ClientServiceAction.Delete,
+			normalizedPath: target.path,
+			consumeRateLimit: true,
+		});
 		await this.imageService.deleteImage({
 			name: target.name,
 			path: target.path,
@@ -115,18 +132,7 @@ export class ImageController {
 
 function resolveDeleteImageTarget(imageDto: DeleteImageDto) {
 	if (imageDto.imageKey) {
-		const separatorIndex = imageDto.imageKey.lastIndexOf('/');
-		if (
-			separatorIndex <= 0 ||
-			separatorIndex === imageDto.imageKey.length - 1
-		) {
-			throw new BadRequestException('imageKey 형식이 잘못되었습니다.');
-		}
-
-		return {
-			path: imageDto.imageKey.slice(0, separatorIndex),
-			name: imageDto.imageKey.slice(separatorIndex + 1),
-		};
+		return splitAndNormalizeImageKey(imageDto.imageKey);
 	}
 
 	if (!imageDto.path || !imageDto.name) {
@@ -134,7 +140,7 @@ function resolveDeleteImageTarget(imageDto: DeleteImageDto) {
 	}
 
 	return {
-		path: imageDto.path,
-		name: imageDto.name,
+		path: normalizeImageStoragePath(imageDto.path),
+		name: normalizeSafeFileName(imageDto.name),
 	};
 }

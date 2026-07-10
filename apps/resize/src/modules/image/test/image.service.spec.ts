@@ -40,7 +40,6 @@ const clientServiceContext: ClientServiceAuthContext = {
 	clientServiceKeyId: 'key-1',
 	keyPrefix: 'prefix-1',
 	requestId: 'req-resize-1',
-	apiKey: 'fs_prefix_secret',
 };
 
 type KafkaEmitPayload = { key: string; value: string };

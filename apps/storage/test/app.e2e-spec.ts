@@ -1,14 +1,19 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+	ForbiddenException,
+	INestApplication,
+	ValidationPipe,
+} from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
 	ClientServiceApiKeyGuard,
 	ClientServiceAuthContext,
 	ClientServiceAuthService,
+	ClientServiceAuthorizationService,
 	InternalServiceGuard,
 	createInternalServiceForwardHeaders,
 } from '@file/database';
-import { rm } from 'fs/promises';
+import { readdir, rm } from 'fs/promises';
 import * as path from 'path';
 import { of } from 'rxjs';
 import request, { type Test as SuperTestRequest } from 'supertest';
@@ -17,6 +22,7 @@ import { Root } from '../src/enum';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageService } from '../src/modules/image/image.service';
+import { PolicyAwareImageUploadInterceptor } from '../src/modules/image/policy-aware-image-upload.interceptor';
 import {
 	IMAGE_TELEMETRY_TOPIC,
 	ImageTelemetryEventType,
@@ -95,6 +101,7 @@ const internalAuthorized = (agent: SuperTestRequest) => {
 	const headers = createInternalServiceForwardHeaders(
 		clientServiceContext,
 		testInternalApiKey,
+		{ audience: 'storage', action: 'image.read' },
 	);
 	return Object.entries(headers).reduce(
 		(req, [name, value]) => req.set(name, value),
@@ -116,6 +123,7 @@ describe('스토리지 앱 e2e', () => {
 		>
 	>;
 	let authService: ReturnType<typeof createAuthService>;
+	let authorization: { authorize: jest.Mock };
 
 	const getTelemetryPayloads = () =>
 		imageClient.emit.mock.calls
@@ -148,16 +156,24 @@ describe('스토리지 앱 e2e', () => {
 			findPreGeneratedVariantForRequest: jest.fn().mockResolvedValue(null),
 		};
 		authService = createAuthService();
+		authorization = {
+			authorize: jest.fn().mockResolvedValue({ allowed: true }),
+		};
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
 			providers: [
 				ImageService,
+				PolicyAwareImageUploadInterceptor,
 				ClientServiceApiKeyGuard,
 				InternalServiceGuard,
 				{
 					provide: ClientServiceAuthService,
 					useValue: authService,
+				},
+				{
+					provide: ClientServiceAuthorizationService,
+					useValue: authorization,
 				},
 				PngStrategy,
 				JpegStrategy,
@@ -222,6 +238,42 @@ describe('스토리지 앱 e2e', () => {
 		await authorized(
 			request(app.getHttpServer()).get('/image/e2e-storage/sample.png'),
 		).expect(401);
+	});
+
+	it('정책 maxUploadBytes를 넘으면 413이고 임시 파일을 남기지 않는다', async () => {
+		const image = await createPngImage();
+		authorization.authorize.mockResolvedValue({
+			allowed: true,
+			maxUploadBytes: image.byteLength - 1,
+		});
+
+		await authorized(request(app.getHttpServer()).post('/image'))
+			.field('path', 'e2e-storage/image')
+			.attach('file', image, {
+				filename: 'too-large.png',
+				contentType: 'image/png',
+			})
+			.expect(413);
+
+		await expect(readdir(tempRoot)).resolves.toEqual([]);
+	});
+
+	it('beforeName 교체는 delete 권한이 없으면 403이고 임시 파일을 제거한다', async () => {
+		const image = await createPngImage();
+		authorization.authorize
+			.mockResolvedValueOnce({ allowed: true })
+			.mockRejectedValueOnce(new ForbiddenException());
+
+		await authorized(request(app.getHttpServer()).post('/image'))
+			.field('path', 'e2e-storage/image')
+			.field('beforeName', 'previous.png')
+			.attach('file', image, {
+				filename: 'replacement.png',
+				contentType: 'image/png',
+			})
+			.expect(403);
+
+		await expect(readdir(tempRoot)).resolves.toEqual([]);
 	});
 
 	it('업로드 이미지를 path/image/name 규칙으로 저장하고 조회와 삭제를 수행한다', async () => {

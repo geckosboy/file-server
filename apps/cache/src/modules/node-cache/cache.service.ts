@@ -27,20 +27,24 @@ export class CacheService {
 	}
 
 	deleteCachedImagesForImage({
+		clientServiceId,
 		name,
 		path,
 	}: {
+		clientServiceId: string;
 		path: string;
 		name: string;
 	}): number {
 		const keys = this.imageCache.keys().filter((key) => {
-			const [cachePath, , , cacheName, ...rest] = key.split('|');
-			if (rest.length || !cachePath || !cacheName) {
+			const [cacheClientServiceId, cachePath, , , , cacheName, ...rest] =
+				key.split('|');
+			if (rest.length || !cacheClientServiceId || !cachePath || !cacheName) {
 				return false;
 			}
 
 			try {
 				return (
+					decodeURIComponent(cacheClientServiceId) === clientServiceId &&
 					decodeURIComponent(cachePath) === path &&
 					decodeURIComponent(cacheName) === name
 				);

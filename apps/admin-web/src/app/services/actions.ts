@@ -4,12 +4,15 @@ import { revalidatePath } from 'next/cache';
 import {
 	createClientService,
 	createClientServiceKey,
+	createClientServicePolicy,
 	createClientServiceImageResizeVariant,
 	createClientServiceLifecycleSubscription,
 	deleteClientServiceImageResizeVariant,
+	deleteClientServicePolicy,
 	fetchClientServiceDetailsList,
 	revokeClientServiceKey,
 	updateClientService,
+	updateClientServicePolicy,
 	updateClientServiceImageResizePolicy,
 	updateClientServiceImageResizeVariant,
 	updateClientServiceLifecycleSubscription,
@@ -19,6 +22,7 @@ import {
 	type ImageResizeMode,
 	type LifecycleEventType,
 } from '@/lib/telemetry-api';
+import { requireAdminWebSession } from '@/lib/admin-session';
 
 export interface GeneratedKeyNotice {
 	serviceName: string;
@@ -38,6 +42,7 @@ export async function submitClientServiceAction(
 	formData: FormData,
 ): Promise<ServicesActionState> {
 	try {
+		await requireAdminWebSession();
 		const intent = readRequiredFormString(formData, 'intent');
 		const generatedKey = await runIntent(intent, formData);
 		revalidatePath('/services');
@@ -97,6 +102,47 @@ async function runIntent(
 			apiKey: result.apiKey,
 			keyPrefix: result.key.keyPrefix,
 		};
+	}
+
+	if (intent === 'create-access-policy') {
+		await createClientServicePolicy(
+			readRequiredFormString(formData, 'serviceId'),
+			{
+				pathPattern: readRequiredFormString(formData, 'pathPattern'),
+				canRead: readEnabledField(formData, 'canRead'),
+				canUpload: readEnabledField(formData, 'canUpload'),
+				canDelete: readEnabledField(formData, 'canDelete'),
+				maxUploadBytes: readOptionalPolicyInteger(formData, 'maxUploadBytes'),
+				rateLimitPerMin: readOptionalPolicyInteger(formData, 'rateLimitPerMin'),
+				metadata: readOptionalJsonObject(formData, 'metadata'),
+			},
+		);
+		return undefined;
+	}
+
+	if (intent === 'update-access-policy') {
+		await updateClientServicePolicy(
+			readRequiredFormString(formData, 'serviceId'),
+			readRequiredFormString(formData, 'policyId'),
+			{
+				pathPattern: readRequiredFormString(formData, 'pathPattern'),
+				canRead: readEnabledField(formData, 'canRead'),
+				canUpload: readEnabledField(formData, 'canUpload'),
+				canDelete: readEnabledField(formData, 'canDelete'),
+				maxUploadBytes: readNullablePolicyInteger(formData, 'maxUploadBytes'),
+				rateLimitPerMin: readNullablePolicyInteger(formData, 'rateLimitPerMin'),
+				metadata: readNullableJsonObject(formData, 'metadata'),
+			},
+		);
+		return undefined;
+	}
+
+	if (intent === 'delete-access-policy') {
+		await deleteClientServicePolicy(
+			readRequiredFormString(formData, 'serviceId'),
+			readRequiredFormString(formData, 'policyId'),
+		);
+		return undefined;
 	}
 
 	if (intent === 'create-lifecycle-subscription') {
@@ -198,6 +244,15 @@ function successMessage(intent: string) {
 	if (intent === 'create-key') {
 		return 'API key를 발급했습니다. 원문은 지금 한 번만 표시됩니다.';
 	}
+	if (intent === 'create-access-policy') {
+		return '접근 정책을 등록했습니다.';
+	}
+	if (intent === 'update-access-policy') {
+		return '접근 정책을 저장했습니다.';
+	}
+	if (intent === 'delete-access-policy') {
+		return '접근 정책을 삭제했습니다.';
+	}
 	if (intent === 'create-lifecycle-subscription') {
 		return 'lifecycle subscription을 등록했습니다.';
 	}
@@ -273,6 +328,14 @@ function readEnabled(formData: FormData) {
 	return value === 'true';
 }
 
+function readEnabledField(formData: FormData, key: string) {
+	const value = readRequiredFormString(formData, key);
+	if (value !== 'true' && value !== 'false') {
+		throw new Error(`${key} 값은 true 또는 false여야 합니다.`);
+	}
+	return value === 'true';
+}
+
 function readImageResizeMode(formData: FormData): ImageResizeMode {
 	const mode = readRequiredFormString(formData, 'mode');
 	if (mode !== 'ON_DEMAND' && mode !== 'PRE_GENERATE') {
@@ -300,6 +363,36 @@ function readOptionalPositiveInteger(formData: FormData, key: string) {
 		throw new Error(`${key}는 1~10000 사이의 정수여야 합니다.`);
 	}
 	return parsed;
+}
+
+function readOptionalPolicyInteger(formData: FormData, key: string) {
+	const value = readOptionalFormString(formData, key);
+	if (value === undefined) return undefined;
+	const parsed = Number(value);
+	if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 2_147_483_647) {
+		throw new Error(`${key}는 양의 32-bit 정수여야 합니다.`);
+	}
+	return parsed;
+}
+
+function readNullablePolicyInteger(formData: FormData, key: string) {
+	return readOptionalFormString(formData, key) === undefined
+		? null
+		: readOptionalPolicyInteger(formData, key);
+}
+
+function readOptionalJsonObject(formData: FormData, key: string) {
+	const raw = readOptionalFormString(formData, key);
+	if (!raw) return undefined;
+	const parsed = JSON.parse(raw) as unknown;
+	if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+		throw new Error(`${key}는 JSON object 형태여야 합니다.`);
+	}
+	return parsed as Record<string, unknown>;
+}
+
+function readNullableJsonObject(formData: FormData, key: string) {
+	return readOptionalJsonObject(formData, key) ?? null;
 }
 
 function assertHasResizeDimension(input: { width?: number; height?: number }) {

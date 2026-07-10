@@ -5,6 +5,8 @@ import {
 	buildClientServiceImageResizeVariantsUrl,
 	buildClientServiceLifecycleSubscriptionUrl,
 	buildClientServiceLifecycleSubscriptionsUrl,
+	buildClientServicePoliciesUrl,
+	buildClientServicePolicyUrl,
 	buildClientServiceKeyRevokeUrl,
 	buildClientServiceKeysUrl,
 	buildClientServiceUrl,
@@ -15,7 +17,9 @@ import {
 	buildImageResizeRecommendationsUrl,
 	buildLifecycleEventsUrl,
 	fetchTelemetryJson,
+	getTelemetryApiBaseUrl,
 	getTelemetryAdminToken,
+	isAdminFixtureFallbackEnabled,
 	toMetricDisplay,
 } from '.././telemetry-api';
 
@@ -23,6 +27,11 @@ describe('텔레메트리 API 클라이언트', () => {
 	const originalTelemetryAdminToken = process.env.TELEMETRY_ADMIN_TOKEN;
 	const originalPublicTelemetryAdminToken =
 		process.env.NEXT_PUBLIC_TELEMETRY_ADMIN_TOKEN;
+	const originalNodeEnv = process.env.NODE_ENV;
+	const originalTelemetryApiBaseUrl = process.env.TELEMETRY_API_BASE_URL;
+	const originalPublicTelemetryApiBaseUrl =
+		process.env.NEXT_PUBLIC_TELEMETRY_API_BASE_URL;
+	const originalFixtureFlag = process.env.ADMIN_WEB_ENABLE_FIXTURES;
 
 	afterEach(() => {
 		if (originalTelemetryAdminToken === undefined) {
@@ -36,6 +45,13 @@ describe('텔레메트리 API 클라이언트', () => {
 			process.env.NEXT_PUBLIC_TELEMETRY_ADMIN_TOKEN =
 				originalPublicTelemetryAdminToken;
 		}
+		restoreEnv('NODE_ENV', originalNodeEnv);
+		restoreEnv('TELEMETRY_API_BASE_URL', originalTelemetryApiBaseUrl);
+		restoreEnv(
+			'NEXT_PUBLIC_TELEMETRY_API_BASE_URL',
+			originalPublicTelemetryApiBaseUrl,
+		);
+		restoreEnv('ADMIN_WEB_ENABLE_FIXTURES', originalFixtureFlag);
 		jest.restoreAllMocks();
 	});
 
@@ -171,6 +187,21 @@ describe('텔레메트리 API 클라이언트', () => {
 			'https://telemetry.test/api/admin/client-services/svc-1/lifecycle-subscriptions',
 		);
 		expect(
+			buildClientServicePoliciesUrl(
+				'svc-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe('https://telemetry.test/api/admin/client-services/svc-1/policies');
+		expect(
+			buildClientServicePolicyUrl(
+				'svc-1',
+				'policy-1',
+				'https://telemetry.test/api/admin',
+			),
+		).toBe(
+			'https://telemetry.test/api/admin/client-services/svc-1/policies/policy-1',
+		);
+		expect(
 			buildClientServiceLifecycleSubscriptionUrl(
 				'svc-1',
 				'sub-1',
@@ -233,4 +264,31 @@ describe('텔레메트리 API 클라이언트', () => {
 		process.env.TELEMETRY_ADMIN_TOKEN = 'server-token';
 		expect(getTelemetryAdminToken()).toBe('server-token');
 	});
+
+	it('개발 기본 API 포트는 telemetry-api 3100과 일치한다', () => {
+		setEnv('NODE_ENV', 'test');
+		delete process.env.TELEMETRY_API_BASE_URL;
+		delete process.env.NEXT_PUBLIC_TELEMETRY_API_BASE_URL;
+
+		expect(getTelemetryApiBaseUrl()).toBe('http://localhost:3100/api/admin');
+	});
+
+	it('production에서 API URL 누락과 fixture fallback을 fail-closed한다', () => {
+		setEnv('NODE_ENV', 'production');
+		delete process.env.TELEMETRY_API_BASE_URL;
+		delete process.env.NEXT_PUBLIC_TELEMETRY_API_BASE_URL;
+		process.env.ADMIN_WEB_ENABLE_FIXTURES = 'true';
+
+		expect(() => getTelemetryApiBaseUrl()).toThrow('TELEMETRY_API_BASE_URL');
+		expect(isAdminFixtureFallbackEnabled()).toBe(false);
+	});
 });
+
+function restoreEnv(name: string, value: string | undefined) {
+	if (value === undefined) delete process.env[name];
+	else process.env[name] = value;
+}
+
+function setEnv(name: string, value: string) {
+	process.env[name] = value;
+}

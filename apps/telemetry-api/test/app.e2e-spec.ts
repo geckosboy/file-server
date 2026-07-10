@@ -5,6 +5,11 @@ import { AppModule } from '../src/app.module';
 import { LifecycleIngestionService } from '../src/modules/lifecycle/lifecycle-ingestion.service';
 
 const adminToken = 'test-admin-token';
+const adminActorHeaders = {
+	'x-admin-token': adminToken,
+	'x-admin-actor': 'e2e-admin',
+	'x-request-id': 'req-admin-e2e',
+};
 
 const uploadEvent = {
 	schemaVersion: 1,
@@ -192,6 +197,7 @@ describe('텔레메트리 API e2e', () => {
 		await seedEvents(app);
 		await request(app.getHttpServer())
 			.post('/api/ingestion/events')
+			.set('x-ingestion-token', 'test-ingestion-token')
 			.send({
 				...uploadEvent,
 				eventId: 'evt-e2e-resize-1',
@@ -308,6 +314,13 @@ describe('텔레메트리 API e2e', () => {
 		await request(app.getHttpServer()).get('/api/admin/health').expect(401);
 	});
 
+	it('ingestion token이 없으면 HTTP 수집을 401로 거부한다', async () => {
+		await request(app.getHttpServer())
+			.post('/api/ingestion/events')
+			.send(uploadEvent)
+			.expect(401);
+	});
+
 	it('관리자 API로 클라이언트 서비스를 등록하고 API key와 lifecycle subscription을 관리한다', async () => {
 		const created = await request(app.getHttpServer())
 			.post('/api/admin/client-services')
@@ -340,6 +353,25 @@ describe('텔레메트리 API e2e', () => {
 			keyPrefix: expect.any(String),
 		});
 		expect(keyResult.key).not.toHaveProperty('keyHash');
+
+		const policy = await request(app.getHttpServer())
+			.post(`/api/admin/client-services/${created.id}/policies`)
+			.set(adminActorHeaders)
+			.send({
+				pathPattern: 'catalog/**/image',
+				canRead: true,
+				canUpload: true,
+				canDelete: true,
+				maxUploadBytes: 1_048_576,
+				rateLimitPerMin: 60,
+			})
+			.expect(201)
+			.then(({ body }) => body);
+		expect(policy).toMatchObject({
+			clientServiceId: created.id,
+			pathPattern: 'catalog/**/image',
+			canUpload: true,
+		});
 
 		const subscription = await request(app.getHttpServer())
 			.post(`/api/admin/client-services/${created.id}/lifecycle-subscriptions`)
@@ -400,12 +432,38 @@ describe('텔레메트리 API e2e', () => {
 				expect(body.activeKeyCount).toBe(0);
 				expect(body.subscriptionCount).toBe(1);
 				expect(body.activeSubscriptionCount).toBe(0);
+				expect(body.policyCount).toBe(1);
+				expect(body.policies).toEqual([
+					expect.objectContaining({ id: policy.id }),
+				]);
 				expect(body.lifecycleSubscriptions).toEqual([
 					expect.objectContaining({
 						eventType: 'image.upload.failed',
 						consumerGroup: 'catalog-image-failure-consumer',
 					}),
 				]);
+			});
+
+		await request(app.getHttpServer())
+			.get(`/api/admin/client-services/${created.id}/audit-logs`)
+			.set(adminActorHeaders)
+			.expect(200)
+			.expect(({ body }) => {
+				expect(body).toEqual(
+					expect.arrayContaining([
+						expect.objectContaining({
+							action: 'client-service.key.created',
+						}),
+						expect.objectContaining({
+							action: 'client-service.access-policy.created',
+							actor: 'e2e-admin',
+							requestId: 'req-admin-e2e',
+						}),
+						expect.objectContaining({
+							action: 'client-service.subscription.updated',
+						}),
+					]),
+				);
 			});
 	});
 
@@ -493,10 +551,12 @@ describe('텔레메트리 API e2e', () => {
 async function seedEvents(app: INestApplication) {
 	await request(app.getHttpServer())
 		.post('/api/ingestion/events')
+		.set('x-ingestion-token', 'test-ingestion-token')
 		.send(uploadEvent)
 		.expect(202);
 	await request(app.getHttpServer())
 		.post('/api/ingestion/events')
+		.set('x-ingestion-token', 'test-ingestion-token')
 		.send({
 			...uploadEvent,
 			eventId: 'evt-e2e-hit-1',
@@ -511,6 +571,7 @@ async function seedEvents(app: INestApplication) {
 		.expect(202);
 	await request(app.getHttpServer())
 		.post('/api/ingestion/events')
+		.set('x-ingestion-token', 'test-ingestion-token')
 		.send({
 			...uploadEvent,
 			eventId: 'evt-e2e-miss-1',
@@ -535,6 +596,7 @@ async function seedResizeRecommendationEvents(app: INestApplication) {
 	for (const [index, durationMs] of [10, 20].entries()) {
 		await request(app.getHttpServer())
 			.post('/api/ingestion/events')
+			.set('x-ingestion-token', 'test-ingestion-token')
 			.send({
 				...uploadEvent,
 				eventId: `evt-e2e-rec-${index + 1}`,
@@ -553,6 +615,7 @@ async function seedResizeRecommendationEvents(app: INestApplication) {
 	}
 	await request(app.getHttpServer())
 		.post('/api/ingestion/events')
+		.set('x-ingestion-token', 'test-ingestion-token')
 		.send({
 			...uploadEvent,
 			eventId: 'evt-e2e-rec-pregenerated-skip',

@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import * as path from 'path';
 import { Root } from 'src/enum';
-import { normalizeSafeRelativePath, resolveInside } from '../path.utils';
+import {
+	normalizeSafeRelativePath,
+	resolveInside,
+} from '@file/image-contracts';
 
 @Injectable()
 export abstract class AbstractStrategy<T> {

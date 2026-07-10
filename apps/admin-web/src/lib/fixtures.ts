@@ -21,6 +21,7 @@ export const clientServicesFixture: ClientServiceItem[] = [
 		updatedAt: '2026-07-01T00:00:00.000Z',
 		keyCount: 2,
 		activeKeyCount: 1,
+		policyCount: 1,
 		subscriptionCount: 2,
 		activeSubscriptionCount: 1,
 		keys: [
@@ -39,6 +40,20 @@ export const clientServicesFixture: ClientServiceItem[] = [
 				keyPrefix: 'old123',
 				revokedAt: '2026-07-01T01:00:00.000Z',
 				createdAt: '2026-07-01T00:05:00.000Z',
+			},
+		],
+		policies: [
+			{
+				id: 'policy-catalog',
+				clientServiceId: 'service-catalog',
+				pathPattern: 'catalog/**/image',
+				canRead: true,
+				canUpload: true,
+				canDelete: true,
+				maxUploadBytes: 10_485_760,
+				rateLimitPerMin: 600,
+				createdAt: '2026-06-20T00:00:00.000Z',
+				updatedAt: '2026-07-01T00:00:00.000Z',
 			},
 		],
 		lifecycleSubscriptions: [
@@ -105,6 +120,7 @@ export const clientServicesFixture: ClientServiceItem[] = [
 		updatedAt: '2026-07-01T04:00:00.000Z',
 		keyCount: 0,
 		activeKeyCount: 0,
+		policyCount: 0,
 		subscriptionCount: 0,
 		activeSubscriptionCount: 0,
 		keys: [],

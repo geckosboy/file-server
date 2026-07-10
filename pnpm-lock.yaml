@@ -375,6 +375,9 @@ importers:
       '@file/database':
         specifier: workspace:*
         version: link:../../libs/database
+      '@file/image-contracts':
+        specifier: workspace:*
+        version: link:../../libs/image-contracts
       '@file/nest-common':
         specifier: workspace:*
         version: link:../../libs/nest-common
@@ -409,6 +412,9 @@ importers:
 
   libs/database:
     dependencies:
+      '@file/image-contracts':
+        specifier: workspace:*
+        version: link:../image-contracts
       '@nestjs/common':
         specifier: ^11.1.27
         version: 11.1.27(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)

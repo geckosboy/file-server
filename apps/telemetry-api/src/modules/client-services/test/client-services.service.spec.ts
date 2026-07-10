@@ -78,6 +78,87 @@ describe('클라이언트 서비스 관리 서비스', () => {
 		);
 	});
 
+	it('tenant path 정책을 등록·수정·삭제하고 관리자 actor/requestId로 감사한다', async () => {
+		const created = await service.createService(createPayload);
+		const adminContext = { actor: 'operator@example.com', requestId: 'req-1' };
+		const policy = await service.createPolicy(
+			created.id,
+			{
+				pathPattern: 'catalog/**/image',
+				canRead: true,
+				canUpload: true,
+				canDelete: false,
+				maxUploadBytes: 1024,
+				rateLimitPerMin: 60,
+			},
+			adminContext,
+		);
+		const detail = await service.getService(created.id);
+
+		expect(detail.policyCount).toBe(1);
+		expect(detail.policies).toEqual([
+			expect.objectContaining({
+				id: policy.id,
+				pathPattern: 'catalog/**/image',
+				canUpload: true,
+				maxUploadBytes: 1024,
+			}),
+		]);
+
+		const updated = await service.updatePolicy(
+			created.id,
+			policy.id,
+			{ canDelete: true, rateLimitPerMin: null },
+			adminContext,
+		);
+		expect(updated).toMatchObject({ canDelete: true });
+		expect(updated.rateLimitPerMin).toBeUndefined();
+
+		await service.deletePolicy(created.id, policy.id, adminContext);
+		expect((await service.getService(created.id)).policyCount).toBe(0);
+		expect(await service.listAuditLogs(created.id)).toEqual([
+			expect.objectContaining({
+				actor: 'operator@example.com',
+				requestId: 'req-1',
+				action: 'client-service.access-policy.deleted',
+			}),
+			expect.objectContaining({
+				action: 'client-service.access-policy.updated',
+			}),
+			expect.objectContaining({
+				action: 'client-service.access-policy.created',
+			}),
+		]);
+	});
+
+	it('정책 glob에 traversal 또는 부분 wildcard를 허용하지 않는다', async () => {
+		const created = await service.createService(createPayload);
+
+		await expect(
+			service.createPolicy(created.id, { pathPattern: '../other/**' }),
+		).rejects.toThrow();
+		await expect(
+			service.createPolicy(created.id, { pathPattern: 'catalog/im*ge' }),
+		).rejects.toThrow();
+	});
+
+	it('key 감사 로그에는 발급된 원 API key가 남지 않는다', async () => {
+		const created = await service.createService(createPayload);
+		const result = await service.createKey(
+			created.id,
+			{ scopes: { read: true } },
+			{ actor: 'operator', requestId: 'req-key' },
+		);
+		const logs = await service.listAuditLogs(created.id);
+
+		expect(logs[0]).toMatchObject({
+			action: 'client-service.key.created',
+			actor: 'operator',
+			requestId: 'req-key',
+		});
+		expect(JSON.stringify(logs)).not.toContain(result.apiKey);
+	});
+
 	it('lifecycle subscription을 등록하고 서비스 상세에서 반환한다', async () => {
 		const created = await service.createService(createPayload);
 		const subscription = await service.createLifecycleSubscription(created.id, {

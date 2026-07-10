@@ -1,15 +1,11 @@
-import {
-	BadRequestException,
-	Injectable,
-	NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import type { Sharp } from 'sharp';
 import { mkdir, readFile, rm, stat } from 'fs/promises';
 import { SharpStrategy } from './sharp';
 import {
+	normalizeImageStoragePath,
 	normalizeSafeFileName,
-	normalizeSafeRelativePath,
-} from '../path.utils';
+} from '@file/image-contracts';
 
 @Injectable()
 export class ImageManager {
@@ -22,12 +18,7 @@ export class ImageManager {
 
 	/** Main path의 형태는 무조건 `${path}/image`일것 */
 	private normalizeMainPath(path: string) {
-		const safePath = normalizeSafeRelativePath(path, 'main image path');
-		if (safePath.split('/').at(-1) !== 'image') {
-			throw new BadRequestException('Main image path의 형식이 잘못되었습니다.');
-		}
-
-		return safePath;
+		return normalizeImageStoragePath(path);
 	}
 
 	/** Temp 폴더에 있는 이미지를 압축하고 Main폴더에 저장 */

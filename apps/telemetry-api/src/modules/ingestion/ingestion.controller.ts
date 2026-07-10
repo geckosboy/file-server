@@ -1,7 +1,9 @@
-import { Body, Controller, HttpCode, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { IngestionResult, IngestionService } from './ingestion.service';
+import { IngestionAuthGuard } from './ingestion-auth.guard';
 
 @Controller('api/ingestion')
+@UseGuards(IngestionAuthGuard)
 export class IngestionController {
 	constructor(private readonly ingestionService: IngestionService) {}
 

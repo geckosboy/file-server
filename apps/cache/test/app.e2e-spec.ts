@@ -11,6 +11,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
 	ClientServiceApiKeyGuard,
 	ClientServiceAuthService,
+	ClientServiceAuthorizationService,
 	INTERNAL_API_KEY_HEADER,
 	INTERNAL_CLIENT_CONTEXT_HEADER,
 	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
@@ -76,6 +77,7 @@ describe('캐시 앱 e2e', () => {
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let authService: ReturnType<typeof createAuthService>;
+	let authorization: { authorize: jest.Mock };
 
 	const getTelemetryPayloads = () =>
 		imageClient.emit.mock.calls
@@ -88,6 +90,9 @@ describe('캐시 앱 e2e', () => {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
 		};
 		authService = createAuthService();
+		authorization = {
+			authorize: jest.fn().mockResolvedValue({ allowed: true }),
+		};
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
@@ -97,6 +102,10 @@ describe('캐시 앱 e2e', () => {
 				{
 					provide: ClientServiceAuthService,
 					useValue: authService,
+				},
+				{
+					provide: ClientServiceAuthorizationService,
+					useValue: authorization,
 				},
 				CacheService,
 				{
@@ -181,7 +190,7 @@ describe('캐시 앱 e2e', () => {
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheMiss,
-				cacheKey: 'public|32|16|png|sample.png',
+				cacheKey: 'service-1|public|32|16|png|sample.png',
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',
 				requestId: testRequestId,
@@ -189,7 +198,7 @@ describe('캐시 앱 e2e', () => {
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheStored,
-				cacheKey: 'public|32|16|png|sample.png',
+				cacheKey: 'service-1|public|32|16|png|sample.png',
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',
 				requestId: testRequestId,
@@ -197,7 +206,7 @@ describe('캐시 앱 e2e', () => {
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheHit,
-				cacheKey: 'public|32|16|png|sample.png',
+				cacheKey: 'service-1|public|32|16|png|sample.png',
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',
 				requestId: testRequestId,

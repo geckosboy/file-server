@@ -19,6 +19,7 @@ import {
 import {
 	fetchClientServices,
 	fetchLifecycleEvents,
+	isAdminFixtureFallbackEnabled,
 	type ClientServiceItem,
 	type LifecycleEventListItem,
 	type LifecycleEventListResponse,
@@ -284,6 +285,15 @@ async function fetchLifecycleEventsPageData(
 		]);
 		return { data, services, filters };
 	} catch {
+		if (!isAdminFixtureFallbackEnabled()) {
+			return {
+				data: { items: [] },
+				services: [],
+				filters,
+				errorMessage:
+					'telemetry-api에 연결할 수 없습니다. 운영 lifecycle 이벤트 대신 빈 상태를 표시합니다.',
+			};
+		}
 		return {
 			data: lifecycleEventListFixture,
 			services: clientServicesFixture,

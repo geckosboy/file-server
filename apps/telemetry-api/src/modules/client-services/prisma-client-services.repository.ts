@@ -2,26 +2,31 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
 import {
+	AdminAuditLogRecord,
 	ClientServiceImageResizePolicyRecord,
 	ClientServiceImageResizeVariantRecord,
 	ClientServiceLifecycleSubscriptionRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
+	ClientServicePolicyRecord,
 	ClientServiceStatus,
 	CreateClientServiceImageResizeVariantInput,
 	CreateClientServiceLifecycleSubscriptionInput,
 	CreateClientServiceInput,
+	CreateClientServicePolicyInput,
 	JsonObject,
 	UpdateClientServiceImageResizePolicyInput,
 	UpdateClientServiceImageResizeVariantInput,
 	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
+	UpdateClientServicePolicyInput,
 } from './client-services.types';
 import {
 	ClientServiceImageResizeVariantNotFoundError,
 	ClientServiceKeyNotFoundError,
 	ClientServiceLifecycleSubscriptionNotFoundError,
 	ClientServiceNotFoundError,
+	ClientServicePolicyNotFoundError,
 	ClientServicesRepository,
 	DuplicateClientServiceImageResizeVariantError,
 	DuplicateClientServiceLifecycleSubscriptionError,
@@ -144,6 +149,107 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 				data: { revokedAt: new Date(input.revokedAt) },
 			}),
 		);
+	}
+
+	async createPolicy(
+		input: CreateClientServicePolicyInput & { clientServiceId: string },
+	): Promise<ClientServicePolicyRecord> {
+		await this.assertClientServiceExists(input.clientServiceId);
+		try {
+			return toPolicyRecord(
+				await this.prisma.clientServicePolicy.create({
+					data: {
+						clientServiceId: input.clientServiceId,
+						pathPattern: input.pathPattern,
+						canRead: input.canRead,
+						canUpload: input.canUpload,
+						canDelete: input.canDelete,
+						maxUploadBytes: input.maxUploadBytes,
+						rateLimitPerMin: input.rateLimitPerMin,
+						metadata: input.metadata as Prisma.InputJsonValue | undefined,
+					},
+				}),
+			);
+		} catch (error) {
+			if (isNotFoundError(error)) {
+				throw new ClientServiceNotFoundError(input.clientServiceId);
+			}
+			throw error;
+		}
+	}
+
+	async updatePolicy(
+		input: UpdateClientServicePolicyInput & {
+			clientServiceId: string;
+			policyId: string;
+		},
+	): Promise<ClientServicePolicyRecord> {
+		const policy = await this.prisma.clientServicePolicy.findFirst({
+			where: { id: input.policyId, clientServiceId: input.clientServiceId },
+		});
+		if (!policy) throw new ClientServicePolicyNotFoundError(input.policyId);
+
+		return toPolicyRecord(
+			await this.prisma.clientServicePolicy.update({
+				where: { id: policy.id },
+				data: {
+					pathPattern: input.pathPattern,
+					canRead: input.canRead,
+					canUpload: input.canUpload,
+					canDelete: input.canDelete,
+					maxUploadBytes: input.maxUploadBytes,
+					rateLimitPerMin: input.rateLimitPerMin,
+					metadata:
+						input.metadata === null
+							? Prisma.JsonNull
+							: (input.metadata as Prisma.InputJsonValue | undefined),
+				},
+			}),
+		);
+	}
+
+	async deletePolicy(input: {
+		clientServiceId: string;
+		policyId: string;
+	}): Promise<ClientServicePolicyRecord> {
+		const policy = await this.prisma.clientServicePolicy.findFirst({
+			where: { id: input.policyId, clientServiceId: input.clientServiceId },
+		});
+		if (!policy) throw new ClientServicePolicyNotFoundError(input.policyId);
+		return toPolicyRecord(
+			await this.prisma.clientServicePolicy.delete({
+				where: { id: policy.id },
+			}),
+		);
+	}
+
+	async createAuditLog(input: {
+		clientServiceId?: string;
+		actor: string;
+		requestId: string;
+		action: string;
+		targetType: string;
+		targetId: string;
+		metadata?: JsonObject;
+	}): Promise<AdminAuditLogRecord> {
+		return toAuditLogRecord(
+			await this.prisma.adminAuditLog.create({
+				data: {
+					...input,
+					metadata: input.metadata as Prisma.InputJsonValue | undefined,
+				},
+			}),
+		);
+	}
+
+	async listAuditLogs(clientServiceId: string): Promise<AdminAuditLogRecord[]> {
+		return (
+			await this.prisma.adminAuditLog.findMany({
+				where: { clientServiceId },
+				orderBy: { createdAt: 'desc' },
+				take: 100,
+			})
+		).map(toAuditLogRecord);
 	}
 
 	async createLifecycleSubscription(
@@ -360,6 +466,8 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 
 	async clear(): Promise<void> {
 		await this.prisma.$transaction([
+			this.prisma.adminAuditLog.deleteMany(),
+			this.prisma.clientServiceRateLimitWindow.deleteMany(),
 			this.prisma.clientServiceKey.deleteMany(),
 			this.prisma.clientServiceLifecycleSubscription.deleteMany(),
 			this.prisma.clientServiceImageResizeVariant.deleteMany(),
@@ -380,6 +488,7 @@ const imageResizePolicyInclude = {
 
 const serviceInclude = {
 	keys: true,
+	policies: true,
 	lifecycleSubscriptions: true,
 	imageResizePolicy: { include: imageResizePolicyInclude },
 } satisfies Prisma.ClientServiceInclude;
@@ -388,6 +497,8 @@ type ServiceWithKeys = Prisma.ClientServiceGetPayload<{
 	include: typeof serviceInclude;
 }>;
 type KeyRow = Prisma.ClientServiceKeyGetPayload<Record<string, never>>;
+type PolicyRow = Prisma.ClientServicePolicyGetPayload<Record<string, never>>;
+type AdminAuditLogRow = Prisma.AdminAuditLogGetPayload<Record<string, never>>;
 type LifecycleSubscriptionRow =
 	Prisma.ClientServiceLifecycleSubscriptionGetPayload<Record<string, never>>;
 type ImageResizePolicyRow = Prisma.ClientServiceImageResizePolicyGetPayload<{
@@ -416,7 +527,17 @@ function toServiceRecord(
 		activeSubscriptionCount: service.lifecycleSubscriptions.filter(
 			(subscription) => subscription.isEnabled,
 		).length,
+		policyCount: service.policies.length,
 		...(includeKeys ? { keys: service.keys.map(toKeyRecord) } : {}),
+		...(includeKeys
+			? {
+					policies: [...service.policies]
+						.sort((left, right) =>
+							left.pathPattern.localeCompare(right.pathPattern),
+						)
+						.map(toPolicyRecord),
+				}
+			: {}),
 		...(includeKeys
 			? {
 					lifecycleSubscriptions: [...service.lifecycleSubscriptions]
@@ -449,6 +570,36 @@ function toKeyRecord(key: KeyRow): ClientServiceKeyRecord {
 		revokedAt: key.revokedAt?.toISOString(),
 		lastUsedAt: key.lastUsedAt?.toISOString(),
 		createdAt: key.createdAt.toISOString(),
+	};
+}
+
+function toPolicyRecord(policy: PolicyRow): ClientServicePolicyRecord {
+	return {
+		id: policy.id,
+		clientServiceId: policy.clientServiceId,
+		pathPattern: policy.pathPattern,
+		canRead: policy.canRead,
+		canUpload: policy.canUpload,
+		canDelete: policy.canDelete,
+		maxUploadBytes: policy.maxUploadBytes ?? undefined,
+		rateLimitPerMin: policy.rateLimitPerMin ?? undefined,
+		metadata: toJsonObject(policy.metadata),
+		createdAt: policy.createdAt.toISOString(),
+		updatedAt: policy.updatedAt.toISOString(),
+	};
+}
+
+function toAuditLogRecord(log: AdminAuditLogRow): AdminAuditLogRecord {
+	return {
+		id: log.id,
+		clientServiceId: log.clientServiceId ?? undefined,
+		actor: log.actor,
+		requestId: log.requestId,
+		action: log.action,
+		targetType: log.targetType,
+		targetId: log.targetId,
+		metadata: toJsonObject(log.metadata),
+		createdAt: log.createdAt.toISOString(),
 	};
 }
 

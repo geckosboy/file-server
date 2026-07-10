@@ -1,5 +1,10 @@
 import { ClientKafka } from '@nestjs/microservices';
-import { ClientServiceAuthContext } from '@file/database';
+import {
+	ClientServiceAuthContext,
+	INTERNAL_API_KEY_HEADER,
+	INTERNAL_CLIENT_CONTEXT_HEADER,
+	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
+} from '@file/database';
 import { Readable } from 'stream';
 import { of, throwError } from 'rxjs';
 import {
@@ -36,7 +41,6 @@ const clientServiceContext: ClientServiceAuthContext = {
 	keyPrefix: 'prefix-1',
 	requestId: 'req-storage-1',
 	traceId: 'trace-storage-1',
-	apiKey: 'fs_prefix_secret',
 };
 
 const createMulterFile = (overrides: Partial<Express.Multer.File> = {}) => {
@@ -551,6 +555,7 @@ describe('스토리지 이미지 서비스', () => {
 			imagePregenerationService as unknown as ImagePregenerationService,
 			{
 				CACHE_SERVER: 'http://cache.test',
+				INTERNAL_API_KEY: 'internal-test-key',
 			} as AppConfig,
 		);
 
@@ -568,11 +573,11 @@ describe('스토리지 이미지 서비스', () => {
 			'http://cache.test/image/products/sample.png/cache',
 			{
 				method: 'DELETE',
-				headers: {
-					'x-client-api-key': 'fs_prefix_secret',
-					'x-request-id': 'req-storage-1',
-					'x-trace-id': 'trace-storage-1',
-				},
+				headers: expect.objectContaining({
+					[INTERNAL_API_KEY_HEADER]: 'internal-test-key',
+					[INTERNAL_CLIENT_CONTEXT_HEADER]: expect.any(String),
+					[INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER]: expect.any(String),
+				}),
 			},
 		);
 	});

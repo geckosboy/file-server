@@ -42,9 +42,42 @@ export interface ClientServiceRecord {
 	activeKeyCount: number;
 	subscriptionCount: number;
 	activeSubscriptionCount: number;
+	policyCount: number;
 	keys?: ClientServiceKeyRecord[];
+	policies?: ClientServicePolicyRecord[];
 	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionRecord[];
 	imageResizePolicy?: ClientServiceImageResizePolicyRecord;
+}
+
+export interface ClientServicePolicyRecord {
+	id: string;
+	clientServiceId: string;
+	pathPattern: string;
+	canRead: boolean;
+	canUpload: boolean;
+	canDelete: boolean;
+	maxUploadBytes?: number;
+	rateLimitPerMin?: number;
+	metadata?: JsonObject;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface AdminAuditLogRecord {
+	id: string;
+	clientServiceId?: string;
+	actor: string;
+	requestId: string;
+	action: string;
+	targetType: string;
+	targetId: string;
+	metadata?: JsonObject;
+	createdAt: string;
+}
+
+export interface AdminActionContext {
+	actor: string;
+	requestId: string;
 }
 
 export interface ClientServiceKeyRecord {
@@ -111,6 +144,26 @@ export interface CreateClientServiceKeyInput {
 	name?: string;
 	scopes?: JsonObject;
 	expiresAt?: string;
+}
+
+export interface CreateClientServicePolicyInput {
+	pathPattern: string;
+	canRead?: boolean;
+	canUpload?: boolean;
+	canDelete?: boolean;
+	maxUploadBytes?: number;
+	rateLimitPerMin?: number;
+	metadata?: JsonObject;
+}
+
+export interface UpdateClientServicePolicyInput {
+	pathPattern?: string;
+	canRead?: boolean;
+	canUpload?: boolean;
+	canDelete?: boolean;
+	maxUploadBytes?: number | null;
+	rateLimitPerMin?: number | null;
+	metadata?: JsonObject | null;
 }
 
 export interface CreateClientServiceLifecycleSubscriptionInput {

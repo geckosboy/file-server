@@ -10,6 +10,7 @@ import { ClientServiceAuthModule, PrismaModule } from '@file/database';
 import { envConfig } from 'src/config';
 import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
 import { ImagePregenerationService } from './image-pregeneration.service';
+import { PolicyAwareImageUploadInterceptor } from './policy-aware-image-upload.interceptor';
 
 const strategyList = [JpegStrategy, PngStrategy, ImageManager];
 const KafkaModule = ClientsModule.register([
@@ -37,6 +38,7 @@ const KafkaModule = ClientsModule.register([
 		ImageService,
 		ImageLifecycleOutboxService,
 		ImagePregenerationService,
+		PolicyAwareImageUploadInterceptor,
 		...strategyList,
 	],
 })

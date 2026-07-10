@@ -14,12 +14,14 @@ model ClientService {
   owner       String?
   status      String  @default("ACTIVE")
 
-  keys     ClientServiceKey[]
-  policies ClientServicePolicy[]
+  keys                   ClientServiceKey[]
+  policies               ClientServicePolicy[]
+  rateLimitWindows       ClientServiceRateLimitWindow[]
+  adminAuditLogs         AdminAuditLog[]
   lifecycleSubscriptions ClientServiceLifecycleSubscription[]
-  imageResizePolicy ClientServiceImageResizePolicy?
-  events          TelemetryEvent[]
-  lifecycleEvents ImageLifecycleEvent[]
+  imageResizePolicy      ClientServiceImageResizePolicy?
+  events                 TelemetryEvent[]
+  lifecycleEvents        ImageLifecycleEvent[]
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -42,6 +44,8 @@ model ClientServiceKey {
   lastUsedAt DateTime? @map("last_used_at")
 
   createdAt DateTime @default(now()) @map("created_at")
+
+  rateLimitWindows ClientServiceRateLimitWindow[]
 
   @@index([clientServiceId], map: "client_service_keys_client_service_id_idx")
   @@index([revokedAt], map: "client_service_keys_revoked_at_idx")
@@ -68,6 +72,42 @@ model ClientServicePolicy {
   @@index([clientServiceId], map: "client_service_policies_client_service_id_idx")
   @@index([pathPattern], map: "client_service_policies_path_pattern_idx")
   @@map("client_service_policies")
+}
+
+model ClientServiceRateLimitWindow {
+  clientServiceId    String           @map("client_service_id")
+  clientService      ClientService    @relation(fields: [clientServiceId], references: [id], onDelete: Cascade, map: "client_service_rate_limit_windows_client_service_id_fkey")
+  clientServiceKeyId String           @map("client_service_key_id")
+  clientServiceKey   ClientServiceKey @relation(fields: [clientServiceKeyId], references: [id], onDelete: Cascade, map: "client_service_rate_limit_windows_client_service_key_id_fkey")
+
+  action          String
+  windowStartedAt DateTime @map("window_started_at")
+  requestCount    Int      @default(0) @map("request_count")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@id([clientServiceKeyId, action, windowStartedAt], map: "client_service_rate_limit_windows_pkey")
+  @@index([clientServiceId, windowStartedAt], map: "client_service_rate_limit_windows_service_window_idx")
+  @@index([windowStartedAt], map: "client_service_rate_limit_windows_window_started_at_idx")
+  @@map("client_service_rate_limit_windows")
+}
+
+model AdminAuditLog {
+  id String @id(map: "admin_audit_logs_pkey") @default(cuid())
+
+  clientServiceId String?        @map("client_service_id")
+  clientService   ClientService? @relation(fields: [clientServiceId], references: [id], onDelete: SetNull, map: "admin_audit_logs_client_service_id_fkey")
+  actor           String
+  requestId       String         @map("request_id")
+  action          String
+  targetType      String         @map("target_type")
+  targetId        String         @map("target_id")
+  metadata        Json?
+  createdAt       DateTime       @default(now()) @map("created_at")
+
+  @@index([clientServiceId, createdAt], map: "admin_audit_logs_client_service_created_at_idx")
+  @@index([actor, createdAt], map: "admin_audit_logs_actor_created_at_idx")
+  @@index([requestId], map: "admin_audit_logs_request_id_idx")
+  @@map("admin_audit_logs")
 }
 
 model ClientServiceLifecycleSubscription {
@@ -198,9 +238,9 @@ model ImageLifecycleEvent {
   imageKey String @map("image_key")
 
   format      String?
-  inputBytes  Int?   @map("input_bytes")
-  outputBytes Int?   @map("output_bytes")
-  durationMs  Float? @map("duration_ms")
+  inputBytes  Int?    @map("input_bytes")
+  outputBytes Int?    @map("output_bytes")
+  durationMs  Float?  @map("duration_ms")
 
   errorCode    String? @map("error_code")
   errorMessage String? @map("error_message")

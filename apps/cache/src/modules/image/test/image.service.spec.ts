@@ -39,7 +39,6 @@ const clientServiceContext: ClientServiceAuthContext = {
 	clientServiceKeyId: 'key-1',
 	keyPrefix: 'prefix-1',
 	requestId: 'req-cache-1',
-	apiKey: 'fs_prefix_secret',
 };
 
 type KafkaEmitPayload = { key: string; value: string };
@@ -108,7 +107,7 @@ describe('캐시 이미지 서비스', () => {
 				sourceApp: 'cache',
 				path: 'public',
 				name: 'sample.png',
-				cacheKey: 'public|100|x|png|sample.png',
+				cacheKey: 'service-1|public|100|x|png|sample.png',
 				width: 100,
 				format: 'png',
 				outputBytes: cachedImage.imageBuffer.byteLength,
@@ -154,7 +153,7 @@ describe('캐시 이미지 서비스', () => {
 		expect(result.contentType).toBe('image/webp');
 		expect(result.imageBuffer.equals(resized)).toBe(true);
 		expect(cacheService.cacheImage).toHaveBeenCalledWith(
-			'public|100|x|webp|sample.webp',
+			'service-1|public|100|x|webp|sample.webp',
 			{
 				imageBuffer: resized,
 				contentType: 'image/webp',
@@ -163,7 +162,7 @@ describe('캐시 이미지 서비스', () => {
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheMiss,
-				cacheKey: 'public|100|x|webp|sample.webp',
+				cacheKey: 'service-1|public|100|x|webp|sample.webp',
 				status: 'success',
 				clientServiceId: 'service-1',
 				clientServiceSlug: 'local-demo',
@@ -171,7 +170,7 @@ describe('캐시 이미지 서비스', () => {
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheStored,
-				cacheKey: 'public|100|x|webp|sample.webp',
+				cacheKey: 'service-1|public|100|x|webp|sample.webp',
 				outputBytes: resized.byteLength,
 				status: 'success',
 				clientServiceId: 'service-1',
@@ -204,7 +203,7 @@ describe('캐시 이미지 서비스', () => {
 			expect.any(Object),
 		);
 		expect(cacheService.cacheImage).toHaveBeenCalledWith(
-			'public|100|50|webp|sample.png',
+			'service-1|public|100|50|webp|sample.png',
 			expect.objectContaining({
 				imageBuffer: resized,
 				contentType: 'image/webp',
@@ -213,12 +212,12 @@ describe('캐시 이미지 서비스', () => {
 		expect(getTelemetryPayloads()).toEqual([
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheMiss,
-				cacheKey: 'public|100|50|webp|sample.png',
+				cacheKey: 'service-1|public|100|50|webp|sample.png',
 				format: 'webp',
 			}),
 			expect.objectContaining({
 				eventType: ImageTelemetryEventType.CacheStored,
-				cacheKey: 'public|100|50|webp|sample.png',
+				cacheKey: 'service-1|public|100|50|webp|sample.png',
 				format: 'webp',
 			}),
 		]);
@@ -269,11 +268,13 @@ describe('캐시 이미지 서비스', () => {
 		cacheService.deleteCachedImagesForImage.mockReturnValue(2);
 
 		const result = service.deleteCacheImage({
+			clientServiceId: 'service-1',
 			path: 'public',
 			name: 'sample.png',
 		});
 
 		expect(cacheService.deleteCachedImagesForImage).toHaveBeenCalledWith({
+			clientServiceId: 'service-1',
 			path: 'public',
 			name: 'sample.png',
 		});

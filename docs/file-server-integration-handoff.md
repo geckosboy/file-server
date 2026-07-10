@@ -1,34 +1,45 @@
 # File Server Integration Handoff
 
 - 기준일: 2026-07-10
-- 기준 상태: 아키텍처 개선 계획의 단계 0 완료
+- 기준 상태: 아키텍처 개선 계획의 단계 0~1 완료
 - 대상: 이 저장소를 호출하거나 lifecycle 이벤트를 소비할 다른 프로젝트와 해당 프로젝트를 설계하는 AI
 
 ## 1. 먼저 알아야 할 결론
 
-현재 저장소는 빌드, 테스트, 컨테이너 실행 경로는 재현 가능하게 정비되었지만 아직 다중 테넌트 운영 안전성이 확보된 상태는 아니다.
+현재 저장소는 빌드·배포 기준선과 HTTP 이미지 경로의 다중 테넌트 권한 경계를 확보했다. Kafka tenant 격리, 공유 storage, 이벤트 전달 복원력은 이후 단계의 범위다.
 
-- 현재 API key 인증은 “유효한 client service key인가”까지만 확인한다.
-- `ClientServicePolicy`, key scope, path 소유권은 아직 요청에 강제되지 않는다.
+- API key 인증 뒤 `ClientServicePolicy ∩ key scopes`를 read/upload/delete마다 강제한다.
+- canonical storage path와 제한된 glob(`*`, `**`)으로 tenant path 소유권을 판정한다.
+- upload stream 중 정책별 크기 제한을 적용하고, PostgreSQL 원자 counter로 replica 공통 rate limit을 적용한다.
+- cache key와 cache 무효화 범위는 `clientServiceId`로 격리된다.
+- 내부 호출은 원 client API key를 전달하지 않고 audience/action/발급·만료 시각이 포함된 짧은 HMAC signed context만 사용한다.
 - lifecycle Kafka topic은 모든 client service가 공유한다.
 - storage는 로컬 파일시스템, cache는 프로세스 로컬 메모리를 사용한다.
 - telemetry는 운영 관측에 유용하지만 비즈니스 원장으로 사용하면 안 된다.
 
 다른 프로젝트는 현재 구현에 직접 결합하지 말고 별도의 `FileServerClient` 또는 gateway adapter 뒤에서 연동해야 한다. 이후 단계에서 인증, path 규칙, Kafka topic, asset 식별 방식이 변경될 예정이다.
 
-## 2. 단계 0에서 확보된 기준선
+## 2. 단계 0~1에서 확보된 기준선
 
 - Node.js `22.15.0`, pnpm `10.15.0`
 - storage, resize, cache 컨테이너는 non-root `node` 사용자로 실행
 - `.env*` 파일은 Docker build context와 runtime image에 포함되지 않음
-- 컴포넌트 E2E 30개 실행
+- 컴포넌트 E2E 33개 실행
 - 실제 PostgreSQL/Kafka와 다음 연쇄를 검증하는 system E2E 제공:
-  - client service/key 생성
+  - 두 client service/key/policy 생성
   - 이미지 upload
   - cache → resize → storage read
   - cache hit
+  - 다른 tenant의 read/upload/delete 403
+  - 두 cache replica가 공유하는 DB rate limit과 429
   - telemetry/lifecycle Kafka 발행과 PostgreSQL 저장
   - 이미지 delete
+- 추가 보안 기준선:
+  - traversal, 이중 인코딩, separator/Unicode 정규화 우회 거부
+  - 정책 `maxUploadBytes` 초과 시 413과 임시 파일 미잔존
+  - revoke/expire/비활성 service의 정책 재검증
+  - admin API/HTTP ingestion/admin-web fail-closed
+  - key·정책·subscription 변경 감사 로그(actor/requestId)
 - 주요 명령:
 
 ```bash
@@ -76,6 +87,14 @@ Authorization: Bearer <issued key>
 - 다른 프로젝트의 backend가 secret manager 또는 서버 환경변수로 보관한다.
 - 선택적으로 `x-request-id`, `x-trace-id`를 전달하고 서비스 로그와 도메인 로그에 동일 ID를 남긴다.
 
+권한 계산:
+
+- `ClientServicePolicy`가 서비스 권한의 원본이며 key `scopes`는 권한을 넓히지 못하고 좁히기만 한다.
+- 정책 경로는 upload/delete의 canonical storage path 기준이다. 예: `catalog/products/image`, `catalog/**/image`.
+- read URL의 `:path`는 `/image`를 제외하지만 서버가 canonical path로 바꾼 뒤 같은 정책을 평가한다.
+- 정책이 없거나 pattern/action이 맞지 않으면 기본 거부(403)다.
+- rate limit은 key/action/UTC minute 단위이며 모든 replica가 PostgreSQL counter를 공유한다.
+
 ### 4.2 Upload
 
 ```http
@@ -92,6 +111,8 @@ multipart 필드:
 | `path`            | 예     | 현재는 마지막 segment가 반드시 `image`여야 함. 예: `catalog/image` |
 | `externalImageId` | 아니오 | 양의 정수 legacy 연계 ID                                           |
 | `beforeName`      | 아니오 | 교체 시 삭제할 이전 저장 파일명                                    |
+
+`path`는 stream 저장 전에 권한과 크기 제한을 결정해야 하므로 multipart에서 `file`보다 먼저 전송해야 한다. `beforeName`을 사용하면 같은 path의 delete 권한도 필요하다.
 
 대표 응답:
 
@@ -134,6 +155,40 @@ x-client-api-key: ...
 호환 방식으로 `path`와 `name`을 각각 전달할 수도 있지만, 다른 프로젝트는 upload 응답의 `imageKey`를 사용하는 것이 안전하다.
 
 현재 delete는 원본 삭제가 중심이며 모든 pre-generated variant와 모든 cache replica의 삭제가 완전하게 보장되지는 않는다. 단계 5에서 asset 단위 삭제로 바뀐다.
+
+### 4.5 오류와 제어면 계약
+
+- `401`: API key/admin/ingestion 인증 실패
+- `403`: 인증은 성공했으나 tenant path 또는 action 정책 위반
+- `413`: global 또는 정책별 upload byte 상한 초과. 임시 파일은 제거된다.
+- `429`: PostgreSQL 공유 rate limit 초과
+- `400`: traversal, 남은 percent-encoding, separator 변형, 잘못된 glob/경로
+
+관리 API:
+
+- access policy 생성: `POST /api/admin/client-services/:id/policies`
+- access policy 수정/삭제: `PATCH|DELETE /api/admin/client-services/:id/policies/:policyId`
+- 감사 로그 조회: `GET /api/admin/client-services/:id/audit-logs`
+- 모든 `/api/admin/**` 요청은 `x-admin-token`이 필요하다.
+- HTTP ingestion을 켠 경우 `x-ingestion-token` 또는 Bearer token이 필요하며, 운영 기본값은 비활성이다.
+- admin-web 운영 접근은 reverse proxy가 주입하는 `x-file-admin-user`, `x-file-admin-proxy-secret` 경계를 사용한다. 모든 server action이 같은 경계를 재검증한다.
+- 운영 필수 설정: telemetry-api의 `TELEMETRY_ADMIN_TOKEN`, admin-web의 `TELEMETRY_API_BASE_URL`, `TELEMETRY_ADMIN_TOKEN`, `ADMIN_WEB_PROXY_SECRET`.
+
+대표 policy payload:
+
+```json
+{
+	"pathPattern": "catalog/**/image",
+	"canRead": true,
+	"canUpload": true,
+	"canDelete": true,
+	"maxUploadBytes": 10485760,
+	"rateLimitPerMin": 600,
+	"metadata": { "owner": "commerce-team" }
+}
+```
+
+key 발급 시 `scopes`에 `read|upload|delete` 또는 `actions`, `pathPatterns`를 지정하면 위 service policy보다 더 좁은 권한만 부여된다. 다른 프로젝트는 필요한 action을 명시적으로 요청하되 service policy보다 넓은 scope가 효력을 낼 것이라고 가정하면 안 된다.
 
 ## 5. 현재 Kafka 계약
 
@@ -231,9 +286,9 @@ interface FileServerClient {
 
 ## 8. 향후 단계와 다른 프로젝트에 미치는 영향
 
-### 단계 1 — 테넌트 권한과 제어면 보안
+### 단계 1 — 테넌트 권한과 제어면 보안 (완료)
 
-예정 변경:
+적용된 변경:
 
 - `ClientServicePolicy ∩ key scopes` 권한 강제
 - read/upload/delete별 path policy와 upload 크기/rate limit
@@ -243,7 +298,7 @@ interface FileServerClient {
 - signed context에 audience/action/expiry 추가
 - admin-web, admin API, ingestion API fail-closed
 
-다른 프로젝트 사전 준비:
+다른 프로젝트 적용 사항:
 
 - 필요한 read/upload/delete 권한과 path pattern을 문서화한다.
 - 정상 업무 흐름에서 사용하는 최대 업로드 크기와 예상 분당 요청량을 산출한다.
@@ -323,7 +378,6 @@ interface FileServerClient {
 
 다른 프로젝트가 임시 코드로 보완하거나 영구 전제로 삼아서는 안 되는 항목이다.
 
-- client service 간 path 격리
 - 공유 Kafka topic의 tenant confidentiality
 - telemetry의 무손실 전달
 - cache replica 간 일관성
@@ -335,7 +389,7 @@ interface FileServerClient {
 
 ## 10. 연동 전 합의해야 할 체크포인트
 
-### 단계 1 시작 전
+### Client service 연동 등록 전
 
 - client service slug/name/owner
 - 환경별 API key 발급 책임자와 secret 보관 위치
@@ -360,7 +414,7 @@ interface FileServerClient {
 ## 11. 다른 프로젝트에서 먼저 작성할 계약 테스트
 
 1. API key 누락/오류 시 401
-2. 단계 1 적용 후 타 tenant path 접근 시 403
+2. 타 tenant path 접근 시 read/upload/delete 모두 403
 3. upload 성공 응답의 `imageKey`, `name`, `eventId` 저장
 4. 원본 read와 width/height/format variant read
 5. 404와 upstream 5xx 구분
@@ -381,7 +435,7 @@ interface FileServerClient {
 목표:
 - file-server HTTP/Kafka 구현 세부사항이 도메인에 새지 않도록 adapter/gateway 경계를 설계한다.
 - upload 응답의 imageKey/eventId를 보존하고 lifecycle eventId를 멱등 처리한다.
-- 단계 1~5의 예정 변경(tenant policy, client별 Kafka topic, cursor pagination,
+- 완료된 단계 1 tenant policy와 단계 2~5의 예정 변경(client별 Kafka topic, cursor pagination,
   async ImageAsset/ImageVariant lifecycle)을 수용할 수 있어야 한다.
 
 금지:

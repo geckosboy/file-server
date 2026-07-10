@@ -1,3 +1,5 @@
+import { getCurrentAdminAuditHeaders } from './admin-session';
+
 export type SourceApp = 'storage' | 'resize' | 'cache';
 export type EventStatus = 'success' | 'failed';
 export type LifecycleEventType =
@@ -167,6 +169,20 @@ export interface ClientServiceKeyItem {
 	createdAt: string;
 }
 
+export interface ClientServicePolicyItem {
+	id: string;
+	clientServiceId: string;
+	pathPattern: string;
+	canRead: boolean;
+	canUpload: boolean;
+	canDelete: boolean;
+	maxUploadBytes?: number;
+	rateLimitPerMin?: number;
+	metadata?: Record<string, unknown>;
+	createdAt: string;
+	updatedAt: string;
+}
+
 export interface ClientServiceLifecycleSubscriptionItem {
 	id: string;
 	clientServiceId: string;
@@ -212,7 +228,9 @@ export interface ClientServiceItem {
 	activeKeyCount: number;
 	subscriptionCount: number;
 	activeSubscriptionCount: number;
+	policyCount: number;
 	keys?: ClientServiceKeyItem[];
+	policies?: ClientServicePolicyItem[];
 	lifecycleSubscriptions?: ClientServiceLifecycleSubscriptionItem[];
 	imageResizePolicy?: ClientServiceImageResizePolicyItem;
 }
@@ -237,6 +255,26 @@ export interface CreateClientServiceKeyInput {
 	name?: string;
 	scopes?: Record<string, unknown>;
 	expiresAt?: string;
+}
+
+export interface CreateClientServicePolicyInput {
+	pathPattern: string;
+	canRead?: boolean;
+	canUpload?: boolean;
+	canDelete?: boolean;
+	maxUploadBytes?: number;
+	rateLimitPerMin?: number;
+	metadata?: Record<string, unknown>;
+}
+
+export interface UpdateClientServicePolicyInput {
+	pathPattern?: string;
+	canRead?: boolean;
+	canUpload?: boolean;
+	canDelete?: boolean;
+	maxUploadBytes?: number | null;
+	rateLimitPerMin?: number | null;
+	metadata?: Record<string, unknown> | null;
 }
 
 export interface CreateClientServiceLifecycleSubscriptionInput {
@@ -332,14 +370,32 @@ export class TelemetryApiError extends Error {
 	}
 }
 
-const DEFAULT_ADMIN_API_BASE_URL = 'http://localhost:3001/api/admin';
+const DEFAULT_ADMIN_API_BASE_URL = 'http://localhost:3100/api/admin';
 
-export const getTelemetryApiBaseUrl = () =>
-	process.env.NEXT_PUBLIC_TELEMETRY_API_BASE_URL ||
-	process.env.TELEMETRY_API_BASE_URL ||
-	DEFAULT_ADMIN_API_BASE_URL;
+export const getTelemetryApiBaseUrl = () => {
+	const configured =
+		process.env.NEXT_PUBLIC_TELEMETRY_API_BASE_URL ||
+		process.env.TELEMETRY_API_BASE_URL;
+	if (configured) return configured;
+	if (process.env.NODE_ENV === 'production') {
+		throw new Error('TELEMETRY_API_BASE_URL 환경변수가 필요합니다.');
+	}
+	return DEFAULT_ADMIN_API_BASE_URL;
+};
 
-export const getTelemetryAdminToken = () => process.env.TELEMETRY_ADMIN_TOKEN;
+export const getTelemetryAdminToken = () => {
+	const token = process.env.TELEMETRY_ADMIN_TOKEN?.trim();
+	if (token) return token;
+	if (process.env.NODE_ENV === 'production') {
+		throw new Error('TELEMETRY_ADMIN_TOKEN 환경변수가 필요합니다.');
+	}
+	return undefined;
+};
+
+export const isAdminFixtureFallbackEnabled = () =>
+	process.env.NODE_ENV === 'test' ||
+	(process.env.NODE_ENV !== 'production' &&
+		process.env.ADMIN_WEB_ENABLE_FIXTURES === 'true');
 
 const createAdminUrl = (baseUrl: string, path: string) =>
 	new URL(`${baseUrl.replace(/\/$/, '')}${path}`);
@@ -451,6 +507,21 @@ export const buildClientServiceKeysUrl = (
 	baseUrl = getTelemetryApiBaseUrl(),
 ) => createAdminUrl(baseUrl, `/client-services/${id}/keys`).toString();
 
+export const buildClientServicePoliciesUrl = (
+	id: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) => createAdminUrl(baseUrl, `/client-services/${id}/policies`).toString();
+
+export const buildClientServicePolicyUrl = (
+	serviceId: string,
+	policyId: string,
+	baseUrl = getTelemetryApiBaseUrl(),
+) =>
+	createAdminUrl(
+		baseUrl,
+		`/client-services/${serviceId}/policies/${policyId}`,
+	).toString();
+
 export const buildClientServiceKeyRevokeUrl = (
 	serviceId: string,
 	keyId: string,
@@ -539,15 +610,18 @@ export const fetchTelemetryJson = async <T>(
 	return (await response.json()) as T;
 };
 
-const writeTelemetryJson = <T>(
+const writeTelemetryJson = async <T>(
 	url: string,
 	method: 'POST' | 'PATCH' | 'DELETE',
 	payload?: unknown,
-) =>
-	fetchTelemetryJson<T>(url, {
+) => {
+	const auditHeaders = await getCurrentAdminAuditHeaders();
+	return fetchTelemetryJson<T>(url, {
 		method,
+		headers: auditHeaders,
 		body: payload === undefined ? undefined : JSON.stringify(payload),
 	});
+};
 
 export const fetchDashboardSummary = (query: DashboardQuery = {}) =>
 	fetchTelemetryJson<DashboardSummary>(buildDashboardSummaryUrl(query));
@@ -626,6 +700,36 @@ export const revokeClientServiceKey = (serviceId: string, keyId: string) =>
 	writeTelemetryJson<ClientServiceKeyItem>(
 		buildClientServiceKeyRevokeUrl(serviceId, keyId),
 		'POST',
+	);
+
+export const createClientServicePolicy = (
+	serviceId: string,
+	input: CreateClientServicePolicyInput,
+) =>
+	writeTelemetryJson<ClientServicePolicyItem>(
+		buildClientServicePoliciesUrl(serviceId),
+		'POST',
+		input,
+	);
+
+export const updateClientServicePolicy = (
+	serviceId: string,
+	policyId: string,
+	input: UpdateClientServicePolicyInput,
+) =>
+	writeTelemetryJson<ClientServicePolicyItem>(
+		buildClientServicePolicyUrl(serviceId, policyId),
+		'PATCH',
+		input,
+	);
+
+export const deleteClientServicePolicy = (
+	serviceId: string,
+	policyId: string,
+) =>
+	writeTelemetryJson<ClientServicePolicyItem>(
+		buildClientServicePolicyUrl(serviceId, policyId),
+		'DELETE',
 	);
 
 export const createClientServiceLifecycleSubscription = (

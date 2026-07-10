@@ -8,7 +8,7 @@ import {
 import { ClientKafka } from '@nestjs/microservices';
 import {
 	ClientServiceAuthContext,
-	createClientServiceForwardHeaders,
+	createInternalServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 } from '@file/database';
 import { randomUUID } from 'crypto';
@@ -19,6 +19,7 @@ import {
 	GetImageDto,
 	ImageEntity,
 	UploadImageDto,
+	normalizeSafeFileName,
 } from '@file/image-contracts';
 import {
 	createFailedTelemetryFields,
@@ -43,7 +44,6 @@ import { PngStrategy } from './strategies/sharp/png.strategy';
 import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { ImageManager } from './strategies/manager';
 import { SharpStrategy } from './strategies/sharp';
-import { normalizeSafeFileName } from './path.utils';
 import { AppConfig } from 'src/config/env.schema';
 
 @Injectable()
@@ -195,10 +195,12 @@ export class ImageService {
 	}
 
 	private async invalidateCachedImage({
+		action,
 		clientServiceContext,
 		name,
 		path,
 	}: {
+		action: 'image.upload' | 'image.delete';
 		path: string;
 		name: string;
 		clientServiceContext?: ClientServiceAuthContext;
@@ -214,13 +216,11 @@ export class ImageService {
 			return;
 		}
 
-		const headers = createClientServiceForwardHeaders(clientServiceContext);
-		if (Object.keys(headers).length === 0) {
-			this.logger.warn(
-				'클라이언트 서비스 인증 컨텍스트가 없어 캐시 무효화를 건너뜁니다.',
-			);
-			return;
-		}
+		const headers = createInternalServiceForwardHeaders(
+			clientServiceContext,
+			process.env.INTERNAL_API_KEY ?? this.appConfig?.INTERNAL_API_KEY,
+			{ audience: 'cache', action },
+		);
 
 		const url = `${cacheServer}/image/${encodeURIComponent(
 			cachePath,
@@ -286,6 +286,7 @@ export class ImageService {
 		if (!isTemp && path) {
 			await this.imageManager.deleteMainImage({ path, name });
 			await this.invalidateCachedImage({
+				action: 'image.delete',
 				path,
 				name,
 				clientServiceContext,
@@ -440,6 +441,7 @@ export class ImageService {
 			});
 
 			await this.invalidateCachedImage({
+				action: 'image.upload',
 				path,
 				name,
 				clientServiceContext,

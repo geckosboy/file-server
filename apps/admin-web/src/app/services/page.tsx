@@ -2,6 +2,7 @@ import { ClientServiceManager } from './client-service-manager';
 import { clientServicesFixture } from '@/lib/fixtures';
 import {
 	fetchClientServiceDetailsList,
+	isAdminFixtureFallbackEnabled,
 	type ClientServiceItem,
 } from '@/lib/telemetry-api';
 
@@ -37,6 +38,13 @@ async function fetchServicesPageData() {
 	try {
 		return { services: await fetchClientServiceDetailsList() };
 	} catch {
+		if (!isAdminFixtureFallbackEnabled()) {
+			return {
+				services: [],
+				errorMessage:
+					'텔레메트리 API에 연결할 수 없습니다. fixture 없이 빈 상태를 표시합니다.',
+			};
+		}
 		return {
 			services: clientServicesFixture,
 			errorMessage:

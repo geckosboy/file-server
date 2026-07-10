@@ -1,9 +1,5 @@
 {
-	"moduleFileExtensions": [
-		"js",
-		"json",
-		"ts"
-	],
+	"moduleFileExtensions": ["js", "json", "ts"],
 	"rootDir": ".",
 	"testEnvironment": "node",
 	"testRegex": ".e2e-spec.ts$",
@@ -13,6 +9,8 @@
 	"moduleNameMapper": {
 		"^src/(.*)$": "<rootDir>/../src/$1",
 		"^@file/database$": "<rootDir>/../../../libs/database/src",
+		"^@file/image-contracts$": "<rootDir>/../../../libs/image-contracts/src",
+		"^@file/image-contracts/(.*)$": "<rootDir>/../../../libs/image-contracts/src/$1",
 		"^@file/nest-common$": "<rootDir>/../../../libs/nest-common/src",
 		"^@file/nest-common/(.*)$": "<rootDir>/../../../libs/nest-common/src/$1",
 		"^@file/telemetry-contracts$": "<rootDir>/../../../libs/telemetry-contracts/src",

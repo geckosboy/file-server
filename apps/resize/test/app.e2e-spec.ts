@@ -10,6 +10,7 @@ import { ClientKafka } from '@nestjs/microservices';
 import { Test, TestingModule } from '@nestjs/testing';
 import {
 	ClientServiceAuthContext,
+	ClientServiceAuthorizationService,
 	INTERNAL_API_KEY_HEADER,
 	INTERNAL_CLIENT_CONTEXT_HEADER,
 	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
@@ -57,6 +58,7 @@ const internalAuthorized = (agent: SuperTestRequest) => {
 	const headers = createInternalServiceForwardHeaders(
 		clientServiceContext,
 		testInternalApiKey,
+		{ audience: 'resize', action: 'image.read' },
 	);
 	return Object.entries(headers).reduce(
 		(req, [name, value]) => req.set(name, value),
@@ -70,6 +72,7 @@ describe('리사이즈 앱 e2e', () => {
 	let fetchSpy: jest.SpiedFunction<typeof fetch>;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let originalImage: Buffer;
+	let authorization: { authorize: jest.Mock };
 
 	const getTelemetryPayloads = () =>
 		imageClient.emit.mock.calls
@@ -95,12 +98,19 @@ describe('리사이즈 앱 e2e', () => {
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
 		};
+		authorization = {
+			authorize: jest.fn().mockResolvedValue({ allowed: true }),
+		};
 
 		const moduleFixture: TestingModule = await Test.createTestingModule({
 			controllers: [AppController, ImageController],
 			providers: [
 				ImageService,
 				InternalServiceGuard,
+				{
+					provide: ClientServiceAuthorizationService,
+					useValue: authorization,
+				},
 				ImageManager,
 				{
 					provide: 'RESIZE_IMAGE_MICROSERVICE',

@@ -6,7 +6,9 @@ import {
 	NotFoundException,
 } from '@nestjs/common';
 import { generateClientApiKey } from '@file/database';
+import { normalizeClientServicePathPattern } from '@file/image-contracts';
 import {
+	AdminActionContext,
 	ClientServiceImageResizeFormat,
 	ClientServiceImageResizeMode,
 	ClientServiceLifecycleEventType,
@@ -16,17 +18,20 @@ import {
 	CreateClientServiceInput,
 	CreateClientServiceKeyInput,
 	CreateClientServiceKeyResult,
+	CreateClientServicePolicyInput,
 	JsonObject,
 	UpdateClientServiceImageResizePolicyInput,
 	UpdateClientServiceImageResizeVariantInput,
 	UpdateClientServiceLifecycleSubscriptionInput,
 	UpdateClientServiceInput,
+	UpdateClientServicePolicyInput,
 } from './client-services.types';
 import {
 	ClientServiceImageResizeVariantNotFoundError,
 	ClientServiceKeyNotFoundError,
 	ClientServiceLifecycleSubscriptionNotFoundError,
 	ClientServiceNotFoundError,
+	ClientServicePolicyNotFoundError,
 	ClientServicesRepository,
 	DuplicateClientServiceImageResizeVariantError,
 	DuplicateClientServiceLifecycleSubscriptionError,
@@ -78,6 +83,7 @@ export class ClientServicesService {
 	async createKey(
 		clientServiceId: string,
 		payload: unknown,
+		auditContext?: AdminActionContext,
 	): Promise<CreateClientServiceKeyResult> {
 		const input = parseCreateKeyInput(payload);
 		const generated = generateClientApiKey();
@@ -90,32 +96,75 @@ export class ClientServicesService {
 				scopes: input.scopes,
 				expiresAt: input.expiresAt,
 			});
+			await this.recordAudit({
+				context: auditContext,
+				clientServiceId,
+				action: 'client-service.key.created',
+				targetType: 'client-service-key',
+				targetId: key.id,
+				metadata: {
+					keyPrefix: key.keyPrefix,
+					...(key.name ? { name: key.name } : {}),
+					...(key.scopes ? { scopes: key.scopes } : {}),
+					...(key.expiresAt ? { expiresAt: key.expiresAt } : {}),
+				},
+			});
 			return { apiKey: generated.apiKey, key };
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
 	}
 
-	async revokeKey(clientServiceId: string, keyId: string) {
+	async revokeKey(
+		clientServiceId: string,
+		keyId: string,
+		auditContext?: AdminActionContext,
+	) {
 		try {
-			return await this.repository.revokeKey({
+			const key = await this.repository.revokeKey({
 				clientServiceId,
 				keyId,
 				revokedAt: new Date().toISOString(),
 			});
+			await this.recordAudit({
+				context: auditContext,
+				clientServiceId,
+				action: 'client-service.key.revoked',
+				targetType: 'client-service-key',
+				targetId: key.id,
+				metadata: { keyPrefix: key.keyPrefix },
+			});
+			return key;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
 	}
 
-	async createLifecycleSubscription(clientServiceId: string, payload: unknown) {
+	async createLifecycleSubscription(
+		clientServiceId: string,
+		payload: unknown,
+		auditContext?: AdminActionContext,
+	) {
 		const input = parseCreateLifecycleSubscriptionInput(payload);
 		try {
-			return await this.repository.createLifecycleSubscription({
+			const subscription = await this.repository.createLifecycleSubscription({
 				clientServiceId,
 				...input,
 				isEnabled: input.isEnabled ?? true,
 			});
+			await this.recordAudit({
+				context: auditContext,
+				clientServiceId,
+				action: 'client-service.subscription.created',
+				targetType: 'lifecycle-subscription',
+				targetId: subscription.id,
+				metadata: {
+					eventType: subscription.eventType,
+					consumerGroup: subscription.consumerGroup,
+					isEnabled: subscription.isEnabled,
+				},
+			});
+			return subscription;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
@@ -125,17 +174,90 @@ export class ClientServicesService {
 		clientServiceId: string,
 		subscriptionId: string,
 		payload: unknown,
+		auditContext?: AdminActionContext,
 	) {
 		const input = parseUpdateLifecycleSubscriptionInput(payload);
 		try {
-			return await this.repository.updateLifecycleSubscription({
+			const subscription = await this.repository.updateLifecycleSubscription({
 				clientServiceId,
 				subscriptionId,
 				...input,
 			});
+			await this.recordAudit({
+				context: auditContext,
+				clientServiceId,
+				action: 'client-service.subscription.updated',
+				targetType: 'lifecycle-subscription',
+				targetId: subscription.id,
+				metadata: {
+					eventType: subscription.eventType,
+					consumerGroup: subscription.consumerGroup,
+					isEnabled: subscription.isEnabled,
+				},
+			});
+			return subscription;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
+	}
+
+	async createPolicy(
+		clientServiceId: string,
+		payload: unknown,
+		auditContext?: AdminActionContext,
+	) {
+		const input = parseCreatePolicyInput(payload);
+		try {
+			const policy = await this.repository.createPolicy({
+				clientServiceId,
+				...input,
+			});
+			await this.recordPolicyAudit('created', policy, auditContext);
+			return policy;
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
+
+	async updatePolicy(
+		clientServiceId: string,
+		policyId: string,
+		payload: unknown,
+		auditContext?: AdminActionContext,
+	) {
+		const input = parseUpdatePolicyInput(payload);
+		try {
+			const policy = await this.repository.updatePolicy({
+				clientServiceId,
+				policyId,
+				...input,
+			});
+			await this.recordPolicyAudit('updated', policy, auditContext);
+			return policy;
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
+
+	async deletePolicy(
+		clientServiceId: string,
+		policyId: string,
+		auditContext?: AdminActionContext,
+	) {
+		try {
+			const policy = await this.repository.deletePolicy({
+				clientServiceId,
+				policyId,
+			});
+			await this.recordPolicyAudit('deleted', policy, auditContext);
+			return policy;
+		} catch (error) {
+			throw mapRepositoryError(error);
+		}
+	}
+
+	listAuditLogs(clientServiceId: string) {
+		return this.repository.listAuditLogs(clientServiceId);
 	}
 
 	async getImageResizePolicy(clientServiceId: string) {
@@ -148,26 +270,50 @@ export class ClientServicesService {
 		}
 	}
 
-	async updateImageResizePolicy(clientServiceId: string, payload: unknown) {
+	async updateImageResizePolicy(
+		clientServiceId: string,
+		payload: unknown,
+		auditContext?: AdminActionContext,
+	) {
 		const input = parseUpdateImageResizePolicyInput(payload);
 		try {
-			return await this.repository.updateImageResizePolicy(
+			const policy = await this.repository.updateImageResizePolicy(
 				clientServiceId,
 				input,
 			);
+			await this.recordAudit({
+				context: auditContext,
+				clientServiceId,
+				action: 'client-service.resize-policy.updated',
+				targetType: 'image-resize-policy',
+				targetId: policy.id,
+				metadata: { mode: policy.mode },
+			});
+			return policy;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
 	}
 
-	async createImageResizeVariant(clientServiceId: string, payload: unknown) {
+	async createImageResizeVariant(
+		clientServiceId: string,
+		payload: unknown,
+		auditContext?: AdminActionContext,
+	) {
 		const input = parseCreateImageResizeVariantInput(payload);
 		try {
-			return await this.repository.createImageResizeVariant({
+			const variant = await this.repository.createImageResizeVariant({
 				clientServiceId,
 				...input,
 				isEnabled: input.isEnabled ?? true,
 			});
+			await this.recordResizeVariantAudit(
+				'created',
+				clientServiceId,
+				variant,
+				auditContext,
+			);
+			return variant;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
@@ -177,28 +323,115 @@ export class ClientServicesService {
 		clientServiceId: string,
 		variantId: string,
 		payload: unknown,
+		auditContext?: AdminActionContext,
 	) {
 		const input = parseUpdateImageResizeVariantInput(payload);
 		try {
-			return await this.repository.updateImageResizeVariant({
+			const variant = await this.repository.updateImageResizeVariant({
 				clientServiceId,
 				variantId,
 				...input,
 			});
+			await this.recordResizeVariantAudit(
+				'updated',
+				clientServiceId,
+				variant,
+				auditContext,
+			);
+			return variant;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
 	}
 
-	async deleteImageResizeVariant(clientServiceId: string, variantId: string) {
+	async deleteImageResizeVariant(
+		clientServiceId: string,
+		variantId: string,
+		auditContext?: AdminActionContext,
+	) {
 		try {
-			return await this.repository.deleteImageResizeVariant({
+			const variant = await this.repository.deleteImageResizeVariant({
 				clientServiceId,
 				variantId,
 			});
+			await this.recordResizeVariantAudit(
+				'deleted',
+				clientServiceId,
+				variant,
+				auditContext,
+			);
+			return variant;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
+	}
+
+	private recordResizeVariantAudit(
+		operation: 'created' | 'updated' | 'deleted',
+		clientServiceId: string,
+		variant: Awaited<
+			ReturnType<ClientServicesRepository['createImageResizeVariant']>
+		>,
+		context?: AdminActionContext,
+	) {
+		return this.recordAudit({
+			context,
+			clientServiceId,
+			action: `client-service.resize-variant.${operation}`,
+			targetType: 'image-resize-variant',
+			targetId: variant.id,
+			metadata: {
+				...(variant.width !== undefined ? { width: variant.width } : {}),
+				...(variant.height !== undefined ? { height: variant.height } : {}),
+				format: variant.format,
+				isEnabled: variant.isEnabled,
+			},
+		});
+	}
+
+	private recordPolicyAudit(
+		operation: 'created' | 'updated' | 'deleted',
+		policy: Awaited<ReturnType<ClientServicesRepository['createPolicy']>>,
+		context?: AdminActionContext,
+	) {
+		return this.recordAudit({
+			context,
+			clientServiceId: policy.clientServiceId,
+			action: `client-service.access-policy.${operation}`,
+			targetType: 'client-service-policy',
+			targetId: policy.id,
+			metadata: {
+				pathPattern: policy.pathPattern,
+				canRead: policy.canRead,
+				canUpload: policy.canUpload,
+				canDelete: policy.canDelete,
+				...(policy.maxUploadBytes !== undefined
+					? { maxUploadBytes: policy.maxUploadBytes }
+					: {}),
+				...(policy.rateLimitPerMin !== undefined
+					? { rateLimitPerMin: policy.rateLimitPerMin }
+					: {}),
+			},
+		});
+	}
+
+	private recordAudit(input: {
+		context?: AdminActionContext;
+		clientServiceId: string;
+		action: string;
+		targetType: string;
+		targetId: string;
+		metadata?: JsonObject;
+	}) {
+		return this.repository.createAuditLog({
+			clientServiceId: input.clientServiceId,
+			actor: input.context?.actor ?? 'system',
+			requestId: input.context?.requestId ?? 'system',
+			action: input.action,
+			targetType: input.targetType,
+			targetId: input.targetId,
+			metadata: input.metadata,
+		});
 	}
 }
 
@@ -244,11 +477,93 @@ function parseUpdateServiceInput(payload: unknown): UpdateClientServiceInput {
 function parseCreateKeyInput(payload: unknown): CreateClientServiceKeyInput {
 	const record = requireRecord(payload ?? {});
 	const expiresAt = readOptionalIsoString(record, 'expiresAt');
+	const scopes = readOptionalJsonObject(record, 'scopes');
+	validateClientServiceKeyScopes(scopes);
 	return {
 		name: readOptionalString(record, 'name'),
-		scopes: readOptionalJsonObject(record, 'scopes'),
+		scopes,
 		expiresAt,
 	};
+}
+
+function validateClientServiceKeyScopes(scopes: JsonObject | undefined) {
+	if (!scopes) return;
+	for (const action of ['read', 'upload', 'delete'] as const) {
+		if (scopes[action] !== undefined && typeof scopes[action] !== 'boolean') {
+			throw new BadRequestException(`scopes.${action} must be a boolean`);
+		}
+	}
+	if (scopes.actions !== undefined) {
+		if (
+			!Array.isArray(scopes.actions) ||
+			scopes.actions.length === 0 ||
+			scopes.actions.some(
+				(action) =>
+					action !== 'read' && action !== 'upload' && action !== 'delete',
+			)
+		) {
+			throw new BadRequestException(
+				'scopes.actions must contain read, upload or delete',
+			);
+		}
+	}
+	if (scopes.pathPatterns !== undefined) {
+		if (
+			!Array.isArray(scopes.pathPatterns) ||
+			scopes.pathPatterns.length === 0 ||
+			scopes.pathPatterns.some((pattern) => typeof pattern !== 'string')
+		) {
+			throw new BadRequestException(
+				'scopes.pathPatterns must be a non-empty string array',
+			);
+		}
+		for (const pattern of scopes.pathPatterns as string[]) {
+			normalizeClientServicePathPattern(pattern);
+		}
+	}
+}
+
+function parseCreatePolicyInput(
+	payload: unknown,
+): CreateClientServicePolicyInput {
+	const record = requireRecord(payload);
+	return {
+		pathPattern: normalizeClientServicePathPattern(
+			readRequiredString(record, 'pathPattern'),
+		),
+		canRead: readOptionalBoolean(record, 'canRead'),
+		canUpload: readOptionalBoolean(record, 'canUpload'),
+		canDelete: readOptionalBoolean(record, 'canDelete'),
+		maxUploadBytes: readOptionalPositiveInteger(record, 'maxUploadBytes'),
+		rateLimitPerMin: readOptionalPositiveInteger(record, 'rateLimitPerMin'),
+		metadata: readOptionalJsonObject(record, 'metadata'),
+	};
+}
+
+function parseUpdatePolicyInput(
+	payload: unknown,
+): UpdateClientServicePolicyInput {
+	const record = requireRecord(payload);
+	const rawPathPattern = readOptionalString(record, 'pathPattern');
+	const input: UpdateClientServicePolicyInput = {
+		pathPattern:
+			rawPathPattern === undefined
+				? undefined
+				: normalizeClientServicePathPattern(rawPathPattern),
+		canRead: readOptionalBoolean(record, 'canRead'),
+		canUpload: readOptionalBoolean(record, 'canUpload'),
+		canDelete: readOptionalBoolean(record, 'canDelete'),
+		maxUploadBytes: readNullablePositiveInteger(record, 'maxUploadBytes'),
+		rateLimitPerMin: readNullablePositiveInteger(record, 'rateLimitPerMin'),
+		metadata:
+			record.metadata === null
+				? null
+				: readOptionalJsonObject(record, 'metadata'),
+	};
+	if (Object.values(input).every((value) => value === undefined)) {
+		throw new BadRequestException('수정할 정책 필드가 필요합니다');
+	}
+	return input;
 }
 
 function parseCreateLifecycleSubscriptionInput(
@@ -510,6 +825,30 @@ function readOptionalBoolean(
 	return value;
 }
 
+function readOptionalPositiveInteger(
+	record: Record<string, unknown>,
+	key: string,
+): number | undefined {
+	const value = record[key];
+	if (value === undefined) return undefined;
+	if (
+		typeof value !== 'number' ||
+		!Number.isInteger(value) ||
+		value <= 0 ||
+		value > 2_147_483_647
+	) {
+		throw new BadRequestException(`${key} must be a positive integer`);
+	}
+	return value;
+}
+
+function readNullablePositiveInteger(
+	record: Record<string, unknown>,
+	key: string,
+): number | null | undefined {
+	return record[key] === null ? null : readOptionalPositiveInteger(record, key);
+}
+
 function readOptionalIsoString(
 	record: Record<string, unknown>,
 	key: string,
@@ -573,6 +912,9 @@ function mapRepositoryError(error: unknown): Error {
 	}
 	if (error instanceof ClientServiceKeyNotFoundError) {
 		return new NotFoundException('client service key not found');
+	}
+	if (error instanceof ClientServicePolicyNotFoundError) {
+		return new NotFoundException('client service policy not found');
 	}
 	if (error instanceof ClientServiceLifecycleSubscriptionNotFoundError) {
 		return new NotFoundException(

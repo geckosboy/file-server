@@ -12,6 +12,7 @@ import {
 import {
 	fetchClientServiceDetailsList,
 	fetchImageResizeRecommendations,
+	isAdminFixtureFallbackEnabled,
 	type ClientServiceItem,
 	type ImageResizeRecommendationsResponse,
 } from '@/lib/telemetry-api';
@@ -82,6 +83,15 @@ async function fetchResizeRecommendationsPageData(
 		]);
 		return { services, data, filters };
 	} catch {
+		if (!isAdminFixtureFallbackEnabled()) {
+			return {
+				services: [],
+				data: { threshold: { minRequests }, items: [] },
+				filters,
+				errorMessage:
+					'텔레메트리 API에 연결할 수 없습니다. 운영 추천 대신 빈 상태를 표시합니다.',
+			};
+		}
 		return {
 			services: clientServicesFixture,
 			data: imageResizeRecommendationsFixture,

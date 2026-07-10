@@ -19,13 +19,23 @@ export {
 	ClientServiceAuthService,
 	InternalServiceGuard,
 	ClientServiceContext,
-	createClientServiceForwardHeaders,
+	InternalServiceAccess,
 	createInternalServiceForwardHeaders,
 	createClientServiceTelemetryFields,
 	getClientServiceContext,
+	getInternalServiceAccess,
 	type AuthenticatedClientService,
 	type ClientServiceAuthenticatedRequest,
 	type ClientServiceAuthContext,
 	type ClientServiceTelemetryFields,
+	type CreateInternalServiceForwardHeadersOptions,
+	type InternalServiceAccessContext,
+	type InternalServiceAccessRequirement,
 } from './client-service-auth';
 export { ClientServiceAuthModule } from './client-service-auth.module';
+export {
+	ClientServiceAction,
+	ClientServiceAuthorizationService,
+	type ClientServiceAuthorizationDecision,
+	type ClientServiceAuthorizationInput,
+} from './client-service-authorization';

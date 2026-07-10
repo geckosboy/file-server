@@ -16,6 +16,7 @@ import {
 import {
 	fetchClientServices,
 	fetchImages,
+	isAdminFixtureFallbackEnabled,
 	type ClientServiceItem,
 	type ImageListItem,
 	type ImageListResponse,
@@ -231,6 +232,15 @@ async function fetchImagesPageData(
 		]);
 		return { data, services, filters };
 	} catch {
+		if (!isAdminFixtureFallbackEnabled()) {
+			return {
+				data: { items: [] },
+				services: [],
+				filters,
+				errorMessage:
+					'텔레메트리 API에 연결할 수 없습니다. 운영 이미지 대신 빈 상태를 표시합니다.',
+			};
+		}
 		return {
 			data: imageListFixture,
 			services: clientServicesFixture,

@@ -92,6 +92,7 @@ export class ImageService {
 		const headers = createInternalServiceForwardHeaders(
 			clientServiceContext,
 			process.env.INTERNAL_API_KEY ?? envConfig.INTERNAL_API_KEY,
+			{ audience: 'storage', action: 'image.read' },
 		);
 		try {
 			result = await fetch(this.getImageUrl(imageInfo), {
