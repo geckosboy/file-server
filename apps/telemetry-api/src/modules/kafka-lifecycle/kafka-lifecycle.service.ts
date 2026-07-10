@@ -14,8 +14,10 @@ import {
 	LIFECYCLE_KAFKA_CONSUMER_FACTORY,
 	LifecycleKafkaConsumer,
 	LifecycleKafkaConsumerFactory,
+	LifecycleKafkaDlqProducer,
 } from './kafka-lifecycle.consumer-factory';
 import { LifecycleKafkaConsumerStatusService } from './kafka-lifecycle.status';
+import { processKafkaMessageWithResilience } from '../kafka/kafka-consumer-resilience';
 
 @Injectable()
 export class LifecycleKafkaConsumerService
@@ -23,6 +25,8 @@ export class LifecycleKafkaConsumerService
 {
 	private readonly logger = new Logger(LifecycleKafkaConsumerService.name);
 	private consumer?: LifecycleKafkaConsumer;
+	private dlqProducer?: LifecycleKafkaDlqProducer;
+	private config?: ReturnType<typeof readLifecycleKafkaConsumerConfig>;
 
 	constructor(
 		private readonly ingestionService: LifecycleIngestionService,
@@ -33,6 +37,7 @@ export class LifecycleKafkaConsumerService
 
 	async onApplicationBootstrap() {
 		const config = readLifecycleKafkaConsumerConfig();
+		this.config = config;
 		this.statusService.configure(config);
 		if (!config.enabled) {
 			this.logger.log(
@@ -43,12 +48,15 @@ export class LifecycleKafkaConsumerService
 
 		try {
 			this.consumer = this.consumerFactory.create(config);
+			this.dlqProducer = this.consumerFactory.createDlqProducer(config);
 			await this.consumer.connect();
+			await this.dlqProducer.connect();
 			await this.consumer.subscribe({
 				topic: config.topic,
 				fromBeginning: config.fromBeginning,
 			});
 			await this.consumer.run({
+				autoCommit: false,
 				eachMessage: (payload) => this.handleMessage(payload),
 			});
 			this.statusService.markConnected();
@@ -56,6 +64,7 @@ export class LifecycleKafkaConsumerService
 				`Kafka lifecycle consumer connected: ${config.topic} group=${config.groupId}`,
 			);
 		} catch (error) {
+			await this.disconnectClients();
 			this.statusService.markDisconnected(error);
 			this.logger.error(
 				`Kafka lifecycle consumer 연결 실패: ${errorToMessage(error)}`,
@@ -64,23 +73,43 @@ export class LifecycleKafkaConsumerService
 	}
 
 	async onApplicationShutdown() {
-		if (!this.consumer) {
-			return;
-		}
-
 		try {
-			await this.consumer.disconnect();
+			await this.disconnectClients();
 		} finally {
 			this.statusService.markDisconnected();
 		}
 	}
 
-	async handleMessage({ message }: EachMessagePayload): Promise<void> {
-		const result = await this.ingestMessageValue(message.value);
+	async handleMessage(payload: EachMessagePayload): Promise<void> {
+		const consumer = this.requireConsumer();
+		const dlqProducer = this.requireDlqProducer();
+		const config = this.requireConfig();
+		const processing = await processKafkaMessageWithResilience({
+			payload,
+			retryPolicy: config,
+			ingest: (value) => this.ingestMessageValue(value),
+			publishDeadLetter: async (envelope) => {
+				await dlqProducer.send({
+					topic: config.dlqTopic,
+					acks: -1,
+					messages: [
+						{
+							key: `${payload.topic}:${payload.partition}:${payload.message.offset}`,
+							value: JSON.stringify(envelope),
+						},
+					],
+				});
+			},
+			commitOffset: async (offset) => {
+				await consumer.commitOffsets([
+					{ topic: payload.topic, partition: payload.partition, offset },
+				]);
+			},
+		});
 		this.statusService.markConsumed();
-		if (!result.accepted) {
+		if (processing.outcome === 'dead-lettered') {
 			this.logger.warn(
-				`Kafka lifecycle event 거부: ${result.reason ?? 'unknown reason'}`,
+				`Kafka lifecycle event DLQ 처리: ${processing.ingestion.reason ?? 'unknown reason'}`,
 			);
 		}
 	}
@@ -92,6 +121,34 @@ export class LifecycleKafkaConsumerService
 		}
 
 		return this.ingestionService.ingest(parsed.payload);
+	}
+
+	private requireConsumer(): LifecycleKafkaConsumer {
+		if (!this.consumer) {
+			throw new Error('Kafka lifecycle consumer is not initialized');
+		}
+		return this.consumer;
+	}
+
+	private requireDlqProducer(): LifecycleKafkaDlqProducer {
+		if (!this.dlqProducer) {
+			throw new Error('Kafka lifecycle DLQ producer is not initialized');
+		}
+		return this.dlqProducer;
+	}
+
+	private requireConfig(): ReturnType<typeof readLifecycleKafkaConsumerConfig> {
+		if (!this.config) {
+			throw new Error('Kafka lifecycle consumer config is not initialized');
+		}
+		return this.config;
+	}
+
+	private async disconnectClients(): Promise<void> {
+		await Promise.allSettled([
+			this.consumer?.disconnect(),
+			this.dlqProducer?.disconnect(),
+		]);
 	}
 }
 

@@ -130,34 +130,78 @@ export const startInfrastructure = async (config) => {
 		],
 		{ env: config.env },
 	);
-	for (const topic of ['file.image.events.v1', 'file.image.lifecycle.v1']) {
-		await run(
-			'docker',
-			[
-				'compose',
-				'-f',
-				composeFile,
-				'-p',
-				config.project,
-				'exec',
-				'--no-TTY',
-				'kafka',
-				'/opt/kafka/bin/kafka-topics.sh',
-				'--bootstrap-server',
-				'kafka:9092',
-				'--create',
-				'--if-not-exists',
-				'--topic',
-				topic,
-				'--partitions',
-				'1',
-				'--replication-factor',
-				'1',
-			],
-			{ env: config.env },
-		);
+	for (const topic of [
+		'file.image.events.v1',
+		'file.image.events.v1.dlq',
+		'file.image.lifecycle.v1',
+		'file.image.lifecycle.v1.dlq',
+	]) {
+		await ensureKafkaTopic(config, topic);
 	}
 };
+
+export const ensureKafkaTopic = (config, topic) =>
+	run(
+		'docker',
+		[
+			'compose',
+			'-f',
+			composeFile,
+			'-p',
+			config.project,
+			'exec',
+			'--no-TTY',
+			'kafka',
+			'/opt/kafka/bin/kafka-topics.sh',
+			'--bootstrap-server',
+			'kafka:9092',
+			'--create',
+			'--if-not-exists',
+			'--topic',
+			topic,
+			'--partitions',
+			'1',
+			'--replication-factor',
+			'1',
+		],
+		{ env: config.env },
+	);
+
+export const stopInfrastructureService = (config, service) =>
+	run(
+		'docker',
+		[
+			'compose',
+			'-f',
+			composeFile,
+			'-p',
+			config.project,
+			'stop',
+			'--timeout',
+			'1',
+			service,
+		],
+		{ env: config.env },
+	);
+
+export const startInfrastructureService = (config, service) =>
+	run(
+		'docker',
+		[
+			'compose',
+			'-f',
+			composeFile,
+			'-p',
+			config.project,
+			'up',
+			'--detach',
+			'--wait',
+			'--wait-timeout',
+			'60',
+			service,
+		],
+		{ env: config.env },
+	);
 
 export const stopInfrastructure = async (config) => {
 	await run(

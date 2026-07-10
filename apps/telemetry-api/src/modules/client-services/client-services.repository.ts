@@ -4,6 +4,7 @@ import {
 	ClientServiceImageResizePolicyRecord,
 	ClientServiceImageResizeVariantRecord,
 	ClientServiceLifecycleSubscriptionRecord,
+	ClientServiceLifecycleProvisioningRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
 	ClientServicePolicyRecord,
@@ -81,13 +82,13 @@ export interface ClientServicesRepository {
 		input: CreateClientServiceLifecycleSubscriptionInput & {
 			clientServiceId: string;
 			isEnabled: boolean;
-		},
+		} & ClientServiceLifecycleProvisioningRecord,
 	): Promise<ClientServiceLifecycleSubscriptionRecord>;
 	updateLifecycleSubscription(
 		input: UpdateClientServiceLifecycleSubscriptionInput & {
 			clientServiceId: string;
 			subscriptionId: string;
-		},
+		} & Partial<ClientServiceLifecycleProvisioningRecord>,
 	): Promise<ClientServiceLifecycleSubscriptionRecord>;
 	getOrCreateImageResizePolicy(
 		clientServiceId: string,
@@ -169,6 +170,11 @@ interface MutableClientServiceLifecycleSubscription {
 	consumerGroup: string;
 	isEnabled: boolean;
 	description?: string;
+	topic: string;
+	principal: string;
+	provisioningStatus: ClientServiceLifecycleSubscriptionRecord['provisioningStatus'];
+	provisioningError?: string;
+	provisionedAt?: string;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -432,7 +438,7 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 		input: CreateClientServiceLifecycleSubscriptionInput & {
 			clientServiceId: string;
 			isEnabled: boolean;
-		},
+		} & ClientServiceLifecycleProvisioningRecord,
 	): Promise<ClientServiceLifecycleSubscriptionRecord> {
 		if (!this.services.has(input.clientServiceId)) {
 			throw new ClientServiceNotFoundError(input.clientServiceId);
@@ -447,6 +453,11 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 			consumerGroup: input.consumerGroup,
 			isEnabled: input.isEnabled,
 			description: input.description,
+			topic: input.topic,
+			principal: input.principal,
+			provisioningStatus: input.provisioningStatus,
+			provisioningError: input.provisioningError ?? undefined,
+			provisionedAt: input.provisionedAt ?? undefined,
 			createdAt: now,
 			updatedAt: now,
 		};
@@ -458,7 +469,7 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 		input: UpdateClientServiceLifecycleSubscriptionInput & {
 			clientServiceId: string;
 			subscriptionId: string;
-		},
+		} & Partial<ClientServiceLifecycleProvisioningRecord>,
 	): Promise<ClientServiceLifecycleSubscriptionRecord> {
 		const subscription = this.lifecycleSubscriptions.get(input.subscriptionId);
 		if (
@@ -476,6 +487,15 @@ export class InMemoryClientServicesRepository implements ClientServicesRepositor
 				eventType: input.eventType,
 				consumerGroup: input.consumerGroup,
 				isEnabled: input.isEnabled,
+				topic: input.topic,
+				principal: input.principal,
+				provisioningStatus: input.provisioningStatus,
+				provisioningError:
+					input.provisioningError === null
+						? undefined
+						: input.provisioningError,
+				provisionedAt:
+					input.provisionedAt === null ? undefined : input.provisionedAt,
 			}),
 			description:
 				input.description === null
@@ -779,6 +799,11 @@ function toLifecycleSubscriptionRecord(
 		consumerGroup: subscription.consumerGroup,
 		isEnabled: subscription.isEnabled,
 		description: subscription.description,
+		topic: subscription.topic,
+		principal: subscription.principal,
+		provisioningStatus: subscription.provisioningStatus,
+		provisioningError: subscription.provisioningError,
+		provisionedAt: subscription.provisionedAt,
 		createdAt: subscription.createdAt,
 		updatedAt: subscription.updatedAt,
 	};

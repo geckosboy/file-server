@@ -72,3 +72,7 @@ tsconfig.build.tsbuildinfo
 .turbo/
 
 settings.json
+
+# Kafka production TLS/SASL material is runtime-only.
+docker/kafka-secrets/*
+!docker/kafka-secrets/README.md

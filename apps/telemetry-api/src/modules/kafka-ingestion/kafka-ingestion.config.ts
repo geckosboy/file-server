@@ -6,12 +6,17 @@ export interface TelemetryKafkaConsumerConfig {
 	clientId: string;
 	groupId: string;
 	topic: string;
+	dlqTopic: string;
 	fromBeginning: boolean;
+	retryMaxAttempts: number;
+	retryBackoffMs: number;
 	disabledReason?: string;
 }
 
 const DEFAULT_CLIENT_ID = 'telemetry-api';
 const DEFAULT_GROUP_ID = 'file-telemetry-api';
+const DEFAULT_RETRY_MAX_ATTEMPTS = 3;
+const DEFAULT_RETRY_BACKOFF_MS = 100;
 
 export const readTelemetryKafkaConsumerConfig = (
 	env: NodeJS.ProcessEnv = process.env,
@@ -24,15 +29,27 @@ export const readTelemetryKafkaConsumerConfig = (
 	);
 	const requestedEnabled = explicitEnabled ?? env.NODE_ENV !== 'test';
 	const enabled = requestedEnabled && brokers.length > 0;
+	const topic = env.TELEMETRY_KAFKA_TOPIC ?? IMAGE_TELEMETRY_TOPIC;
 
 	return {
 		enabled,
 		brokers,
 		clientId: env.TELEMETRY_KAFKA_CLIENT_ID ?? DEFAULT_CLIENT_ID,
 		groupId: env.TELEMETRY_KAFKA_GROUP_ID ?? DEFAULT_GROUP_ID,
-		topic: env.TELEMETRY_KAFKA_TOPIC ?? IMAGE_TELEMETRY_TOPIC,
+		topic,
+		dlqTopic: env.TELEMETRY_KAFKA_DLQ_TOPIC ?? `${topic}.dlq`,
 		fromBeginning:
 			parseOptionalBoolean(env.TELEMETRY_KAFKA_FROM_BEGINNING) ?? false,
+		retryMaxAttempts: parseInteger(
+			env.TELEMETRY_KAFKA_RETRY_MAX_ATTEMPTS,
+			DEFAULT_RETRY_MAX_ATTEMPTS,
+			1,
+		),
+		retryBackoffMs: parseInteger(
+			env.TELEMETRY_KAFKA_RETRY_BACKOFF_MS,
+			DEFAULT_RETRY_BACKOFF_MS,
+			0,
+		),
 		...(enabled
 			? {}
 			: {
@@ -51,6 +68,15 @@ function parseList(value: string | undefined): string[] {
 			.map((item) => item.trim())
 			.filter(Boolean) ?? []
 	);
+}
+
+function parseInteger(
+	value: string | undefined,
+	fallback: number,
+	minimum: number,
+): number {
+	const parsed = value === undefined ? Number.NaN : Number(value);
+	return Number.isInteger(parsed) && parsed >= minimum ? parsed : fallback;
 }
 
 function parseOptionalBoolean(value: string | undefined): boolean | undefined {

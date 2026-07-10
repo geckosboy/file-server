@@ -112,16 +112,18 @@ export const publishImageLifecycleEvent = async ({
 export const publishImageLifecycleEventOrThrow = async ({
 	client,
 	event,
+	topic = IMAGE_LIFECYCLE_TOPIC,
 }: {
 	client?: Pick<ClientKafka, 'emit'>;
 	event: ImageLifecycleEvent;
+	topic?: string;
 }) => {
 	if (!client || typeof client.emit !== 'function') {
 		throw new Error('Kafka client is not configured');
 	}
 
 	await lastValueFrom(
-		client.emit(IMAGE_LIFECYCLE_TOPIC, {
+		client.emit(topic, {
 			key: createLifecycleKafkaKey(event),
 			value: JSON.stringify(event),
 		}),

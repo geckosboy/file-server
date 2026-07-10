@@ -5,7 +5,8 @@
 		"../../libs/global/src/**/*.ts",
 		"../../libs/nest-common/src/**/*.ts",
 		"../../libs/image-contracts/src/**/*.ts",
-		"../../libs/database/src/**/*.ts"
+		"../../libs/database/src/**/*.ts",
+		"../../libs/telemetry-contracts/src/**/*.ts"
 	],
 	"exclude": [
 		"node_modules",
@@ -24,7 +25,11 @@
 			"@file/global": ["../../libs/global/src"],
 			"@file/nest-common": ["../../libs/nest-common/src"],
 			"@file/image-contracts": ["../../libs/image-contracts/src"],
-			"@file/database": ["../../libs/database/src"]
+			"@file/database": ["../../libs/database/src"],
+			"@file/telemetry-contracts": ["../../libs/telemetry-contracts/src"],
+			"@file/telemetry-contracts/*": [
+				"../../libs/telemetry-contracts/src/*"
+			]
 		}
 	}
 }

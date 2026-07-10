@@ -11,6 +11,7 @@ import {
 import { InMemoryClientServicesRepository } from './client-services.repository';
 import { ClientServicesService } from './client-services.service';
 import { PrismaClientServicesRepository } from './prisma-client-services.repository';
+import { KafkaLifecycleProvisionerService } from './kafka-lifecycle-provisioner.service';
 
 const repositoryProviders = shouldUseInMemoryClientServicesRepository()
 	? [InMemoryClientServicesRepository, createClientServicesRepositoryProvider()]
@@ -23,6 +24,7 @@ const repositoryProviders = shouldUseInMemoryClientServicesRepository()
 		AdminAuthGuard,
 		TelemetryConfigService,
 		ClientServicesService,
+		KafkaLifecycleProvisionerService,
 		...repositoryProviders,
 	],
 	exports: [ClientServicesService, CLIENT_SERVICES_REPOSITORY],

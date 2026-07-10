@@ -43,8 +43,8 @@ export class ImageService {
 		private readonly imageClient: ClientKafka,
 	) {}
 
-	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
-		await publishImageTelemetryEvent({
+	private publishTelemetryEvent(event: ImageTelemetryEvent): void {
+		void publishImageTelemetryEvent({
 			client: this.imageClient,
 			event,
 			logger: this.logger,
@@ -141,7 +141,7 @@ export class ImageService {
 		const telemetryContext =
 			createClientServiceTelemetryFields(clientServiceContext);
 
-		await this.publishTelemetryEvent(
+		this.publishTelemetryEvent(
 			createImageTelemetryEvent({
 				eventType: ImageTelemetryEventType.ResizeRequested,
 				sourceApp: 'resize',
@@ -166,7 +166,7 @@ export class ImageService {
 					`${path}/${name} - pre-generated ${format} ${size.width ?? '-'}/${size.height ?? '-'}px ${fetchedImage.imageBuffer.byteLength}byte +${Math.round(durationMs)}ms `,
 				);
 
-				await this.publishTelemetryEvent(
+				this.publishTelemetryEvent(
 					createImageTelemetryEvent({
 						eventType: ImageTelemetryEventType.ResizeCompleted,
 						sourceApp: 'resize',
@@ -202,7 +202,7 @@ export class ImageService {
 				`${path}/${name} - ${format} ${size.width ?? '-'}/${size.height ?? '-'}px ${fetchedImage.imageBuffer.byteLength}>>${result.byteLength}byte +${Math.round(exeTime)}ms `,
 			);
 
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.ResizeCompleted,
 					sourceApp: 'resize',
@@ -227,7 +227,7 @@ export class ImageService {
 			};
 		} catch (error) {
 			this.logger.error(error);
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.ResizeFailed,
 					sourceApp: 'resize',

@@ -4,8 +4,13 @@ import { Partitioners } from 'kafkajs';
 import { ImageController } from './image.controller';
 import { ImageService } from './image.service';
 import { ClientServiceAuthModule } from '@file/database';
+import { readKafkaClientSecurityOptions } from '@file/nest-common';
 import { CacheModule } from '../node-cache/cache.module';
 import { envConfig } from 'src/config';
+import {
+	IMAGE_TELEMETRY_KAFKA_RETRY_OPTIONS,
+	IMAGE_TELEMETRY_KAFKA_SEND_OPTIONS,
+} from '@file/telemetry-contracts/events';
 
 const KafkaModule = ClientsModule.register([
 	{
@@ -15,11 +20,14 @@ const KafkaModule = ClientsModule.register([
 			client: {
 				clientId: 'cache-image',
 				brokers: envConfig.kafkaClientBrokerList,
+				...readKafkaClientSecurityOptions(),
+				retry: { ...IMAGE_TELEMETRY_KAFKA_RETRY_OPTIONS },
 			},
 			producer: {
-				allowAutoTopicCreation: true,
+				allowAutoTopicCreation: false,
 				createPartitioner: Partitioners.LegacyPartitioner,
 			},
+			send: { ...IMAGE_TELEMETRY_KAFKA_SEND_OPTIONS },
 			producerOnlyMode: true,
 		},
 	},

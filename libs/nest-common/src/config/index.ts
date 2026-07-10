@@ -6,6 +6,15 @@ import {
 	selectConfig,
 } from 'nest-typed-config';
 
+export {
+	KafkaSaslMechanism,
+	readKafkaClientSecurityOptions,
+} from './kafka-client-security';
+export type {
+	KafkaClientSaslOptions,
+	KafkaClientSecurityOptions,
+} from './kafka-client-security';
+
 export type EnvFilePathResolver = (
 	filename: string,
 	isBuild?: boolean,

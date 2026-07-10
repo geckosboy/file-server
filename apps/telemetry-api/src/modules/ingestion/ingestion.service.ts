@@ -3,18 +3,15 @@ import { Inject } from '@nestjs/common';
 import { TelemetryRepository } from '../telemetry/telemetry.repository';
 import { TELEMETRY_REPOSITORY } from '../telemetry/telemetry-repository.provider';
 import {
-	ImageFormats,
 	ImageTelemetryEvent,
-	ImageTelemetryEventType,
-	ImageTelemetryEventTypes,
-	RuntimeEnvironment,
-	RuntimeEnvironments,
-	SourceApp,
-	SourceApps,
-	TelemetryStatus,
-	TelemetryStatuses,
 	UnknownRecord,
 } from '../telemetry/telemetry.types';
+import {
+	createImageKey,
+	getImageTelemetryEnvironment,
+	normalizeImageFormat,
+	validateImageTelemetryEvent,
+} from '@file/telemetry-contracts/events';
 
 export interface IngestionResult {
 	accepted: boolean;
@@ -98,7 +95,9 @@ export class IngestionService {
 		}
 
 		const id = readNumber(legacyPayload, 'id');
-		const format = readOptionalString(legacyPayload, 'format') ?? 'unknown';
+		const format = normalizeImageFormat(
+			readOptionalString(legacyPayload, 'format'),
+		);
 		const size = readOptionalNumber(legacyPayload, 'size');
 		const exeTime = readOptionalNumber(legacyPayload, 'exeTime');
 		if (id === undefined) {
@@ -115,7 +114,8 @@ export class IngestionService {
 			readOptionalString(legacyPayload, 'name') ??
 			`legacy-${id}.${format === 'unknown' ? 'bin' : format}`;
 		const imageKey =
-			readOptionalString(legacyPayload, 'imageKey') ?? `${path}/${name}`;
+			readOptionalString(legacyPayload, 'imageKey') ??
+			createImageKey(path, name);
 		return await this.ingest(
 			{
 				schemaVersion: 1,
@@ -128,8 +128,7 @@ export class IngestionService {
 				sourceApp: 'storage',
 				environment:
 					readOptionalString(legacyPayload, 'environment') ??
-					process.env.NODE_ENV ??
-					'development',
+					getImageTelemetryEnvironment(),
 				clientServiceId: readOptionalString(legacyPayload, 'clientServiceId'),
 				clientServiceSlug: readOptionalString(
 					legacyPayload,
@@ -153,102 +152,18 @@ export class IngestionService {
 	}
 
 	private parseStandardEvent(payload: unknown, receivedAt: Date): ParseResult {
-		const record = asRecord(payload);
-		if (!record) {
-			return { ok: false, reason: 'payload must be an object' };
-		}
-
-		if (record.schemaVersion !== 1) {
-			return { ok: false, reason: 'schemaVersion must be 1' };
-		}
-
-		const eventId = readString(record, 'eventId');
-		const eventType = readEnum(
-			record,
-			'eventType',
-			ImageTelemetryEventTypes,
-		) as ImageTelemetryEventType | undefined;
-		const occurredAt = readIsoString(record, 'occurredAt');
-		const sourceApp = readEnum(record, 'sourceApp', SourceApps) as
-			SourceApp | undefined;
-		const environment = readEnum(record, 'environment', RuntimeEnvironments) as
-			RuntimeEnvironment | undefined;
-		const status = readEnum(record, 'status', TelemetryStatuses) as
-			TelemetryStatus | undefined;
-		const path = readString(record, 'path');
-		const name = readString(record, 'name');
-		const imageKey = readString(record, 'imageKey');
-
-		if (!eventId) {
-			return { ok: false, reason: 'eventId is required or invalid' };
-		}
-		if (!eventType) {
-			return { ok: false, reason: 'eventType is required or invalid' };
-		}
-		if (!occurredAt) {
-			return { ok: false, reason: 'occurredAt is required or invalid' };
-		}
-		if (!sourceApp) {
-			return { ok: false, reason: 'sourceApp is required or invalid' };
-		}
-		if (!environment) {
-			return { ok: false, reason: 'environment is required or invalid' };
-		}
-		if (!status) {
-			return { ok: false, reason: 'status is required or invalid' };
-		}
-		if (!path) {
-			return { ok: false, reason: 'path is required or invalid' };
-		}
-		if (!name) {
-			return { ok: false, reason: 'name is required or invalid' };
-		}
-		if (!imageKey) {
-			return { ok: false, reason: 'imageKey is required or invalid' };
-		}
-
-		const errorCode = readOptionalString(record, 'errorCode');
-		const errorMessage = readOptionalString(record, 'errorMessage');
-		if (status === 'failed' && (!errorCode || !errorMessage)) {
-			return {
-				ok: false,
-				reason: 'failed event requires errorCode and errorMessage',
-			};
+		const validated = validateImageTelemetryEvent(payload);
+		if (!validated.ok) {
+			return { ok: false, reason: validated.errors.join('; ') };
 		}
 
 		return {
 			ok: true,
 			event: {
-				schemaVersion: 1,
-				eventId,
-				eventType,
-				occurredAt,
-				receivedAt:
-					readOptionalIsoString(record, 'receivedAt') ??
-					receivedAt.toISOString(),
-				sourceApp,
-				environment,
-				clientServiceId: readOptionalString(record, 'clientServiceId'),
-				clientServiceSlug: readOptionalString(record, 'clientServiceSlug'),
-				requestId: readOptionalString(record, 'requestId'),
-				traceId: readOptionalString(record, 'traceId'),
-				imageId: readOptionalNumber(record, 'imageId'),
-				path,
-				name,
-				originalName: readOptionalString(record, 'originalName'),
-				imageKey,
-				cacheKey: readOptionalString(record, 'cacheKey'),
-				width: readOptionalNumber(record, 'width'),
-				height: readOptionalNumber(record, 'height'),
-				format: readEnum(record, 'format', ImageFormats),
-				inputBytes: readOptionalNumber(record, 'inputBytes'),
-				outputBytes: readOptionalNumber(record, 'outputBytes'),
-				durationMs: readOptionalNumber(record, 'durationMs'),
-				status,
-				errorCode,
-				errorMessage,
-				rawPayload: record,
-			},
+				...validated.event,
+				receivedAt: validated.event.receivedAt ?? receivedAt.toISOString(),
+				rawPayload: payload as UnknownRecord,
+			} as ImageTelemetryEvent,
 		};
 	}
 }
@@ -287,32 +202,4 @@ function readOptionalNumber(
 ): number | undefined {
 	const value = record[key];
 	return value === undefined ? undefined : readNumber(record, key);
-}
-
-function readIsoString(record: UnknownRecord, key: string): string | undefined {
-	const value = readString(record, key);
-	return value && isValidDate(value) ? value : undefined;
-}
-
-function readOptionalIsoString(
-	record: UnknownRecord,
-	key: string,
-): string | undefined {
-	const value = record[key];
-	return value === undefined ? undefined : readIsoString(record, key);
-}
-
-function readEnum<TValue extends string>(
-	record: UnknownRecord,
-	key: string,
-	allowedValues: readonly TValue[],
-): TValue | undefined {
-	const value = record[key];
-	return typeof value === 'string' && allowedValues.includes(value as TValue)
-		? (value as TValue)
-		: undefined;
-}
-function isValidDate(value: string): boolean {
-	const timestamp = new Date(value).getTime();
-	return Number.isFinite(timestamp);
 }

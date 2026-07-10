@@ -1,6 +1,7 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { InMemoryClientServicesRepository } from '.././client-services.repository';
 import { ClientServicesService } from '.././client-services.service';
+import { KafkaLifecycleProvisionerService } from '.././kafka-lifecycle-provisioner.service';
 
 const createPayload = {
 	slug: 'catalog-api',
@@ -165,6 +166,9 @@ describe('클라이언트 서비스 관리 서비스', () => {
 			eventType: 'image.upload.completed',
 			consumerGroup: 'catalog-image-consumer',
 			description: '상품 서비스가 업로드 완료 이벤트를 소비합니다.',
+			topic: `file.image.lifecycle.client.${created.id}.v1`,
+			principal: `User:file-lifecycle-${created.id}`,
+			provisioningStatus: 'PENDING',
 		});
 		const detail = await service.getService(created.id);
 
@@ -183,6 +187,34 @@ describe('클라이언트 서비스 관리 서비스', () => {
 				consumerGroup: 'catalog-image-consumer',
 			}),
 		]);
+	});
+
+	it('Kafka topic/ACL provisioning 실패 시 subscription을 활성화하지 않는다', async () => {
+		const provisioner = {
+			provision: jest.fn().mockResolvedValue({
+				topic: 'file.image.lifecycle.client.svc_1.v1',
+				principal: 'User:file-lifecycle-svc_1',
+				provisioningStatus: 'FAILED',
+				provisioningError: 'ACL rejected',
+				provisionedAt: null,
+			}),
+		} as unknown as KafkaLifecycleProvisionerService;
+		service = new ClientServicesService(repository, provisioner);
+		const created = await service.createService(createPayload);
+
+		const subscription = await service.createLifecycleSubscription(created.id, {
+			eventType: 'image.upload.completed',
+			consumerGroup: 'catalog-image-consumer',
+		});
+
+		expect(subscription).toMatchObject({
+			isEnabled: false,
+			provisioningStatus: 'FAILED',
+			provisioningError: 'ACL rejected',
+		});
+		expect((await service.getService(created.id)).activeSubscriptionCount).toBe(
+			0,
+		);
 	});
 
 	it('lifecycle subscription을 수정하고 비활성화한다', async () => {

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '@file/database';
@@ -27,16 +28,22 @@ const event = createImageLifecycleEvent({
 	status: ImageLifecycleStatus.Success,
 });
 
+const canonicalTopic = 'file.image.lifecycle.v1';
+const clientTopic = 'file.image.lifecycle.client.service-1.v1';
+
 const createOutboxRecord = (overrides: Record<string, unknown> = {}) => ({
 	id: 'outbox-1',
 	eventId: event.eventId,
-	topic: 'file.image.lifecycle.v1',
+	topic: canonicalTopic,
 	kafkaKey: 'local-demo:products/image/sample.png:image.upload.completed',
 	payload: event as unknown as Prisma.JsonValue,
 	status: 'PENDING',
 	attempts: 0,
 	nextAttemptAt: new Date('2026-07-03T00:00:00.000Z'),
+	leaseOwner: null,
+	leaseExpiresAt: null,
 	publishedAt: null,
+	deadLetteredAt: null,
 	lastError: null,
 	createdAt: new Date('2026-07-03T00:00:00.000Z'),
 	updatedAt: new Date('2026-07-03T00:00:00.000Z'),
@@ -44,31 +51,43 @@ const createOutboxRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 type PrismaMock = {
+	clientServiceLifecycleSubscription: {
+		findFirst: jest.Mock;
+	};
 	imageLifecycleOutbox: {
-		create: jest.Mock;
-		findUnique: jest.Mock;
+		createMany: jest.Mock;
 		findMany: jest.Mock;
-		update: jest.Mock;
+		updateMany: jest.Mock;
+		deleteMany: jest.Mock;
 	};
 };
 
 const createPrismaMock = (): PrismaMock => ({
+	clientServiceLifecycleSubscription: {
+		findFirst: jest.fn().mockResolvedValue(null),
+	},
 	imageLifecycleOutbox: {
-		create: jest.fn(),
-		findUnique: jest.fn(),
+		createMany: jest.fn().mockResolvedValue({ count: 1 }),
 		findMany: jest.fn(),
-		update: jest.fn(),
+		updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+		deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
 	},
 });
 
 describe('이미지 lifecycle outbox 서비스', () => {
 	const originalNodeEnv = process.env.NODE_ENV;
+	const originalMaxAttempts = process.env.LIFECYCLE_OUTBOX_MAX_ATTEMPTS;
+	const originalPublishInterval =
+		process.env.LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS;
+	const originalCleanupInterval =
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS;
 	let prisma: PrismaMock;
 	let imageClient: jest.Mocked<Pick<ClientKafka, 'emit'>>;
 	let service: ImageLifecycleOutboxService;
 
 	beforeEach(() => {
 		process.env.NODE_ENV = 'test';
+		delete process.env.LIFECYCLE_OUTBOX_MAX_ATTEMPTS;
 		prisma = createPrismaMock();
 		imageClient = {
 			emit: jest.fn().mockReturnValue(of({ ok: true })),
@@ -80,86 +99,270 @@ describe('이미지 lifecycle outbox 서비스', () => {
 	});
 
 	afterEach(() => {
+		service.onModuleDestroy();
+		jest.useRealTimers();
 		process.env.NODE_ENV = originalNodeEnv;
+		if (originalMaxAttempts === undefined) {
+			delete process.env.LIFECYCLE_OUTBOX_MAX_ATTEMPTS;
+		} else {
+			process.env.LIFECYCLE_OUTBOX_MAX_ATTEMPTS = originalMaxAttempts;
+		}
+		restoreEnvironmentValue(
+			'LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS',
+			originalPublishInterval,
+		);
+		restoreEnvironmentValue(
+			'LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS',
+			originalCleanupInterval,
+		);
 		jest.restoreAllMocks();
 	});
 
-	it('이벤트를 outbox에 저장한 뒤 Kafka 발행 성공 시 published로 표시한다', async () => {
-		const row = createOutboxRecord();
-		prisma.imageLifecycleOutbox.create.mockResolvedValue(row);
-		prisma.imageLifecycleOutbox.update.mockResolvedValue({
-			...row,
-			status: 'PUBLISHED',
+	it('publish 조회가 실패해도 rejection을 관찰하고 다음 timer tick에서 재시도한다', async () => {
+		jest.useFakeTimers();
+		process.env.LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS = '100';
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS = '0';
+		const databaseError = new Error('database unavailable during find');
+		prisma.imageLifecycleOutbox.findMany
+			.mockRejectedValueOnce(databaseError)
+			.mockResolvedValueOnce([]);
+		const loggerError = jest
+			.spyOn(Logger.prototype, 'error')
+			.mockImplementation(() => undefined);
+
+		service.onModuleInit();
+		await flushPromises();
+
+		expect(loggerError).toHaveBeenCalledWith({
+			event: 'image_lifecycle_outbox_background_task_failed',
+			task: 'publish',
+			error: databaseError.message,
+			stack: databaseError.stack,
 		});
+		await jest.advanceTimersByTimeAsync(100);
+		expect(prisma.imageLifecycleOutbox.findMany).toHaveBeenCalledTimes(2);
+	});
+
+	it('lease claim이 실패해도 rejection을 관찰하고 다음 timer tick에서 재시도한다', async () => {
+		jest.useFakeTimers();
+		process.env.LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS = '100';
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS = '0';
+		const row = createOutboxRecord();
+		const databaseError = new Error('database unavailable during claim');
+		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([row]);
+		prisma.imageLifecycleOutbox.updateMany
+			.mockRejectedValueOnce(databaseError)
+			.mockResolvedValueOnce({ count: 0 });
+		const loggerError = jest
+			.spyOn(Logger.prototype, 'error')
+			.mockImplementation(() => undefined);
+
+		service.onModuleInit();
+		await flushPromises();
+
+		expect(loggerError).toHaveBeenCalledWith({
+			event: 'image_lifecycle_outbox_background_task_failed',
+			task: 'publish',
+			error: databaseError.message,
+			stack: databaseError.stack,
+		});
+		await jest.advanceTimersByTimeAsync(100);
+		expect(prisma.imageLifecycleOutbox.findMany).toHaveBeenCalledTimes(2);
+		expect(prisma.imageLifecycleOutbox.updateMany).toHaveBeenCalledTimes(2);
+	});
+
+	it('cleanup 조회가 실패해도 rejection을 관찰하고 다음 timer tick에서 재시도한다', async () => {
+		jest.useFakeTimers();
+		process.env.LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS = '0';
+		process.env.LIFECYCLE_OUTBOX_CLEANUP_INTERVAL_MS = '100';
+		const databaseError = new Error('database unavailable during cleanup');
+		prisma.imageLifecycleOutbox.findMany
+			.mockRejectedValueOnce(databaseError)
+			.mockResolvedValueOnce([]);
+		const loggerError = jest
+			.spyOn(Logger.prototype, 'error')
+			.mockImplementation(() => undefined);
+
+		service.onModuleInit();
+		await flushPromises();
+
+		expect(loggerError).toHaveBeenCalledWith({
+			event: 'image_lifecycle_outbox_background_task_failed',
+			task: 'cleanup',
+			error: databaseError.message,
+			stack: databaseError.stack,
+		});
+		await jest.advanceTimersByTimeAsync(100);
+		expect(prisma.imageLifecycleOutbox.findMany).toHaveBeenCalledTimes(2);
+	});
+
+	it('canonical destination row를 저장하고 lease를 획득한 뒤 발행한다', async () => {
+		const row = createOutboxRecord();
+		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([row]);
 
 		await service.enqueueAndPublish(event);
 
-		expect(prisma.imageLifecycleOutbox.create).toHaveBeenCalledWith({
-			data: expect.objectContaining({
-				eventId: 'life-outbox-1',
-				topic: 'file.image.lifecycle.v1',
-				kafkaKey: 'local-demo:products/image/sample.png:image.upload.completed',
-				status: 'PENDING',
-			}),
+		expect(prisma.imageLifecycleOutbox.createMany).toHaveBeenCalledWith({
+			data: [
+				expect.objectContaining({
+					eventId: 'life-outbox-1',
+					topic: canonicalTopic,
+					status: 'PENDING',
+				}),
+			],
+			skipDuplicates: true,
 		});
-		expect(imageClient.emit).toHaveBeenCalledWith('file.image.lifecycle.v1', {
+		expect(prisma.imageLifecycleOutbox.updateMany).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({
+				where: expect.objectContaining({ id: 'outbox-1' }),
+				data: expect.objectContaining({
+					status: 'PUBLISHING',
+					leaseOwner: expect.any(String),
+					leaseExpiresAt: expect.any(Date),
+				}),
+			}),
+		);
+		expect(imageClient.emit).toHaveBeenCalledWith(canonicalTopic, {
 			key: 'local-demo:products/image/sample.png:image.upload.completed',
 			value: JSON.stringify(event),
 		});
-		expect(prisma.imageLifecycleOutbox.update).toHaveBeenCalledWith({
-			where: { id: 'outbox-1' },
-			data: expect.objectContaining({
-				status: 'PUBLISHED',
-				publishedAt: expect.any(Date),
-				lastError: null,
+		expect(prisma.imageLifecycleOutbox.updateMany).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				where: expect.objectContaining({
+					id: 'outbox-1',
+					leaseOwner: expect.any(String),
+				}),
+				data: expect.objectContaining({
+					status: 'PUBLISHED',
+					publishedAt: expect.any(Date),
+					leaseOwner: null,
+				}),
 			}),
+		);
+	});
+
+	it('active subscription이면 동일 eventId payload를 canonical/client topic별 row로 발행한다', async () => {
+		prisma.clientServiceLifecycleSubscription.findFirst.mockResolvedValue({
+			id: 'subscription-1',
+		});
+		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([
+			createOutboxRecord(),
+			createOutboxRecord({ id: 'outbox-2', topic: clientTopic }),
+		]);
+
+		await service.enqueueAndPublish(event);
+
+		expect(prisma.imageLifecycleOutbox.createMany).toHaveBeenCalledWith({
+			data: expect.arrayContaining([
+				expect.objectContaining({
+					eventId: event.eventId,
+					topic: canonicalTopic,
+				}),
+				expect.objectContaining({
+					eventId: event.eventId,
+					topic: clientTopic,
+				}),
+			]),
+			skipDuplicates: true,
+		});
+		expect(imageClient.emit).toHaveBeenCalledTimes(2);
+		expect(imageClient.emit).toHaveBeenCalledWith(canonicalTopic, {
+			key: expect.any(String),
+			value: JSON.stringify(event),
+		});
+		expect(imageClient.emit).toHaveBeenCalledWith(clientTopic, {
+			key: expect.any(String),
+			value: JSON.stringify(event),
 		});
 	});
 
-	it('Kafka 발행 실패 시 업로드 흐름으로 예외를 전파하지 않고 재시도 상태로 남긴다', async () => {
+	it('두 publisher가 같은 row를 조회해도 atomic updateMany claim 성공자만 발행한다', async () => {
 		const row = createOutboxRecord();
-		prisma.imageLifecycleOutbox.create.mockResolvedValue(row);
-		prisma.imageLifecycleOutbox.update.mockResolvedValue({
-			...row,
-			status: 'FAILED',
-			attempts: 1,
-		});
-		imageClient.emit.mockReturnValue(throwError(() => new Error('kafka down')));
+		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([row]);
+		prisma.imageLifecycleOutbox.updateMany
+			.mockResolvedValueOnce({ count: 1 })
+			.mockResolvedValueOnce({ count: 1 })
+			.mockResolvedValueOnce({ count: 0 });
+		const competingService = new ImageLifecycleOutboxService(
+			prisma as unknown as PrismaService,
+			imageClient as unknown as ClientKafka,
+		);
 
-		await expect(service.enqueueAndPublish(event)).resolves.toBeUndefined();
+		await service.publishPending();
+		await competingService.publishPending();
 
-		expect(prisma.imageLifecycleOutbox.update).toHaveBeenCalledWith({
-			where: { id: 'outbox-1' },
-			data: expect.objectContaining({
-				status: 'FAILED',
-				attempts: 1,
-				lastError: 'kafka down',
-				nextAttemptAt: expect.any(Date),
-			}),
-		});
+		expect(imageClient.emit).toHaveBeenCalledTimes(1);
 	});
 
-	it('실패 또는 대기 중인 outbox row를 scheduled publisher가 다시 발행한다', async () => {
+	it('max attempt에 도달하면 last error와 dead-letter 시각을 보존한다', async () => {
+		process.env.LIFECYCLE_OUTBOX_MAX_ATTEMPTS = '2';
 		const row = createOutboxRecord({ status: 'FAILED', attempts: 1 });
 		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([row]);
-		prisma.imageLifecycleOutbox.update.mockResolvedValue({
-			...row,
-			status: 'PUBLISHED',
-		});
+		imageClient.emit.mockReturnValue(throwError(() => new Error('kafka down')));
 
 		await service.publishPending();
 
+		expect(prisma.imageLifecycleOutbox.updateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({
+					id: 'outbox-1',
+					leaseOwner: expect.any(String),
+				}),
+				data: expect.objectContaining({
+					status: 'DEAD_LETTER',
+					attempts: 2,
+					lastError: 'kafka down',
+					deadLetteredAt: expect.any(Date),
+					leaseOwner: null,
+				}),
+			}),
+		);
+	});
+
+	it('published/dead-letter 보존 기간이 지난 row를 bounded batch로 정리한다', async () => {
+		prisma.imageLifecycleOutbox.findMany.mockResolvedValue([
+			{ id: 'published-1' },
+			{ id: 'dead-letter-1' },
+		]);
+		prisma.imageLifecycleOutbox.deleteMany.mockResolvedValue({ count: 2 });
+
+		await expect(service.cleanupRetainedRows(2)).resolves.toBe(2);
+
 		expect(prisma.imageLifecycleOutbox.findMany).toHaveBeenCalledWith({
 			where: {
-				status: { in: ['PENDING', 'FAILED'] },
-				nextAttemptAt: { lte: expect.any(Date) },
+				OR: [
+					{
+						status: 'PUBLISHED',
+						publishedAt: { lte: expect.any(Date) },
+					},
+					{
+						status: 'DEAD_LETTER',
+						deadLetteredAt: { lte: expect.any(Date) },
+					},
+				],
 			},
+			select: { id: true },
 			orderBy: { createdAt: 'asc' },
-			take: 25,
+			take: 2,
 		});
-		expect(imageClient.emit).toHaveBeenCalledWith('file.image.lifecycle.v1', {
-			key: 'local-demo:products/image/sample.png:image.upload.completed',
-			value: JSON.stringify(event),
+		expect(prisma.imageLifecycleOutbox.deleteMany).toHaveBeenCalledWith({
+			where: { id: { in: ['published-1', 'dead-letter-1'] } },
 		});
 	});
 });
+
+const flushPromises = async () => {
+	for (let index = 0; index < 10; index += 1) {
+		await Promise.resolve();
+	}
+};
+
+const restoreEnvironmentValue = (name: string, value: string | undefined) => {
+	if (value === undefined) {
+		delete process.env[name];
+		return;
+	}
+	process.env[name] = value;
+};

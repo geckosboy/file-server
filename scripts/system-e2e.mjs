@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { Kafka, logLevel } from 'kafkajs';
+import pg from 'pg';
 
 import {
 	createInfrastructureConfig,
+	ensureKafkaTopic,
 	fetchJson,
 	getFreePort,
 	migrateDatabase,
@@ -9,11 +12,15 @@ import {
 	printChildLogs,
 	run,
 	spawnService,
+	startInfrastructureService,
 	startInfrastructure,
 	stopChild,
+	stopInfrastructureService,
 	stopInfrastructure,
 	waitForHttp,
 } from './system-test-utils.mjs';
+
+const { Client: PostgreSqlClient } = pg;
 
 const resolvePort = async (environmentName) =>
 	Number(process.env[environmentName] || (await getFreePort()));
@@ -30,6 +37,12 @@ const clientApiKeyPepper = 'system-e2e-client-pepper';
 const origin = 'http://127.0.0.1:43199';
 const children = [];
 const infrastructure = await createInfrastructureConfig('system-e2e');
+const telemetryKafkaGroupId = `system-e2e-telemetry-${process.pid}`;
+const telemetryTopic = 'file.image.events.v1';
+const telemetryDlqTopic = `${telemetryTopic}.dlq`;
+const lifecycleTopic = 'file.image.lifecycle.v1';
+let telemetryChild;
+let storageChild;
 
 const commonAppEnv = {
 	NODE_ENV: 'production',
@@ -60,12 +73,16 @@ const startApplications = async () => {
 			CLIENT_SERVICE_REGISTRY_DRIVER: 'prisma',
 			TELEMETRY_KAFKA_CONSUMER_ENABLED: 'true',
 			TELEMETRY_KAFKA_FROM_BEGINNING: 'true',
-			TELEMETRY_KAFKA_GROUP_ID: `system-e2e-telemetry-${process.pid}`,
+			TELEMETRY_KAFKA_GROUP_ID: telemetryKafkaGroupId,
+			TELEMETRY_KAFKA_RETRY_MAX_ATTEMPTS: '2',
+			TELEMETRY_KAFKA_RETRY_BACKOFF_MS: '100',
 			LIFECYCLE_KAFKA_CONSUMER_ENABLED: 'true',
 			LIFECYCLE_KAFKA_FROM_BEGINNING: 'true',
 			LIFECYCLE_KAFKA_GROUP_ID: `system-e2e-lifecycle-${process.pid}`,
+			LIFECYCLE_TOPIC_PROVISIONING_ENABLED: 'false',
 		},
 	});
+	telemetryChild = telemetry;
 	children.push(telemetry);
 	await waitForHttp(`http://127.0.0.1:${appPorts.telemetry}/api/admin/health`, {
 		headers: adminHeaders,
@@ -83,6 +100,7 @@ const startApplications = async () => {
 			LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS: '250',
 		},
 	});
+	storageChild = storage;
 	children.push(storage);
 	await waitForHttp(`http://127.0.0.1:${appPorts.storage}/health-check`, {
 		child: storage,
@@ -155,6 +173,24 @@ const runScenario = async () => {
 		201,
 	);
 	assert.equal(typeof service.id, 'string');
+	const lifecycleSubscription = await fetchJson(
+		`${telemetryBaseUrl}/api/admin/client-services/${service.id}/lifecycle-subscriptions`,
+		{
+			method: 'POST',
+			headers: adminHeaders,
+			body: JSON.stringify({
+				eventType: 'image.upload.completed',
+				consumerGroup: `system-e2e-client-lifecycle-${process.pid}`,
+			}),
+		},
+		201,
+	);
+	assert.equal(
+		lifecycleSubscription.topic,
+		`file.image.lifecycle.client.${service.id.toLowerCase()}.v1`,
+	);
+	assert.equal(lifecycleSubscription.provisioningStatus, 'PENDING');
+	await ensureKafkaTopic(infrastructure, lifecycleSubscription.topic);
 	await fetchJson(
 		`${telemetryBaseUrl}/api/admin/client-services/${service.id}/policies`,
 		{
@@ -319,6 +355,13 @@ const runScenario = async () => {
 		);
 	});
 
+	const clientLifecycleEvent = await consumeKafkaEvent({
+		broker: infrastructure.kafkaBroker,
+		topic: lifecycleSubscription.topic,
+		eventId: uploadBody.eventId,
+	});
+	assert.equal(clientLifecycleEvent.eventId, uploadBody.eventId);
+
 	await poll(async () => {
 		const result = await fetchJson(
 			`${telemetryBaseUrl}/api/admin/lifecycle-events?limit=100`,
@@ -336,9 +379,375 @@ const runScenario = async () => {
 		200,
 	);
 
+	await provePoisonDlqProgress({ telemetryBaseUrl });
+	await proveDatabaseOutageRedelivery({ telemetryBaseUrl, storageBaseUrl });
+
 	console.log(
 		`System E2E 통과: upload=${uploadBody.imageKey}, cross-tenant 403, shared replica rate-limit 429, cache/resize/storage chain, telemetry, lifecycle`,
 	);
+};
+
+const provePoisonDlqProgress = async ({ telemetryBaseUrl }) => {
+	const startedAt = Date.now();
+	const poisonRaw = Buffer.from(`{broken-system-e2e-${process.pid}`);
+	const poisonRecord = await produceKafkaValue({
+		broker: infrastructure.kafkaBroker,
+		topic: telemetryTopic,
+		key: `poison-${process.pid}`,
+		value: poisonRaw,
+	});
+	const validEvent = createTelemetryProbeEvent('after-poison');
+	await produceKafkaValue({
+		broker: infrastructure.kafkaBroker,
+		topic: telemetryTopic,
+		key: validEvent.eventId,
+		value: Buffer.from(JSON.stringify(validEvent)),
+	});
+
+	const envelope = await consumeKafkaJson({
+		broker: infrastructure.kafkaBroker,
+		topic: telemetryDlqTopic,
+		label: `poison DLQ ${poisonRecord.partition}:${poisonRecord.offset}`,
+		predicate: (candidate) =>
+			candidate?.sourceTopic === telemetryTopic &&
+			candidate?.partition === poisonRecord.partition &&
+			candidate?.offset === poisonRecord.offset,
+	});
+	assert.equal(envelope.rawPayload, poisonRaw.toString('base64'));
+	assert.equal(envelope.rawPayloadEncoding, 'base64');
+	assert.match(envelope.error, /valid JSON/i);
+	assert.equal(envelope.sourceTopic, telemetryTopic);
+	assert.equal(envelope.partition, poisonRecord.partition);
+	assert.equal(envelope.offset, poisonRecord.offset);
+
+	await assertTelemetryEventEventually(telemetryBaseUrl, validEvent.eventId);
+	console.log(
+		`System E2E Kafka poison 복구 통과: dlq=${telemetryDlqTopic}@${poisonRecord.partition}:${poisonRecord.offset}, subsequent=${validEvent.eventId}, ${Date.now() - startedAt}ms`,
+	);
+};
+
+const proveDatabaseOutageRedelivery = async ({
+	telemetryBaseUrl,
+	storageBaseUrl,
+}) => {
+	const startedAt = Date.now();
+	const validEvent = createTelemetryProbeEvent('postgres-outage');
+	const logStart = telemetryChild?.capturedLines?.length ?? 0;
+	const storageLogStart = storageChild?.capturedLines?.length ?? 0;
+	const outboxProbe = await enqueueLifecycleOutboxProbe();
+	let postgresStopped = false;
+
+	try {
+		await stopInfrastructureService(infrastructure, 'postgres');
+		postgresStopped = true;
+		const record = await produceKafkaValue({
+			broker: infrastructure.kafkaBroker,
+			topic: telemetryTopic,
+			key: validEvent.eventId,
+			value: Buffer.from(JSON.stringify(validEvent)),
+		});
+
+		await poll(
+			async () => {
+				const recentLogs =
+					telemetryChild?.capturedLines?.slice(logStart).join('\n') ?? '';
+				assert.match(
+					recentLogs,
+					/(eachMessage|insert_failed|database|P1001|connection)/i,
+					'telemetry consumer가 PostgreSQL 중단 중 message 처리를 시도하지 않았습니다.',
+				);
+			},
+			{ timeoutMs: 20_000, intervalMs: 250 },
+		);
+		await poll(
+			async () => {
+				assert.equal(storageChild?.exitCode, null);
+				assert.equal(storageChild?.signalCode, null);
+				const recentLogs =
+					storageChild?.capturedLines?.slice(storageLogStart).join('\n') ?? '';
+				assert.match(
+					recentLogs,
+					/image_lifecycle_outbox_background_task_failed/,
+					'storage outbox scheduler가 PostgreSQL 중단 오류를 관찰하지 않았습니다.',
+				);
+			},
+			{ timeoutMs: 20_000, intervalMs: 250 },
+		);
+
+		const committedDuringOutage = await fetchConsumerGroupOffset({
+			broker: infrastructure.kafkaBroker,
+			groupId: telemetryKafkaGroupId,
+			topic: telemetryTopic,
+			partition: record.partition,
+		});
+		assert.ok(
+			BigInt(committedDuringOutage) <= BigInt(record.offset),
+			`PostgreSQL 저장 전 offset이 선행 commit되었습니다: committed=${committedDuringOutage}, message=${record.offset}`,
+		);
+
+		await startInfrastructureService(infrastructure, 'postgres');
+		postgresStopped = false;
+		await waitForHttp(`${storageBaseUrl}/health-check`, {
+			child: storageChild,
+			timeoutMs: 30_000,
+		});
+		await assertTelemetryEventEventually(telemetryBaseUrl, validEvent.eventId, {
+			timeoutMs: 45_000,
+		});
+		await assertLifecycleOutboxPublishedEventually(outboxProbe.id, {
+			timeoutMs: 45_000,
+		});
+		const resumedLifecycleEvent = await consumeKafkaEvent({
+			broker: infrastructure.kafkaBroker,
+			topic: lifecycleTopic,
+			eventId: outboxProbe.event.eventId,
+		});
+		assert.equal(resumedLifecycleEvent.eventId, outboxProbe.event.eventId);
+		assert.equal(storageChild?.exitCode, null);
+		assert.equal(storageChild?.signalCode, null);
+		await poll(
+			async () => {
+				const committedAfterRecovery = await fetchConsumerGroupOffset({
+					broker: infrastructure.kafkaBroker,
+					groupId: telemetryKafkaGroupId,
+					topic: telemetryTopic,
+					partition: record.partition,
+				});
+				assert.ok(
+					BigInt(committedAfterRecovery) >= BigInt(record.offset) + 1n,
+					`복구 후 offset이 commit되지 않았습니다: committed=${committedAfterRecovery}, message=${record.offset}`,
+				);
+			},
+			{ timeoutMs: 20_000, intervalMs: 300 },
+		);
+		console.log(
+			`System E2E PostgreSQL redelivery/storage outbox 복구 통과: event=${validEvent.eventId}, outbox=${outboxProbe.event.eventId}, outageCommit=${committedDuringOutage}, message=${record.offset}, ${Date.now() - startedAt}ms`,
+		);
+	} finally {
+		if (postgresStopped) {
+			await startInfrastructureService(infrastructure, 'postgres');
+		}
+	}
+};
+
+const enqueueLifecycleOutboxProbe = async () => {
+	const eventId = `system-e2e-outbox-recovery-${process.pid}-${Date.now()}`;
+	const event = {
+		schemaVersion: 1,
+		eventId,
+		eventType: 'image.upload.completed',
+		occurredAt: new Date().toISOString(),
+		sourceApp: 'storage',
+		environment: 'test',
+		path: 'system-e2e/outbox-recovery',
+		name: `${eventId}.png`,
+		imageKey: `system-e2e/outbox-recovery/${eventId}.png`,
+		format: 'png',
+		inputBytes: 1,
+		outputBytes: 1,
+		durationMs: 1,
+		status: 'success',
+	};
+	const id = `system-e2e-outbox-${process.pid}-${Date.now()}`;
+	await withPostgreSqlClient((client) =>
+		client.query(
+			`insert into image_lifecycle_outbox
+				(id, event_id, topic, kafka_key, payload, status, next_attempt_at, created_at, updated_at)
+			 values ($1, $2, $3, $4, $5::jsonb, 'PENDING', now() + interval '2 seconds', now(), now())`,
+			[
+				id,
+				eventId,
+				lifecycleTopic,
+				`system-e2e:${event.imageKey}:${event.eventType}`,
+				JSON.stringify(event),
+			],
+		),
+	);
+	return { id, event };
+};
+
+const assertLifecycleOutboxPublishedEventually = (id, options = {}) =>
+	poll(async () => {
+		const result = await withPostgreSqlClient((client) =>
+			client.query(
+				'select status, published_at from image_lifecycle_outbox where id = $1',
+				[id],
+			),
+		);
+		assert.equal(result.rows[0]?.status, 'PUBLISHED');
+		assert.ok(result.rows[0]?.published_at);
+	}, options);
+
+const withPostgreSqlClient = async (operation) => {
+	const client = new PostgreSqlClient({
+		connectionString: infrastructure.databaseUrl,
+	});
+	await client.connect();
+	try {
+		return await operation(client);
+	} finally {
+		await client.end();
+	}
+};
+
+const createTelemetryProbeEvent = (suffix) => {
+	const eventId = `system-e2e-${suffix}-${process.pid}-${Date.now()}`;
+	return {
+		schemaVersion: 1,
+		eventId,
+		eventType: 'image.read.completed',
+		occurredAt: new Date().toISOString(),
+		sourceApp: 'storage',
+		environment: 'test',
+		path: 'system-e2e/resilience',
+		name: `${eventId}.png`,
+		imageKey: `system-e2e/resilience/${eventId}.png`,
+		status: 'success',
+	};
+};
+
+const assertTelemetryEventEventually = (
+	telemetryBaseUrl,
+	eventId,
+	options = {},
+) =>
+	poll(async () => {
+		const result = await fetchJson(
+			`${telemetryBaseUrl}/api/admin/events?limit=100`,
+			{ headers: adminHeaders },
+		);
+		assert.ok(
+			result.items.some((event) => event.eventId === eventId),
+			`telemetry event가 PostgreSQL에 저장되지 않았습니다: ${eventId}`,
+		);
+	}, options);
+
+const createKafkaClient = (broker, clientId) =>
+	new Kafka({
+		clientId,
+		brokers: [broker],
+		logLevel: logLevel.NOTHING,
+	});
+
+const produceKafkaValue = async ({ broker, topic, key, value }) => {
+	const producer = createKafkaClient(
+		broker,
+		`system-e2e-producer-${process.pid}-${Date.now()}`,
+	).producer();
+	await producer.connect();
+	try {
+		const [metadata] = await producer.send({
+			topic,
+			acks: -1,
+			messages: [{ key, value }],
+		});
+		return { partition: metadata.partition, offset: metadata.baseOffset };
+	} finally {
+		await producer.disconnect();
+	}
+};
+
+const fetchConsumerGroupOffset = async ({
+	broker,
+	groupId,
+	topic,
+	partition,
+}) => {
+	const admin = createKafkaClient(
+		broker,
+		`system-e2e-offsets-${process.pid}-${Date.now()}`,
+	).admin();
+	await admin.connect();
+	try {
+		const offsets = await admin.fetchOffsets({ groupId, topics: [topic] });
+		const topicOffsets = offsets.find((entry) => entry.topic === topic);
+		const partitionOffset = topicOffsets?.partitions.find(
+			(entry) => entry.partition === partition,
+		);
+		assert.ok(
+			partitionOffset,
+			`consumer group offset을 찾지 못했습니다: ${groupId}/${topic}/${partition}`,
+		);
+		return partitionOffset.offset;
+	} finally {
+		await admin.disconnect();
+	}
+};
+
+const consumeKafkaJson = async ({ broker, topic, label, predicate }) => {
+	const consumer = createKafkaClient(
+		broker,
+		`system-e2e-consumer-${process.pid}-${Date.now()}`,
+	).consumer({
+		groupId: `system-e2e-consumer-${process.pid}-${Date.now()}`,
+	});
+	await consumer.connect();
+	await consumer.subscribe({ topic, fromBeginning: true });
+	try {
+		return await new Promise((resolveValue, rejectValue) => {
+			const timeout = setTimeout(
+				() => rejectValue(new Error(`Kafka event timeout: ${label}`)),
+				20_000,
+			);
+			void consumer
+				.run({
+					eachMessage: async ({ message }) => {
+						if (!message.value) return;
+						const value = JSON.parse(message.value.toString('utf8'));
+						if (predicate(value)) {
+							clearTimeout(timeout);
+							resolveValue(value);
+						}
+					},
+				})
+				.catch((error) => {
+					clearTimeout(timeout);
+					rejectValue(error);
+				});
+		});
+	} finally {
+		await consumer.disconnect();
+	}
+};
+
+const consumeKafkaEvent = async ({ broker, topic, eventId }) => {
+	const kafka = createKafkaClient(
+		broker,
+		`system-e2e-client-lifecycle-${process.pid}`,
+	);
+	const consumer = kafka.consumer({
+		groupId: `system-e2e-client-lifecycle-${process.pid}-${Date.now()}`,
+	});
+	await consumer.connect();
+	await consumer.subscribe({ topic, fromBeginning: true });
+	try {
+		return await new Promise((resolveEvent, rejectEvent) => {
+			const timeout = setTimeout(
+				() =>
+					rejectEvent(new Error(`client lifecycle event timeout: ${topic}`)),
+				20_000,
+			);
+			void consumer
+				.run({
+					eachMessage: async ({ message }) => {
+						if (!message.value) {
+							return;
+						}
+						const event = JSON.parse(message.value.toString('utf8'));
+						if (event.eventId === eventId) {
+							clearTimeout(timeout);
+							resolveEvent(event);
+						}
+					},
+				})
+				.catch((error) => {
+					clearTimeout(timeout);
+					rejectEvent(error);
+				});
+		});
+	} finally {
+		await consumer.disconnect();
+	}
 };
 
 let failed = false;

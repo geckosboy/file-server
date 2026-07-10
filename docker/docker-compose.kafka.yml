@@ -19,9 +19,21 @@ x-kafka-base: &kafka-base
 x-kafka-common-env: &kafka-common-env
   CLUSTER_ID: ${KAFKA_CLUSTER_ID:-EkxBIJ4cTwuhgpbYSWnBZg}
   KAFKA_CONTROLLER_QUORUM_VOTERS: ${KAFKA_CONTROLLER_QUORUM_VOTERS:-1@kafka-controller-1:9093,2@kafka-controller-2:9093,3@kafka-controller-3:9093}
-  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_SSL
   KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-  KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_SASL_ENABLED_MECHANISMS: PLAIN,SCRAM-SHA-512
+  KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+  KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required username="broker_admin" password="${KAFKA_BROKER_ADMIN_PASSWORD}" user_broker_admin="${KAFKA_BROKER_ADMIN_PASSWORD}" user_file_server_admin="${KAFKA_ADMIN_PASSWORD}";
+  KAFKA_LISTENER_NAME_EXTERNAL_PLAIN_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required user_file_server_admin="${KAFKA_ADMIN_PASSWORD}";
+  KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+  KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: 'false'
+  KAFKA_SUPER_USERS: User:broker_admin;User:file_server_admin
+  KAFKA_SSL_TRUSTSTORE_LOCATION: /etc/kafka/secrets/kafka.truststore.p12
+  KAFKA_SSL_TRUSTSTORE_PASSWORD: ${KAFKA_SSL_TRUSTSTORE_PASSWORD}
+  KAFKA_SSL_KEYSTORE_TYPE: PKCS12
+  KAFKA_SSL_TRUSTSTORE_TYPE: PKCS12
+  KAFKA_SSL_CLIENT_AUTH: none
   KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: ${KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS:-0}
   KAFKA_HEAP_OPTS: ${KAFKA_HEAP_OPTS:--Xms1g -Xmx1g}
 
@@ -40,7 +52,7 @@ x-kafka-broker-healthcheck: &kafka-broker-healthcheck
   test:
     [
       'CMD-SHELL',
-      '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1',
+      '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 --command-config /etc/kafka/secrets/broker-admin.properties >/dev/null 2>&1',
     ]
   interval: 10s
   timeout: 5s
@@ -138,8 +150,11 @@ services:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 101
       KAFKA_PROCESS_ROLES: broker
-      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-1:9092,EXTERNAL://${KAFKA_BROKER_1_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_1_EXTERNAL_PORT:-19092}
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-broker-1:9092,EXTERNAL://${KAFKA_BROKER_1_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_1_EXTERNAL_PORT:-19092}
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka-broker-1.keystore.p12
+      KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_SSL_KEYSTORE_PASSWORD}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD}
       KAFKA_LOG_DIRS: /tmp/kraft-broker-logs
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
       KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-6}
@@ -152,6 +167,7 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR:-2}
     volumes:
       - kafka_broker_1_data:/tmp/kraft-broker-logs
+      - ${KAFKA_TLS_SECRETS_DIR:-./kafka-secrets}:/etc/kafka/secrets:ro
     healthcheck: *kafka-broker-healthcheck
 
   kafka-broker-2:
@@ -170,8 +186,11 @@ services:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 102
       KAFKA_PROCESS_ROLES: broker
-      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-2:9092,EXTERNAL://${KAFKA_BROKER_2_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_2_EXTERNAL_PORT:-19093}
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-broker-2:9092,EXTERNAL://${KAFKA_BROKER_2_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_2_EXTERNAL_PORT:-19093}
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka-broker-2.keystore.p12
+      KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_SSL_KEYSTORE_PASSWORD}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD}
       KAFKA_LOG_DIRS: /tmp/kraft-broker-logs
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
       KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-6}
@@ -184,6 +203,7 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR:-2}
     volumes:
       - kafka_broker_2_data:/tmp/kraft-broker-logs
+      - ${KAFKA_TLS_SECRETS_DIR:-./kafka-secrets}:/etc/kafka/secrets:ro
     healthcheck: *kafka-broker-healthcheck
 
   kafka-broker-3:
@@ -202,8 +222,11 @@ services:
       <<: *kafka-common-env
       KAFKA_NODE_ID: 103
       KAFKA_PROCESS_ROLES: broker
-      KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-broker-3:9092,EXTERNAL://${KAFKA_BROKER_3_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_3_EXTERNAL_PORT:-19094}
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-broker-3:9092,EXTERNAL://${KAFKA_BROKER_3_EXTERNAL_HOST:-localhost}:${KAFKA_BROKER_3_EXTERNAL_PORT:-19094}
+      KAFKA_SSL_KEYSTORE_LOCATION: /etc/kafka/secrets/kafka-broker-3.keystore.p12
+      KAFKA_SSL_KEYSTORE_PASSWORD: ${KAFKA_SSL_KEYSTORE_PASSWORD}
+      KAFKA_SSL_KEY_PASSWORD: ${KAFKA_SSL_KEY_PASSWORD}
       KAFKA_LOG_DIRS: /tmp/kraft-broker-logs
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
       KAFKA_NUM_PARTITIONS: ${KAFKA_NUM_PARTITIONS:-6}
@@ -216,6 +239,7 @@ services:
       KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: ${KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR:-2}
     volumes:
       - kafka_broker_3_data:/tmp/kraft-broker-logs
+      - ${KAFKA_TLS_SECRETS_DIR:-./kafka-secrets}:/etc/kafka/secrets:ro
     healthcheck: *kafka-broker-healthcheck
 
   kafka-ui:
@@ -236,6 +260,9 @@ services:
       DYNAMIC_CONFIG_ENABLED: 'true'
       KAFKA_CLUSTERS_0_NAME: ${KAFKA_UI_CLUSTER_NAME:-file_server_kafka_prod}
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: PLAIN
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required username="file_server_admin" password="${KAFKA_ADMIN_PASSWORD}";
       AUTH_TYPE: ${KAFKA_UI_AUTH_TYPE:-LOGIN_FORM}
       SPRING_SECURITY_USER_NAME: ${KAFKA_UI_USERNAME:-admin}
       SPRING_SECURITY_USER_PASSWORD: ${KAFKA_UI_PASSWORD}

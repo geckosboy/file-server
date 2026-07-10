@@ -26,6 +26,7 @@ import {
 	createImageTelemetryEvent,
 	ImageTelemetryEvent,
 	ImageTelemetryEventType,
+	ImageTelemetryStage,
 	normalizeImageFormat,
 	publishImageTelemetryEvent,
 } from './image.telemetry';
@@ -60,8 +61,8 @@ export class ImageService {
 		@Optional() private readonly appConfig?: AppConfig,
 	) {}
 
-	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
-		await publishImageTelemetryEvent({
+	private publishTelemetryEvent(event: ImageTelemetryEvent): void {
+		void publishImageTelemetryEvent({
 			client: this.imageClient,
 			event,
 			logger: this.logger,
@@ -171,7 +172,7 @@ export class ImageService {
 			};
 
 			if (result.status === 'success') {
-				await this.publishTelemetryEvent(
+				this.publishTelemetryEvent(
 					createImageTelemetryEvent({
 						...eventBase,
 						eventType: ImageTelemetryEventType.ResizeCompleted,
@@ -183,7 +184,7 @@ export class ImageService {
 				continue;
 			}
 
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					...eventBase,
 					eventType: ImageTelemetryEventType.ResizeFailed,
@@ -325,7 +326,7 @@ export class ImageService {
 					name,
 				}));
 
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.ReadCompleted,
 					sourceApp: 'storage',
@@ -349,13 +350,14 @@ export class ImageService {
 					: undefined,
 			};
 		} catch (error) {
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.ReadFailed,
 					sourceApp: 'storage',
 					path,
 					name,
 					format: normalizeImageFormat(name),
+					stage: ImageTelemetryStage.StorageRead,
 					status: 'failed',
 					...telemetryContext,
 					...createFailedTelemetryFields(error),
@@ -407,7 +409,7 @@ export class ImageService {
 				}),
 			);
 
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventId: uploadEventId,
 					eventType: ImageTelemetryEventType.UploadCompleted,
@@ -483,7 +485,7 @@ export class ImageService {
 				}),
 			);
 
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.UploadFailed,
 					sourceApp: 'storage',

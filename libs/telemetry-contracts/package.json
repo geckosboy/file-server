@@ -9,6 +9,8 @@
 	"license": "MIT",
 	"scripts": {
 		"build": "pnpm exec tsc -p tsconfig.build.json",
+		"generate:asyncapi": "pnpm run build && node scripts/generate-asyncapi.mjs",
+		"check:asyncapi": "pnpm run build && node scripts/generate-asyncapi.mjs --check",
 		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
 		"lint": "pnpm exec eslint \"src/**/*.ts\"",
 		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" --fix",
@@ -54,6 +56,11 @@
 			"types": "./dist/lifecycle.d.ts",
 			"require": "./dist/lifecycle.js",
 			"default": "./dist/lifecycle.js"
+		},
+		"./lifecycle-topics": {
+			"types": "./dist/lifecycle-topics.d.ts",
+			"require": "./dist/lifecycle-topics.js",
+			"default": "./dist/lifecycle-topics.js"
 		},
 		"./admin-api": {
 			"types": "./dist/admin-api.d.ts",

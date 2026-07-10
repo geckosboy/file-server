@@ -1,0 +1,646 @@
+{
+  "asyncapi": "3.1.0",
+  "id": "urn:file-server:file-image-telemetry:v1",
+  "info": {
+    "title": "File Image Telemetry Events",
+    "version": "1.0.0",
+    "description": "Generated from @file/telemetry-contracts/events. Delivery is at-least-once and eventId is the idempotency key."
+  },
+  "defaultContentType": "application/json",
+  "channels": {
+    "fileImageTelemetryV1": {
+      "address": "file.image.events.v1",
+      "messages": {
+        "imageTelemetryEvent": {
+          "$ref": "#/components/messages/ImageTelemetryEvent"
+        }
+      }
+    }
+  },
+  "operations": {
+    "publishImageTelemetry": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/fileImageTelemetryV1"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/fileImageTelemetryV1/messages/imageTelemetryEvent"
+        }
+      ]
+    }
+  },
+  "components": {
+    "messages": {
+      "ImageTelemetryEvent": {
+        "name": "ImageTelemetryEvent",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/ImageTelemetryEvent"
+        },
+        "examples": [
+          {
+            "name": "image.upload.completed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-upload-completed",
+              "eventType": "image.upload.completed",
+              "sourceApp": "storage",
+              "inputBytes": 1024,
+              "outputBytes": 900,
+              "durationMs": 12,
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.upload.failed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-upload-failed",
+              "eventType": "image.upload.failed",
+              "sourceApp": "storage",
+              "status": "failed",
+              "errorCode": "UploadError",
+              "errorMessage": "upload failed"
+            }
+          },
+          {
+            "name": "image.resize.requested",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-resize-requested",
+              "eventType": "image.resize.requested",
+              "sourceApp": "resize",
+              "width": 320,
+              "height": 240,
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.resize.completed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-resize-completed",
+              "eventType": "image.resize.completed",
+              "sourceApp": "resize",
+              "width": 320,
+              "height": 240,
+              "inputBytes": 1024,
+              "outputBytes": 512,
+              "durationMs": 20,
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.resize.failed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-resize-failed",
+              "eventType": "image.resize.failed",
+              "sourceApp": "resize",
+              "status": "failed",
+              "errorCode": "ResizeError",
+              "errorMessage": "resize failed"
+            }
+          },
+          {
+            "name": "image.cache.hit",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-cache-hit",
+              "eventType": "image.cache.hit",
+              "sourceApp": "cache",
+              "cacheKey": "products/image/sample.png:320x240",
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.cache.miss",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-cache-miss",
+              "eventType": "image.cache.miss",
+              "sourceApp": "cache",
+              "cacheKey": "products/image/sample.png:320x240",
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.cache.stored",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-cache-stored",
+              "eventType": "image.cache.stored",
+              "sourceApp": "cache",
+              "cacheKey": "products/image/sample.png:320x240",
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.read.completed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-read-completed",
+              "eventType": "image.read.completed",
+              "sourceApp": "storage",
+              "status": "success"
+            }
+          },
+          {
+            "name": "image.read.failed",
+            "payload": {
+              "schemaVersion": 1,
+              "occurredAt": "2026-07-10T00:00:00.000Z",
+              "environment": "test",
+              "path": "products/image",
+              "name": "sample.png",
+              "imageKey": "products/image/sample.png",
+              "format": "png",
+              "eventId": "telemetry-read-failed",
+              "eventType": "image.read.failed",
+              "sourceApp": "cache",
+              "cacheKey": "products/image/sample.png:320x240",
+              "stage": "cache-origin-fetch",
+              "status": "failed",
+              "errorCode": "OriginReadError",
+              "errorMessage": "origin read failed"
+            }
+          }
+        ]
+      }
+    },
+    "schemas": {
+      "ImageTelemetryEvent": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "schemaVersion",
+          "eventId",
+          "eventType",
+          "occurredAt",
+          "sourceApp",
+          "environment",
+          "path",
+          "name",
+          "imageKey",
+          "status"
+        ],
+        "properties": {
+          "schemaVersion": {
+            "type": "integer",
+            "enum": [
+              1
+            ]
+          },
+          "eventId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "image.upload.completed",
+              "image.upload.failed",
+              "image.resize.requested",
+              "image.resize.completed",
+              "image.resize.failed",
+              "image.cache.hit",
+              "image.cache.miss",
+              "image.cache.stored",
+              "image.read.completed",
+              "image.read.failed"
+            ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sourceApp": {
+            "type": "string",
+            "enum": [
+              "storage",
+              "resize",
+              "cache"
+            ]
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "development",
+              "test",
+              "production"
+            ]
+          },
+          "clientServiceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "clientServiceSlug": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "traceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "imageId": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "originalName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "imageKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cacheKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4096
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "png",
+              "jpeg",
+              "jpg",
+              "webp",
+              "unknown"
+            ]
+          },
+          "inputBytes": {
+            "type": "number",
+            "minimum": 0
+          },
+          "outputBytes": {
+            "type": "number",
+            "minimum": 0
+          },
+          "durationMs": {
+            "type": "number",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failed"
+            ]
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "storage-read",
+              "cache-origin-fetch"
+            ]
+          },
+          "errorCode": {
+            "type": "string",
+            "minLength": 1
+          },
+          "errorMessage": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "inputBytes",
+              "outputBytes",
+              "durationMs"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.upload.completed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "storage"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "errorCode",
+              "errorMessage"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.upload.failed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "storage"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "required": [],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.resize.requested"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "resize"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "inputBytes",
+              "outputBytes",
+              "durationMs"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.resize.completed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "resize"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "errorCode",
+              "errorMessage"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.resize.failed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "resize"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "cacheKey"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.cache.hit"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "cache"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "cacheKey"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.cache.miss"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "cache"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "cacheKey"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.cache.stored"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "cache"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.read.completed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "storage"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "success"
+                ]
+              }
+            }
+          },
+          {
+            "required": [
+              "errorCode",
+              "errorMessage"
+            ],
+            "properties": {
+              "eventType": {
+                "type": "string",
+                "enum": [
+                  "image.read.failed"
+                ]
+              },
+              "sourceApp": {
+                "type": "string",
+                "enum": [
+                  "storage",
+                  "cache"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

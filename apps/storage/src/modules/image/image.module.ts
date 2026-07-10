@@ -7,10 +7,15 @@ import { JpegStrategy } from './strategies/sharp/jpeg.strategy';
 import { PngStrategy } from './strategies/sharp/png.strategy';
 import { ImageManager } from './strategies/manager';
 import { ClientServiceAuthModule, PrismaModule } from '@file/database';
+import { readKafkaClientSecurityOptions } from '@file/nest-common';
 import { envConfig } from 'src/config';
 import { ImageLifecycleOutboxService } from './image-lifecycle-outbox.service';
 import { ImagePregenerationService } from './image-pregeneration.service';
 import { PolicyAwareImageUploadInterceptor } from './policy-aware-image-upload.interceptor';
+import {
+	IMAGE_TELEMETRY_KAFKA_RETRY_OPTIONS,
+	IMAGE_TELEMETRY_KAFKA_SEND_OPTIONS,
+} from '@file/telemetry-contracts/events';
 
 const strategyList = [JpegStrategy, PngStrategy, ImageManager];
 const KafkaModule = ClientsModule.register([
@@ -21,11 +26,14 @@ const KafkaModule = ClientsModule.register([
 			client: {
 				clientId: 'image',
 				brokers: envConfig.kafkaClientBrokerList,
+				...readKafkaClientSecurityOptions(),
+				retry: { ...IMAGE_TELEMETRY_KAFKA_RETRY_OPTIONS },
 			},
 			producer: {
-				allowAutoTopicCreation: true,
+				allowAutoTopicCreation: false,
 				createPartitioner: Partitioners.LegacyPartitioner,
 			},
+			send: { ...IMAGE_TELEMETRY_KAFKA_SEND_OPTIONS },
 			producerOnlyMode: true,
 		},
 	},

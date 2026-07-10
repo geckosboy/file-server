@@ -4,14 +4,21 @@ import {
 	Inject,
 	Injectable,
 	NotFoundException,
+	Optional,
 } from '@nestjs/common';
 import { generateClientApiKey } from '@file/database';
 import { normalizeClientServicePathPattern } from '@file/image-contracts';
+import {
+	createClientLifecyclePrincipal,
+	createClientLifecycleTopic,
+} from '@file/telemetry-contracts/lifecycle-topics';
 import {
 	AdminActionContext,
 	ClientServiceImageResizeFormat,
 	ClientServiceImageResizeMode,
 	ClientServiceLifecycleEventType,
+	ClientServiceLifecycleProvisioningRecord,
+	ClientServiceLifecycleProvisioningStatus,
 	ClientServiceStatus,
 	CreateClientServiceImageResizeVariantInput,
 	CreateClientServiceLifecycleSubscriptionInput,
@@ -38,6 +45,7 @@ import {
 	DuplicateClientServiceSlugError,
 } from './client-services.repository';
 import { CLIENT_SERVICES_REPOSITORY } from './client-services-repository.provider';
+import { KafkaLifecycleProvisionerService } from './kafka-lifecycle-provisioner.service';
 
 const SERVICE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,62}$/;
 const CONSUMER_GROUP_PATTERN = /^[A-Za-z0-9._-]{2,128}$/;
@@ -48,6 +56,8 @@ export class ClientServicesService {
 	constructor(
 		@Inject(CLIENT_SERVICES_REPOSITORY)
 		private readonly repository: ClientServicesRepository,
+		@Optional()
+		private readonly lifecycleProvisioner?: KafkaLifecycleProvisionerService,
 	) {}
 
 	listServices() {
@@ -147,10 +157,20 @@ export class ClientServicesService {
 	) {
 		const input = parseCreateLifecycleSubscriptionInput(payload);
 		try {
+			const requestedEnabled = input.isEnabled ?? true;
+			const provisioning = await this.provisionLifecycleSubscription({
+				clientServiceId,
+				consumerGroup: input.consumerGroup,
+				subscriptionEnabled: requestedEnabled,
+			});
 			const subscription = await this.repository.createLifecycleSubscription({
 				clientServiceId,
 				...input,
-				isEnabled: input.isEnabled ?? true,
+				isEnabled:
+					requestedEnabled &&
+					provisioning.provisioningStatus !==
+						ClientServiceLifecycleProvisioningStatus.Failed,
+				...provisioning,
 			});
 			await this.recordAudit({
 				context: auditContext,
@@ -162,6 +182,9 @@ export class ClientServicesService {
 					eventType: subscription.eventType,
 					consumerGroup: subscription.consumerGroup,
 					isEnabled: subscription.isEnabled,
+					topic: subscription.topic,
+					principal: subscription.principal,
+					provisioningStatus: subscription.provisioningStatus,
 				},
 			});
 			return subscription;
@@ -178,10 +201,39 @@ export class ClientServicesService {
 	) {
 		const input = parseUpdateLifecycleSubscriptionInput(payload);
 		try {
+			let provisioning: ClientServiceLifecycleProvisioningRecord | undefined;
+			if (input.isEnabled === true || input.consumerGroup !== undefined) {
+				const clientService =
+					await this.repository.findServiceById(clientServiceId);
+				const currentSubscription = clientService?.lifecycleSubscriptions?.find(
+					(subscription) => subscription.id === subscriptionId,
+				);
+				if (!currentSubscription) {
+					throw new ClientServiceLifecycleSubscriptionNotFoundError(
+						subscriptionId,
+					);
+				}
+				const requestedEnabled =
+					input.isEnabled ?? currentSubscription.isEnabled;
+				if (requestedEnabled) {
+					provisioning = await this.provisionLifecycleSubscription({
+						clientServiceId,
+						consumerGroup:
+							input.consumerGroup ?? currentSubscription.consumerGroup,
+						previousConsumerGroup: currentSubscription.consumerGroup,
+						subscriptionEnabled: true,
+					});
+				}
+			}
 			const subscription = await this.repository.updateLifecycleSubscription({
 				clientServiceId,
 				subscriptionId,
 				...input,
+				...(provisioning ?? {}),
+				...(provisioning?.provisioningStatus ===
+				ClientServiceLifecycleProvisioningStatus.Failed
+					? { isEnabled: false }
+					: {}),
 			});
 			await this.recordAudit({
 				context: auditContext,
@@ -193,12 +245,33 @@ export class ClientServicesService {
 					eventType: subscription.eventType,
 					consumerGroup: subscription.consumerGroup,
 					isEnabled: subscription.isEnabled,
+					topic: subscription.topic,
+					principal: subscription.principal,
+					provisioningStatus: subscription.provisioningStatus,
 				},
 			});
 			return subscription;
 		} catch (error) {
 			throw mapRepositoryError(error);
 		}
+	}
+
+	private provisionLifecycleSubscription(input: {
+		clientServiceId: string;
+		consumerGroup: string;
+		previousConsumerGroup?: string;
+		subscriptionEnabled: boolean;
+	}): Promise<ClientServiceLifecycleProvisioningRecord> {
+		if (this.lifecycleProvisioner) {
+			return this.lifecycleProvisioner.provision(input);
+		}
+		return Promise.resolve({
+			topic: createClientLifecycleTopic(input.clientServiceId),
+			principal: createClientLifecyclePrincipal(input.clientServiceId),
+			provisioningStatus: ClientServiceLifecycleProvisioningStatus.Pending,
+			provisioningError: null,
+			provisionedAt: null,
+		});
 	}
 
 	async createPolicy(

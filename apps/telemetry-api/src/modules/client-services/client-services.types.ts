@@ -14,6 +14,14 @@ export const ClientServiceLifecycleEventType = {
 export type ClientServiceLifecycleEventType =
 	(typeof ClientServiceLifecycleEventType)[keyof typeof ClientServiceLifecycleEventType];
 
+export const ClientServiceLifecycleProvisioningStatus = {
+	Pending: 'PENDING',
+	Provisioned: 'PROVISIONED',
+	Failed: 'FAILED',
+} as const;
+export type ClientServiceLifecycleProvisioningStatus =
+	(typeof ClientServiceLifecycleProvisioningStatus)[keyof typeof ClientServiceLifecycleProvisioningStatus];
+
 export const ClientServiceImageResizeMode = {
 	OnDemand: 'ON_DEMAND',
 	PreGenerate: 'PRE_GENERATE',
@@ -99,8 +107,21 @@ export interface ClientServiceLifecycleSubscriptionRecord {
 	consumerGroup: string;
 	isEnabled: boolean;
 	description?: string;
+	topic: string;
+	principal: string;
+	provisioningStatus: ClientServiceLifecycleProvisioningStatus;
+	provisioningError?: string;
+	provisionedAt?: string;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export interface ClientServiceLifecycleProvisioningRecord {
+	topic: string;
+	principal: string;
+	provisioningStatus: ClientServiceLifecycleProvisioningStatus;
+	provisioningError?: string | null;
+	provisionedAt?: string | null;
 }
 
 export interface ClientServiceImageResizePolicyRecord {

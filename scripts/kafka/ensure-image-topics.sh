@@ -11,7 +11,9 @@ Creates the image service Kafka topics if they do not exist, then describes them
 
 Default topics:
   file.image.events.v1
+  file.image.events.v1.dlq
   file.image.lifecycle.v1
+  file.image.lifecycle.v1.dlq
 
 Environment overrides:
   KAFKA_COMPOSE_FILE              Docker compose file path
@@ -20,6 +22,7 @@ Environment overrides:
   KAFKA_TOPIC_PARTITIONS          Topic partition count
   KAFKA_TOPIC_REPLICATION_FACTOR  Topic replication factor
   KAFKA_TOPIC_MIN_ISR             min.insync.replicas topic config
+  KAFKA_TOPIC_COMMAND_CONFIG      Optional Kafka CLI client properties file
 USAGE
 }
 
@@ -41,6 +44,7 @@ case "$mode" in
     partitions="${KAFKA_TOPIC_PARTITIONS:-3}"
     replication_factor="${KAFKA_TOPIC_REPLICATION_FACTOR:-1}"
     min_isr="${KAFKA_TOPIC_MIN_ISR:-1}"
+    command_config="${KAFKA_TOPIC_COMMAND_CONFIG:-}"
     ;;
   prod|production)
     compose_file="${KAFKA_COMPOSE_FILE:-$repo_root/docker/docker-compose.kafka.yml}"
@@ -49,6 +53,7 @@ case "$mode" in
     partitions="${KAFKA_TOPIC_PARTITIONS:-6}"
     replication_factor="${KAFKA_TOPIC_REPLICATION_FACTOR:-3}"
     min_isr="${KAFKA_TOPIC_MIN_ISR:-2}"
+    command_config="${KAFKA_TOPIC_COMMAND_CONFIG:-/etc/kafka/secrets/broker-admin.properties}"
     ;;
   *)
     echo "Unknown mode: $mode" >&2
@@ -61,7 +66,9 @@ topics=("$@")
 if [[ ${#topics[@]} -eq 0 ]]; then
   topics=(
     file.image.events.v1
+    file.image.events.v1.dlq
     file.image.lifecycle.v1
+    file.image.lifecycle.v1.dlq
   )
 fi
 
@@ -72,6 +79,10 @@ fi
 
 compose=(docker compose -f "$compose_file")
 kafka_topics=(/opt/kafka/bin/kafka-topics.sh --bootstrap-server "$bootstrap_server")
+command_config_args=()
+if [[ -n "$command_config" ]]; then
+  command_config_args=(--command-config "$command_config")
+fi
 
 echo "Kafka topic bootstrap"
 echo "  mode: $mode"
@@ -85,7 +96,8 @@ echo
 
 "${compose[@]}" exec -T "$kafka_service" \
   /opt/kafka/bin/kafka-broker-api-versions.sh \
-  --bootstrap-server "$bootstrap_server" >/dev/null
+  --bootstrap-server "$bootstrap_server" \
+  "${command_config_args[@]}" >/dev/null
 
 for topic in "${topics[@]}"; do
   echo "Ensuring topic: $topic"
@@ -96,7 +108,8 @@ for topic in "${topics[@]}"; do
     --topic "$topic" \
     --partitions "$partitions" \
     --replication-factor "$replication_factor" \
-    --config "min.insync.replicas=$min_isr"
+    --config "min.insync.replicas=$min_isr" \
+    "${command_config_args[@]}"
 done
 
 echo
@@ -105,5 +118,6 @@ for topic in "${topics[@]}"; do
   "${compose[@]}" exec -T "$kafka_service" \
     "${kafka_topics[@]}" \
     --describe \
-    --topic "$topic"
+    --topic "$topic" \
+    "${command_config_args[@]}"
 done

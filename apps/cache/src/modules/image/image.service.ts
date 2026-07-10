@@ -21,6 +21,7 @@ import {
 	createImageTelemetryEvent,
 	ImageTelemetryEvent,
 	ImageTelemetryEventType,
+	ImageTelemetryStage,
 	normalizeImageFormat,
 	publishImageTelemetryEvent,
 } from './image.telemetry';
@@ -38,8 +39,8 @@ export class ImageService {
 		private readonly imageClient?: ClientKafka,
 	) {}
 
-	private async publishTelemetryEvent(event: ImageTelemetryEvent) {
-		await publishImageTelemetryEvent({
+	private publishTelemetryEvent(event: ImageTelemetryEvent): void {
+		void publishImageTelemetryEvent({
 			client: this.imageClient,
 			event,
 			logger: this.logger,
@@ -136,7 +137,7 @@ export class ImageService {
 		/** Caching된 이미지 있으면 그대로 반환 */
 		if (cachedImage) {
 			this.logger.log(`cache hit: ${JSON.stringify(params)}`);
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.CacheHit,
 					sourceApp: 'cache',
@@ -155,7 +156,7 @@ export class ImageService {
 			return cachedImage;
 		}
 
-		await this.publishTelemetryEvent(
+		this.publishTelemetryEvent(
 			createImageTelemetryEvent({
 				eventType: ImageTelemetryEventType.CacheMiss,
 				sourceApp: 'cache',
@@ -180,7 +181,7 @@ export class ImageService {
 			/** 리사이징 결과물 캐싱 */
 			this.cacheService.cacheImage(cacheKey, { imageBuffer, contentType });
 
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.CacheStored,
 					sourceApp: 'cache',
@@ -204,7 +205,7 @@ export class ImageService {
 			};
 		} catch (err) {
 			this.logger.error(err);
-			await this.publishTelemetryEvent(
+			this.publishTelemetryEvent(
 				createImageTelemetryEvent({
 					eventType: ImageTelemetryEventType.ReadFailed,
 					sourceApp: 'cache',
@@ -215,6 +216,7 @@ export class ImageService {
 					height,
 					format,
 					durationMs: performance.now() - startedAt,
+					stage: ImageTelemetryStage.CacheOriginFetch,
 					status: 'failed',
 					...telemetryContext,
 					...createFailedTelemetryFields(err),

@@ -15,9 +15,11 @@ import {
 	TELEMETRY_KAFKA_CONSUMER_FACTORY,
 	TelemetryKafkaConsumer,
 	TelemetryKafkaConsumerFactory,
+	TelemetryKafkaDlqProducer,
 } from './kafka-ingestion.consumer-factory';
 import { TelemetryKafkaConsumerStatusService } from './kafka-ingestion.status';
 import { parseKafkaMessageValue } from '../kafka/kafka-message.parser';
+import { processKafkaMessageWithResilience } from '../kafka/kafka-consumer-resilience';
 
 @Injectable()
 export class TelemetryKafkaConsumerService
@@ -25,6 +27,8 @@ export class TelemetryKafkaConsumerService
 {
 	private readonly logger = new Logger(TelemetryKafkaConsumerService.name);
 	private consumer?: TelemetryKafkaConsumer;
+	private dlqProducer?: TelemetryKafkaDlqProducer;
+	private config?: ReturnType<typeof readTelemetryKafkaConsumerConfig>;
 
 	constructor(
 		private readonly ingestionService: IngestionService,
@@ -35,6 +39,7 @@ export class TelemetryKafkaConsumerService
 
 	async onApplicationBootstrap() {
 		const config = readTelemetryKafkaConsumerConfig();
+		this.config = config;
 		this.statusService.configure(config);
 		if (!config.enabled) {
 			this.logger.log(
@@ -45,12 +50,15 @@ export class TelemetryKafkaConsumerService
 
 		try {
 			this.consumer = this.consumerFactory.create(config);
+			this.dlqProducer = this.consumerFactory.createDlqProducer(config);
 			await this.consumer.connect();
+			await this.dlqProducer.connect();
 			await this.consumer.subscribe({
 				topic: config.topic,
 				fromBeginning: config.fromBeginning,
 			});
 			await this.consumer.run({
+				autoCommit: false,
 				eachMessage: (payload) => this.handleMessage(payload),
 			});
 			this.statusService.markConnected();
@@ -58,6 +66,7 @@ export class TelemetryKafkaConsumerService
 				`Kafka telemetry consumer connected: ${config.topic} group=${config.groupId}`,
 			);
 		} catch (error) {
+			await this.disconnectClients();
 			this.statusService.markDisconnected(error);
 			this.logger.error(
 				`Kafka telemetry consumer 연결 실패: ${errorToMessage(error)}`,
@@ -66,23 +75,43 @@ export class TelemetryKafkaConsumerService
 	}
 
 	async onApplicationShutdown() {
-		if (!this.consumer) {
-			return;
-		}
-
 		try {
-			await this.consumer.disconnect();
+			await this.disconnectClients();
 		} finally {
 			this.statusService.markDisconnected();
 		}
 	}
 
-	async handleMessage({ message }: EachMessagePayload): Promise<void> {
-		const result = await this.ingestMessageValue(message.value);
+	async handleMessage(payload: EachMessagePayload): Promise<void> {
+		const consumer = this.requireConsumer();
+		const dlqProducer = this.requireDlqProducer();
+		const config = this.requireConfig();
+		const processing = await processKafkaMessageWithResilience({
+			payload,
+			retryPolicy: config,
+			ingest: (value) => this.ingestMessageValue(value),
+			publishDeadLetter: async (envelope) => {
+				await dlqProducer.send({
+					topic: config.dlqTopic,
+					acks: -1,
+					messages: [
+						{
+							key: `${payload.topic}:${payload.partition}:${payload.message.offset}`,
+							value: JSON.stringify(envelope),
+						},
+					],
+				});
+			},
+			commitOffset: async (offset) => {
+				await consumer.commitOffsets([
+					{ topic: payload.topic, partition: payload.partition, offset },
+				]);
+			},
+		});
 		this.statusService.markConsumed();
-		if (!result.accepted) {
+		if (processing.outcome === 'dead-lettered') {
 			this.logger.warn(
-				`Kafka telemetry event 거부: ${result.reason ?? 'unknown reason'}`,
+				`Kafka telemetry event DLQ 처리: ${processing.ingestion.reason ?? 'unknown reason'}`,
 			);
 		}
 	}
@@ -94,6 +123,34 @@ export class TelemetryKafkaConsumerService
 		}
 
 		return this.ingestionService.ingest(parsed.payload);
+	}
+
+	private requireConsumer(): TelemetryKafkaConsumer {
+		if (!this.consumer) {
+			throw new Error('Kafka telemetry consumer is not initialized');
+		}
+		return this.consumer;
+	}
+
+	private requireDlqProducer(): TelemetryKafkaDlqProducer {
+		if (!this.dlqProducer) {
+			throw new Error('Kafka telemetry DLQ producer is not initialized');
+		}
+		return this.dlqProducer;
+	}
+
+	private requireConfig(): ReturnType<typeof readTelemetryKafkaConsumerConfig> {
+		if (!this.config) {
+			throw new Error('Kafka telemetry consumer config is not initialized');
+		}
+		return this.config;
+	}
+
+	private async disconnectClients(): Promise<void> {
+		await Promise.allSettled([
+			this.consumer?.disconnect(),
+			this.dlqProducer?.disconnect(),
+		]);
 	}
 }
 

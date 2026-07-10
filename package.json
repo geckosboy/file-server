@@ -28,6 +28,7 @@
 		"all:test:e2e": "pnpm test:component:e2e",
 		"test:component:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache --filter=@file/telemetry-api",
 		"test:system:e2e": "node scripts/system-e2e.mjs",
+		"test:kafka:acl:e2e": "scripts/kafka/test/kafka-acl-isolation.e2e.sh",
 		"docker:build": "docker build -f docker/apps/Dockerfile.storage -t file-server/storage:local . && docker build -f docker/apps/Dockerfile.resize -t file-server/resize:local . && docker build -f docker/apps/Dockerfile.cache -t file-server/cache:local .",
 		"test:docker:smoke": "node scripts/docker-smoke.mjs",
 		"typecheck:ts7": "node scripts/typecheck-ts7.mjs",

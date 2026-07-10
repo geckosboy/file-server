@@ -1,67 +1,29 @@
-export const IMAGE_TELEMETRY_TOPIC = 'file.image.events.v1';
+import {
+	IMAGE_TELEMETRY_TOPIC,
+	ImageTelemetryEnvironment,
+	ImageTelemetryEventBase,
+	ImageTelemetryEventType,
+	ImageTelemetryFormat,
+	ImageTelemetrySourceApp,
+	ImageTelemetryStatus,
+} from '@file/telemetry-contracts/events';
 
-export const ImageTelemetryEventTypes = [
-	'image.upload.completed',
-	'image.upload.failed',
-	'image.resize.requested',
-	'image.resize.completed',
-	'image.resize.failed',
-	'image.cache.hit',
-	'image.cache.miss',
-	'image.cache.stored',
-	'image.read.completed',
-	'image.read.failed',
-] as const;
-
-export type ImageTelemetryEventType = (typeof ImageTelemetryEventTypes)[number];
-
-export const SourceApps = ['storage', 'resize', 'cache'] as const;
-export type SourceApp = (typeof SourceApps)[number];
-
-export const RuntimeEnvironments = [
-	'development',
-	'test',
-	'production',
-] as const;
-export type RuntimeEnvironment = (typeof RuntimeEnvironments)[number];
-
-export const TelemetryStatuses = ['success', 'failed'] as const;
-export type TelemetryStatus = (typeof TelemetryStatuses)[number];
-
-export const ImageFormats = ['png', 'jpeg', 'jpg', 'webp', 'unknown'] as const;
-export type ImageFormat = (typeof ImageFormats)[number];
+export { IMAGE_TELEMETRY_TOPIC };
+export type RuntimeEnvironment = ImageTelemetryEnvironment;
+export type ImageFormat = ImageTelemetryFormat;
+export type SourceApp = ImageTelemetrySourceApp;
+export type TelemetryStatus = ImageTelemetryStatus;
+export type { ImageTelemetryEventType };
 
 export type UnknownRecord = Record<string, unknown>;
 
-export interface ImageTelemetryEvent {
-	schemaVersion: 1;
-	eventId: string;
-	eventType: ImageTelemetryEventType;
-	occurredAt: string;
+export type ImageTelemetryEvent = Omit<
+	ImageTelemetryEventBase,
+	'receivedAt'
+> & {
 	receivedAt: string;
-	sourceApp: SourceApp;
-	environment: RuntimeEnvironment;
-	clientServiceId?: string;
-	clientServiceSlug?: string;
-	requestId?: string;
-	traceId?: string;
-	imageId?: number;
-	path: string;
-	name: string;
-	originalName?: string;
-	imageKey: string;
-	cacheKey?: string;
-	width?: number;
-	height?: number;
-	format?: ImageFormat;
-	inputBytes?: number;
-	outputBytes?: number;
-	durationMs?: number;
-	status: TelemetryStatus;
-	errorCode?: string;
-	errorMessage?: string;
 	rawPayload: UnknownRecord;
-}
+};
 
 export interface ImageAssetSummary {
 	imageKey: string;

@@ -6,6 +6,7 @@ import { readLifecycleKafkaConsumerConfig } from '.././kafka-lifecycle.config';
 import {
 	LifecycleKafkaConsumer,
 	LifecycleKafkaConsumerFactory,
+	LifecycleKafkaDlqProducer,
 } from '.././kafka-lifecycle.consumer-factory';
 import { LifecycleKafkaConsumerService } from '.././kafka-lifecycle.service';
 import { LifecycleKafkaConsumerStatusService } from '.././kafka-lifecycle.status';
@@ -33,13 +34,16 @@ const lifecycleEvent: ImageLifecycleEvent = {
 	rawPayload: {},
 };
 
-const createKafkaMessagePayload = (value: Buffer): EachMessagePayload => ({
+const createKafkaMessagePayload = (
+	value: Buffer,
+	options: { offset?: string; partition?: number } = {},
+): EachMessagePayload => ({
 	topic: 'file.image.lifecycle.v1',
-	partition: 0,
+	partition: options.partition ?? 0,
 	message: {
 		attributes: 0,
 		headers: {},
-		offset: '1',
+		offset: options.offset ?? '1',
 		timestamp: '1783041507162',
 		key: Buffer.from('key'),
 		value,
@@ -74,7 +78,10 @@ describe('Kafka lifecycle consumer 설정', () => {
 			clientId: 'telemetry-api-lifecycle',
 			groupId: 'file-telemetry-api-lifecycle',
 			topic: 'file.image.lifecycle.v1',
+			dlqTopic: 'file.image.lifecycle.v1.dlq',
 			fromBeginning: false,
+			retryMaxAttempts: 3,
+			retryBackoffMs: 100,
 		});
 	});
 });
@@ -84,6 +91,7 @@ describe('Kafka lifecycle consumer 서비스', () => {
 	let ingestionService: LifecycleIngestionService;
 	let statusService: LifecycleKafkaConsumerStatusService;
 	let consumer: jest.Mocked<LifecycleKafkaConsumer>;
+	let dlqProducer: jest.Mocked<LifecycleKafkaDlqProducer>;
 	let factory: jest.Mocked<LifecycleKafkaConsumerFactory>;
 	let service: LifecycleKafkaConsumerService;
 	let originalEnv: NodeJS.ProcessEnv;
@@ -94,13 +102,20 @@ describe('Kafka lifecycle consumer 서비스', () => {
 		ingestionService = new LifecycleIngestionService(repository);
 		statusService = new LifecycleKafkaConsumerStatusService();
 		consumer = {
+			commitOffsets: jest.fn().mockResolvedValue(undefined),
 			connect: jest.fn().mockResolvedValue(undefined),
 			disconnect: jest.fn().mockResolvedValue(undefined),
 			run: jest.fn().mockResolvedValue(undefined),
 			subscribe: jest.fn().mockResolvedValue(undefined),
 		};
+		dlqProducer = {
+			connect: jest.fn().mockResolvedValue(undefined),
+			disconnect: jest.fn().mockResolvedValue(undefined),
+			send: jest.fn().mockResolvedValue([]),
+		};
 		factory = {
 			create: jest.fn().mockReturnValue(consumer),
+			createDlqProducer: jest.fn().mockReturnValue(dlqProducer),
 		};
 		service = new LifecycleKafkaConsumerService(
 			ingestionService,
@@ -115,6 +130,7 @@ describe('Kafka lifecycle consumer 서비스', () => {
 	});
 
 	it('Kafka lifecycle message를 lifecycle 저장소로 저장한다', async () => {
+		await enableConsumer(service);
 		await service.handleMessage(
 			createKafkaMessagePayload(Buffer.from(JSON.stringify(lifecycleEvent))),
 		);
@@ -127,9 +143,80 @@ describe('Kafka lifecycle consumer 서비스', () => {
 				requestId: 'req-life-kafka-1',
 			}),
 		]);
+		expect(consumer.commitOffsets).toHaveBeenCalledWith([
+			{ topic: 'file.image.lifecycle.v1', partition: 0, offset: '2' },
+		]);
 		expect(statusService.getHealth().lastConsumedAt).toEqual(
 			expect.any(String),
 		);
+	});
+
+	it('lifecycle transient 저장 실패는 bounded retry 후 성공 offset만 commit한다', async () => {
+		const payload = createKafkaMessagePayload(
+			Buffer.from(JSON.stringify(lifecycleEvent)),
+			{ offset: '9' },
+		);
+		jest
+			.spyOn(ingestionService, 'ingest')
+			.mockResolvedValueOnce({
+				accepted: false,
+				inserted: false,
+				eventId: lifecycleEvent.eventId,
+				reason: 'insert_failed',
+			})
+			.mockResolvedValueOnce({
+				accepted: true,
+				inserted: false,
+				eventId: lifecycleEvent.eventId,
+			});
+		process.env.LIFECYCLE_KAFKA_RETRY_BACKOFF_MS = '0';
+		await enableConsumer(service);
+
+		await service.handleMessage(payload);
+
+		expect(ingestionService.ingest).toHaveBeenCalledTimes(2);
+		expect(payload.heartbeat).toHaveBeenCalledTimes(1);
+		expect(consumer.commitOffsets).toHaveBeenCalledWith([
+			{ topic: 'file.image.lifecycle.v1', partition: 0, offset: '10' },
+		]);
+	});
+
+	it('중복 lifecycle eventId는 멱등 저장 후 각 전달 offset을 commit한다', async () => {
+		const payload = createKafkaMessagePayload(
+			Buffer.from(JSON.stringify(lifecycleEvent)),
+		);
+		await enableConsumer(service);
+
+		await service.handleMessage(payload);
+		await service.handleMessage(payload);
+
+		expect(await repository.listEvents()).toHaveLength(1);
+		expect(consumer.commitOffsets).toHaveBeenCalledTimes(2);
+	});
+
+	it('lifecycle poison payload를 DLQ envelope로 저장한 뒤 offset을 commit한다', async () => {
+		const raw = Buffer.from('{broken');
+		await enableConsumer(service);
+
+		await service.handleMessage(
+			createKafkaMessagePayload(raw, { offset: '21', partition: 3 }),
+		);
+
+		const record = dlqProducer.send.mock.calls[0][0];
+		expect(record).toMatchObject({
+			topic: 'file.image.lifecycle.v1.dlq',
+			acks: -1,
+		});
+		expect(JSON.parse(String(record.messages[0].value))).toMatchObject({
+			sourceTopic: 'file.image.lifecycle.v1',
+			partition: 3,
+			offset: '21',
+			rawPayload: raw.toString('base64'),
+			error: 'Kafka message value must be valid JSON',
+		});
+		expect(consumer.commitOffsets).toHaveBeenCalledWith([
+			{ topic: 'file.image.lifecycle.v1', partition: 3, offset: '22' },
+		]);
 	});
 
 	it('깨진 JSON message는 lifecycle 검증 실패 metric으로 기록한다', async () => {
@@ -163,8 +250,10 @@ describe('Kafka lifecycle consumer 서비스', () => {
 			topic: 'file.image.lifecycle.v1',
 		});
 		expect(consumer.run).toHaveBeenCalledWith({
+			autoCommit: false,
 			eachMessage: expect.any(Function),
 		});
+		expect(dlqProducer.connect).toHaveBeenCalledTimes(1);
 		expect(statusService.getHealth()).toMatchObject({
 			enabled: true,
 			connected: true,
@@ -179,6 +268,13 @@ describe('Kafka lifecycle consumer 서비스', () => {
 		await service.onApplicationShutdown();
 
 		expect(consumer.disconnect).toHaveBeenCalledTimes(1);
+		expect(dlqProducer.disconnect).toHaveBeenCalledTimes(1);
 		expect(statusService.getHealth().connected).toBe(false);
 	});
 });
+
+async function enableConsumer(service: LifecycleKafkaConsumerService) {
+	process.env.NODE_ENV = 'development';
+	process.env.KAFKA_CLIENT_BROKERS = 'localhost:9094';
+	await service.onApplicationBootstrap();
+}

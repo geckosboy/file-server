@@ -21,3 +21,6 @@
 # Local and generated artifacts are not build inputs.
 .DS_Store
 docs/asyncapi/html
+
+# Production Kafka key/trust stores and CLI credentials must never enter app images.
+docker/kafka-secrets/*

@@ -6,6 +6,7 @@ import { readTelemetryKafkaConsumerConfig } from '.././kafka-ingestion.config';
 import {
 	TelemetryKafkaConsumer,
 	TelemetryKafkaConsumerFactory,
+	TelemetryKafkaDlqProducer,
 } from '.././kafka-ingestion.consumer-factory';
 import { TelemetryKafkaConsumerService } from '.././kafka-ingestion.service';
 import { parseKafkaMessageValue } from '../../kafka/kafka-message.parser';
@@ -34,13 +35,16 @@ const uploadEvent: ImageTelemetryEvent = {
 	rawPayload: {},
 };
 
-const createKafkaMessagePayload = (value: Buffer): EachMessagePayload => ({
+const createKafkaMessagePayload = (
+	value: Buffer,
+	options: { offset?: string; partition?: number } = {},
+): EachMessagePayload => ({
 	topic: 'file.image.events.v1',
-	partition: 0,
+	partition: options.partition ?? 0,
 	message: {
 		attributes: 0,
 		headers: {},
-		offset: '1',
+		offset: options.offset ?? '1',
 		timestamp: '1783041507162',
 		key: Buffer.from('key'),
 		value,
@@ -75,7 +79,27 @@ describe('Kafka 텔레메트리 consumer 설정', () => {
 			clientId: 'telemetry-api',
 			groupId: 'file-telemetry-api',
 			topic: 'file.image.events.v1',
+			dlqTopic: 'file.image.events.v1.dlq',
 			fromBeginning: false,
+			retryMaxAttempts: 3,
+			retryBackoffMs: 100,
+		});
+	});
+
+	it('DLQ topic과 retry 상한을 환경 변수로 재정의한다', () => {
+		expect(
+			readTelemetryKafkaConsumerConfig({
+				NODE_ENV: 'test',
+				TELEMETRY_KAFKA_CONSUMER_ENABLED: 'true',
+				TELEMETRY_KAFKA_BROKERS: 'localhost:9094',
+				TELEMETRY_KAFKA_DLQ_TOPIC: 'file.telemetry.poison.v1',
+				TELEMETRY_KAFKA_RETRY_MAX_ATTEMPTS: '5',
+				TELEMETRY_KAFKA_RETRY_BACKOFF_MS: '25',
+			}),
+		).toMatchObject({
+			dlqTopic: 'file.telemetry.poison.v1',
+			retryMaxAttempts: 5,
+			retryBackoffMs: 25,
 		});
 	});
 });
@@ -117,6 +141,7 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 	let ingestionService: IngestionService;
 	let statusService: TelemetryKafkaConsumerStatusService;
 	let consumer: jest.Mocked<TelemetryKafkaConsumer>;
+	let dlqProducer: jest.Mocked<TelemetryKafkaDlqProducer>;
 	let factory: jest.Mocked<TelemetryKafkaConsumerFactory>;
 	let service: TelemetryKafkaConsumerService;
 	let originalEnv: NodeJS.ProcessEnv;
@@ -127,13 +152,20 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 		ingestionService = new IngestionService(repository);
 		statusService = new TelemetryKafkaConsumerStatusService();
 		consumer = {
+			commitOffsets: jest.fn().mockResolvedValue(undefined),
 			connect: jest.fn().mockResolvedValue(undefined),
 			disconnect: jest.fn().mockResolvedValue(undefined),
 			run: jest.fn().mockResolvedValue(undefined),
 			subscribe: jest.fn().mockResolvedValue(undefined),
 		};
+		dlqProducer = {
+			connect: jest.fn().mockResolvedValue(undefined),
+			disconnect: jest.fn().mockResolvedValue(undefined),
+			send: jest.fn().mockResolvedValue([]),
+		};
 		factory = {
 			create: jest.fn().mockReturnValue(consumer),
+			createDlqProducer: jest.fn().mockReturnValue(dlqProducer),
 		};
 		service = new TelemetryKafkaConsumerService(
 			ingestionService,
@@ -148,6 +180,7 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 	});
 
 	it('Kafka message를 기존 IngestionService로 저장한다', async () => {
+		await enableConsumer(service);
 		await service.handleMessage(
 			createKafkaMessagePayload(Buffer.from(JSON.stringify(uploadEvent))),
 		);
@@ -160,9 +193,133 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 				requestId: 'req-kafka-1',
 			}),
 		]);
+		expect(consumer.commitOffsets).toHaveBeenCalledWith([
+			{ topic: 'file.image.events.v1', partition: 0, offset: '2' },
+		]);
 		expect(statusService.getHealth().lastConsumedAt).toEqual(
 			expect.any(String),
 		);
+	});
+
+	it('transient 저장 실패를 bounded retry하고 성공 후에만 offset을 commit한다', async () => {
+		const payload = createKafkaMessagePayload(
+			Buffer.from(JSON.stringify(uploadEvent)),
+			{ offset: '9' },
+		);
+		jest
+			.spyOn(ingestionService, 'ingest')
+			.mockResolvedValueOnce({
+				accepted: false,
+				inserted: false,
+				eventId: uploadEvent.eventId,
+				reason: 'insert_failed',
+			})
+			.mockResolvedValueOnce({
+				accepted: true,
+				inserted: true,
+				eventId: uploadEvent.eventId,
+			});
+		process.env.TELEMETRY_KAFKA_RETRY_BACKOFF_MS = '0';
+		await enableConsumer(service);
+
+		await service.handleMessage(payload);
+
+		expect(ingestionService.ingest).toHaveBeenCalledTimes(2);
+		expect(payload.heartbeat).toHaveBeenCalledTimes(1);
+		expect(consumer.commitOffsets).toHaveBeenCalledWith([
+			{ topic: 'file.image.events.v1', partition: 0, offset: '10' },
+		]);
+		expect(dlqProducer.send).not.toHaveBeenCalled();
+	});
+
+	it('retry 상한을 넘은 transient 실패는 offset을 commit하지 않고 다시 throw한다', async () => {
+		jest.spyOn(ingestionService, 'ingest').mockResolvedValue({
+			accepted: false,
+			inserted: false,
+			eventId: uploadEvent.eventId,
+			reason: 'insert_failed',
+		});
+		process.env.TELEMETRY_KAFKA_RETRY_MAX_ATTEMPTS = '2';
+		process.env.TELEMETRY_KAFKA_RETRY_BACKOFF_MS = '0';
+		await enableConsumer(service);
+
+		await expect(
+			service.handleMessage(
+				createKafkaMessagePayload(Buffer.from(JSON.stringify(uploadEvent))),
+			),
+		).rejects.toThrow('insert_failed');
+
+		expect(ingestionService.ingest).toHaveBeenCalledTimes(2);
+		expect(consumer.commitOffsets).not.toHaveBeenCalled();
+		expect(dlqProducer.send).not.toHaveBeenCalled();
+		expect(statusService.getHealth().lastConsumedAt).toBeNull();
+	});
+
+	it('재시작/리밸런싱으로 미커밋 message가 재전달되면 같은 event를 복구한다', async () => {
+		const payload = createKafkaMessagePayload(
+			Buffer.from(JSON.stringify(uploadEvent)),
+			{ offset: '30' },
+		);
+		jest
+			.spyOn(ingestionService, 'ingest')
+			.mockResolvedValueOnce({
+				accepted: false,
+				inserted: false,
+				eventId: uploadEvent.eventId,
+				reason: 'insert_failed',
+			})
+			.mockResolvedValueOnce({
+				accepted: true,
+				inserted: true,
+				eventId: uploadEvent.eventId,
+			});
+		process.env.TELEMETRY_KAFKA_RETRY_MAX_ATTEMPTS = '1';
+		await enableConsumer(service);
+
+		await expect(service.handleMessage(payload)).rejects.toThrow(
+			'insert_failed',
+		);
+		expect(consumer.commitOffsets).not.toHaveBeenCalled();
+
+		await service.handleMessage(payload);
+
+		expect(ingestionService.ingest).toHaveBeenCalledTimes(2);
+		expect(consumer.commitOffsets).toHaveBeenCalledWith([
+			{ topic: 'file.image.events.v1', partition: 0, offset: '31' },
+		]);
+	});
+
+	it('poison payload를 원문/오류/partition/offset envelope로 DLQ 후 commit한다', async () => {
+		const raw = Buffer.from('{broken');
+		await enableConsumer(service);
+
+		await service.handleMessage(
+			createKafkaMessagePayload(raw, { offset: '17', partition: 2 }),
+		);
+
+		expect(dlqProducer.send).toHaveBeenCalledWith({
+			topic: 'file.image.events.v1.dlq',
+			acks: -1,
+			messages: [
+				{
+					key: 'file.image.events.v1:2:17',
+					value: expect.any(String),
+				},
+			],
+		});
+		const record = dlqProducer.send.mock.calls[0][0];
+		expect(JSON.parse(String(record.messages[0].value))).toMatchObject({
+			schemaVersion: 1,
+			sourceTopic: 'file.image.events.v1',
+			partition: 2,
+			offset: '17',
+			rawPayload: raw.toString('base64'),
+			rawPayloadEncoding: 'base64',
+			error: 'Kafka message value must be valid JSON',
+		});
+		expect(consumer.commitOffsets).toHaveBeenCalledWith([
+			{ topic: 'file.image.events.v1', partition: 2, offset: '18' },
+		]);
 	});
 
 	it('깨진 JSON message는 검증 실패 metric으로 기록한다', async () => {
@@ -196,8 +353,10 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 			topic: 'file.image.events.v1',
 		});
 		expect(consumer.run).toHaveBeenCalledWith({
+			autoCommit: false,
 			eachMessage: expect.any(Function),
 		});
+		expect(dlqProducer.connect).toHaveBeenCalledTimes(1);
 		expect(statusService.getHealth()).toMatchObject({
 			enabled: true,
 			connected: true,
@@ -212,6 +371,13 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 		await service.onApplicationShutdown();
 
 		expect(consumer.disconnect).toHaveBeenCalledTimes(1);
+		expect(dlqProducer.disconnect).toHaveBeenCalledTimes(1);
 		expect(statusService.getHealth().connected).toBe(false);
 	});
 });
+
+async function enableConsumer(service: TelemetryKafkaConsumerService) {
+	process.env.NODE_ENV = 'development';
+	process.env.KAFKA_CLIENT_BROKERS = 'localhost:9094';
+	await service.onApplicationBootstrap();
+}

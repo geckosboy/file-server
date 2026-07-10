@@ -6,6 +6,7 @@ import {
 	ClientServiceImageResizePolicyRecord,
 	ClientServiceImageResizeVariantRecord,
 	ClientServiceLifecycleSubscriptionRecord,
+	ClientServiceLifecycleProvisioningRecord,
 	ClientServiceKeyRecord,
 	ClientServiceRecord,
 	ClientServicePolicyRecord,
@@ -256,7 +257,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 		input: CreateClientServiceLifecycleSubscriptionInput & {
 			clientServiceId: string;
 			isEnabled: boolean;
-		},
+		} & ClientServiceLifecycleProvisioningRecord,
 	): Promise<ClientServiceLifecycleSubscriptionRecord> {
 		try {
 			const subscription =
@@ -267,6 +268,13 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 						consumerGroup: input.consumerGroup,
 						isEnabled: input.isEnabled,
 						description: input.description,
+						topic: input.topic,
+						principal: input.principal,
+						provisioningStatus: input.provisioningStatus,
+						provisioningError: input.provisioningError,
+						provisionedAt: input.provisionedAt
+							? new Date(input.provisionedAt)
+							: input.provisionedAt,
 					},
 				});
 			return toLifecycleSubscriptionRecord(subscription);
@@ -287,7 +295,7 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 		input: UpdateClientServiceLifecycleSubscriptionInput & {
 			clientServiceId: string;
 			subscriptionId: string;
-		},
+		} & Partial<ClientServiceLifecycleProvisioningRecord>,
 	): Promise<ClientServiceLifecycleSubscriptionRecord> {
 		const subscription =
 			await this.prisma.clientServiceLifecycleSubscription.findFirst({
@@ -311,6 +319,13 @@ export class PrismaClientServicesRepository implements ClientServicesRepository 
 						consumerGroup: input.consumerGroup,
 						isEnabled: input.isEnabled,
 						description: input.description === null ? null : input.description,
+						topic: input.topic,
+						principal: input.principal,
+						provisioningStatus: input.provisioningStatus,
+						provisioningError: input.provisioningError,
+						provisionedAt: input.provisionedAt
+							? new Date(input.provisionedAt)
+							: input.provisionedAt,
 					},
 				}),
 			);
@@ -614,6 +629,12 @@ function toLifecycleSubscriptionRecord(
 		consumerGroup: subscription.consumerGroup,
 		isEnabled: subscription.isEnabled,
 		description: subscription.description ?? undefined,
+		topic: subscription.topic,
+		principal: subscription.principal,
+		provisioningStatus:
+			subscription.provisioningStatus as ClientServiceLifecycleSubscriptionRecord['provisioningStatus'],
+		provisioningError: subscription.provisioningError ?? undefined,
+		provisionedAt: subscription.provisionedAt?.toISOString(),
 		createdAt: subscription.createdAt.toISOString(),
 		updatedAt: subscription.updatedAt.toISOString(),
 	};

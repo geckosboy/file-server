@@ -24,6 +24,7 @@
 		"@file/global": "workspace:*",
 		"@file/image-contracts": "workspace:*",
 		"@file/nest-common": "workspace:*",
+		"@file/telemetry-contracts": "workspace:*",
 		"@nestjs/common": "^11.1.27",
 		"@nestjs/core": "^11.1.27",
 		"@nestjs/microservices": "^11.1.27",
@@ -65,7 +66,9 @@
 			"^@file/nest-common/(.*)$": "<rootDir>/../../../libs/nest-common/src/$1",
 			"^@file/image-contracts$": "<rootDir>/../../../libs/image-contracts/src",
 			"^@file/image-contracts/(.*)$": "<rootDir>/../../../libs/image-contracts/src/$1",
-			"^@file/database$": "<rootDir>/../../../libs/database/src"
+			"^@file/database$": "<rootDir>/../../../libs/database/src",
+			"^@file/telemetry-contracts$": "<rootDir>/../../../libs/telemetry-contracts/src",
+			"^@file/telemetry-contracts/(.*)$": "<rootDir>/../../../libs/telemetry-contracts/src/$1"
 		}
 	}
 }

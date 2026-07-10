@@ -308,6 +308,8 @@ describe('관리자 조회 서비스', () => {
 			imageKey: 'service-a/image/a.png',
 			path: 'service-a/image',
 			name: 'a.png',
+			inputBytes: 10,
+			outputBytes: 8,
 			durationMs: 7,
 		});
 		await ingestionService.ingest({
@@ -319,6 +321,8 @@ describe('관리자 조회 서비스', () => {
 			imageKey: 'service-b/image/b.png',
 			path: 'service-b/image',
 			name: 'b.png',
+			inputBytes: 12,
+			outputBytes: 9,
 			durationMs: 11,
 		});
 
@@ -376,6 +380,7 @@ describe('관리자 조회 서비스', () => {
 			sourceApp: 'resize',
 			width: 120,
 			height: 80,
+			inputBytes: 80,
 			outputBytes: 40,
 			durationMs: 40,
 		});

@@ -1,5 +1,11 @@
 import { InMemoryTelemetryRepository } from '../../telemetry/telemetry.repository';
 import { IngestionService } from '.././ingestion.service';
+import {
+	IMAGE_TELEMETRY_EVENT_EXAMPLES,
+	IMAGE_TELEMETRY_EVENT_TYPES,
+	ImageTelemetryEventType,
+	validateImageTelemetryEvent,
+} from '@file/telemetry-contracts/events';
 
 const uploadCompleted = {
 	schemaVersion: 1,
@@ -116,6 +122,49 @@ describe('텔레메트리 수집 서비스', () => {
 			'image.resize.requested',
 			'image.cache.stored',
 		]);
+	});
+
+	it('공유 계약의 모든 producer fixture를 같은 validator로 수집한다', async () => {
+		for (const eventType of IMAGE_TELEMETRY_EVENT_TYPES) {
+			const fixture = IMAGE_TELEMETRY_EVENT_EXAMPLES[eventType];
+			expect(validateImageTelemetryEvent(fixture).ok).toBe(true);
+			expect((await service.ingest(fixture)).accepted).toBe(true);
+		}
+
+		expect(await repository.listEvents()).toHaveLength(
+			IMAGE_TELEMETRY_EVENT_TYPES.length,
+		);
+		expect(
+			(await repository.listEvents()).find(
+				(event) => event.eventType === ImageTelemetryEventType.ReadFailed,
+			),
+		).toMatchObject({
+			sourceApp: 'cache',
+			stage: 'cache-origin-fetch',
+		});
+	});
+
+	it('공유 validator와 동일하게 semantic contract 위반을 거부한다', async () => {
+		const invalidEvents = [
+			{ ...uploadCompleted, sourceApp: 'cache' },
+			{
+				...uploadCompleted,
+				eventType: 'image.cache.hit',
+				sourceApp: 'cache',
+				cacheKey: undefined,
+			},
+			{
+				...uploadCompleted,
+				eventType: 'image.resize.completed',
+				sourceApp: 'resize',
+				inputBytes: undefined,
+			},
+		];
+
+		for (const event of invalidEvents) {
+			expect(validateImageTelemetryEvent(event).ok).toBe(false);
+			expect((await service.ingest(event)).accepted).toBe(false);
+		}
 	});
 
 	it('레거시 업로드 결과 payload를 업로드 완료 이벤트로 변환한다', async () => {
