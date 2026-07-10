@@ -1,0 +1,23 @@
+.git
+.github
+.omx
+.turbo
+.pnpm-store
+.tmp
+
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+
+# Runtime secrets must be injected when the container starts, never copied.
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+
+# Local and generated artifacts are not build inputs.
+.DS_Store
+docs/asyncapi/html

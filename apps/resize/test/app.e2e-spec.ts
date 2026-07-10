@@ -17,7 +17,7 @@ import {
 	createInternalServiceForwardHeaders,
 } from '@file/database';
 import { of } from 'rxjs';
-import * as request from 'supertest';
+import request, { type Test as SuperTestRequest } from 'supertest';
 import sharp from 'sharp';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
@@ -53,7 +53,7 @@ const createFetchResponse = (
 		headers: options.headers,
 	});
 
-const internalAuthorized = (agent: request.Test) => {
+const internalAuthorized = (agent: SuperTestRequest) => {
 	const headers = createInternalServiceForwardHeaders(
 		clientServiceContext,
 		testInternalApiKey,

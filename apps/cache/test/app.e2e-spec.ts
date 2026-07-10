@@ -16,7 +16,7 @@ import {
 	INTERNAL_CLIENT_CONTEXT_SIGNATURE_HEADER,
 } from '@file/database';
 import { of } from 'rxjs';
-import * as request from 'supertest';
+import request, { type Test as SuperTestRequest } from 'supertest';
 import { AppController } from '../src/app.controller';
 import { ImageController } from '../src/modules/image/image.controller';
 import { ImageService } from '../src/modules/image/image.service';
@@ -66,7 +66,7 @@ const createAuthService = () => ({
 	),
 });
 
-const authorized = (agent: request.Test) =>
+const authorized = (agent: SuperTestRequest) =>
 	agent
 		.set('x-client-api-key', testClientApiKey)
 		.set('x-request-id', testRequestId);

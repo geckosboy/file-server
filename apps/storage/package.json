@@ -34,6 +34,7 @@
 		"class-validator": "^0.14.1",
 		"kafkajs": "^2.2.4",
 		"mime-types": "^2.1.35",
+		"multer": "^2.2.0",
 		"reflect-metadata": "^0.2.2",
 		"rxjs": "^7.8.2",
 		"sharp": "^0.33.2"

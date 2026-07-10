@@ -5,6 +5,10 @@
 	"author": "",
 	"private": true,
 	"packageManager": "pnpm@10.15.0",
+	"engines": {
+		"node": ">=22.12.0",
+		"pnpm": "10.15.0"
+	},
 	"license": "MIT",
 	"workspaces": [
 		"libs/*",
@@ -21,7 +25,11 @@
 		"all:lint": "turbo run lint",
 		"all:lint:fix": "turbo run lint:fix",
 		"all:test": "turbo run test",
-		"all:test:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache --filter=@file/telemetry-api",
+		"all:test:e2e": "pnpm test:component:e2e",
+		"test:component:e2e": "turbo run test:e2e --filter=@file/storage --filter=@file/resize --filter=@file/cache --filter=@file/telemetry-api",
+		"test:system:e2e": "node scripts/system-e2e.mjs",
+		"docker:build": "docker build -f docker/apps/Dockerfile.storage -t file-server/storage:local . && docker build -f docker/apps/Dockerfile.resize -t file-server/resize:local . && docker build -f docker/apps/Dockerfile.cache -t file-server/cache:local .",
+		"test:docker:smoke": "node scripts/docker-smoke.mjs",
 		"typecheck:ts7": "node scripts/typecheck-ts7.mjs",
 		"dev:files": "turbo run start:dev --filter=@file/storage --filter=@file/resize --filter=@file/cache",
 		"dev:admin": "turbo run start:dev --filter=@file/telemetry-api  --filter=@file/admin-web",

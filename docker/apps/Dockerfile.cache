@@ -1,25 +1,41 @@
-FROM node:20-alpine AS ts-compiler
-WORKDIR /usr/index
-COPY ../../package.json ../../pnpm-lock.yaml ../../pnpm-workspace.yaml ../../tsconfig.json ../../prisma.config.ts ./
-COPY ../../apps ./apps
-COPY ../../libs ./libs
-COPY ../../prisma ./prisma
-RUN corepack enable && pnpm install --frozen-lockfile
-RUN pnpm db:generate
-RUN pnpm --filter @file/cache build
+# syntax=docker/dockerfile:1.7
 
-FROM node:20-alpine AS prod-deps
-WORKDIR /usr/index
-COPY --from=ts-compiler /usr/index ./
-RUN corepack enable && CI=true pnpm prune --prod
+ARG NODE_VERSION=22.15.0
 
-FROM keymetrics/pm2:18-alpine
+FROM node:${NODE_VERSION}-alpine AS build
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
 WORKDIR /usr/index
-ENV TZ=Asia/Seoul
+
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json prisma.config.ts ./
+COPY apps/cache ./apps/cache
+COPY libs ./libs
+COPY prisma ./prisma
+
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+	pnpm install --frozen-lockfile
+RUN pnpm db:generate && pnpm turbo run build --filter=@file/cache
+RUN pnpm --filter @file/cache --prod deploy --legacy /opt/app \
+	&& cp -R apps/cache/dist /opt/app/dist \
+	&& prisma_source="$(find node_modules/.pnpm -path '*/node_modules/.prisma/client' -type d -print -quit)" \
+	&& prisma_package="$(find /opt/app/node_modules/.pnpm -path '*/node_modules/@prisma/client' -type d -print -quit)" \
+	&& test -n "$prisma_source" -a -n "$prisma_package" \
+	&& prisma_node_modules="$(dirname "$(dirname "$prisma_package")")" \
+	&& mkdir -p "$prisma_node_modules/.prisma" \
+	&& cp -R "$prisma_source" "$prisma_node_modules/.prisma/client" \
+	&& find /opt/app -type f -name '.env*' -delete \
+	&& rm -rf /opt/app/src /opt/app/test
+
+FROM node:${NODE_VERSION}-alpine AS runtime
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
-COPY --from=prod-deps /usr/index ./
-RUN addgroup -S app && adduser -S app -G app && chown -R app:app /usr/index
-USER app
+ENV TZ=Asia/Seoul
+WORKDIR /usr/index/apps/cache
 
-CMD ["pm2-runtime", "start", "/usr/index/apps/cache/ecosystem.config.js", "--env", "production"]
+COPY --from=build --chown=node:node /opt/app ./
+
+USER node
+EXPOSE 3030
+CMD ["node", "dist/apps/cache/src/main.js"]

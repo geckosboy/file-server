@@ -1,0 +1,132 @@
+name: file-server-ci
+
+on:
+  pull_request:
+    paths:
+      - 'apps/**'
+      - 'examples/**'
+      - 'libs/**'
+      - 'prisma/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - '.github/workflows/**'
+      - '.dockerignore'
+      - '.eslintrc.js'
+      - '.prettierrc'
+      - 'eslint.config.mjs'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'prisma.config.ts'
+      - 'tsconfig.json'
+      - 'turbo.json'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'examples/**'
+      - 'libs/**'
+      - 'prisma/**'
+      - 'scripts/**'
+      - 'docker/**'
+      - '.github/workflows/**'
+      - '.dockerignore'
+      - '.eslintrc.js'
+      - '.prettierrc'
+      - 'eslint.config.mjs'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'prisma.config.ts'
+      - 'tsconfig.json'
+      - 'turbo.json'
+  workflow_dispatch:
+
+concurrency:
+  group: file-server-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.15.0
+  PNPM_VERSION: 10.15.0
+  TURBO_TELEMETRY_DISABLED: 1
+
+jobs:
+  quality:
+    name: Lint, typecheck, test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm db:generate
+      - name: Lint
+        run: pnpm all:lint
+      - name: Typecheck with TypeScript 7
+        run: pnpm typecheck:ts7
+      - name: Unit tests
+        run: pnpm all:test
+      - name: Component E2E tests
+        run: pnpm test:component:e2e
+      - name: Build all applications and libraries
+        run: pnpm all:build
+
+  system-e2e:
+    name: PostgreSQL and Kafka system E2E
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm db:generate
+      - name: Run real-service system E2E
+        run: pnpm test:system:e2e
+
+  docker-smoke:
+    name: Node 22 container smoke
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: docker/setup-buildx-action@v3
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm db:generate
+      - name: Build runtime images
+        run: pnpm docker:build
+      - name: Start images and verify ports and secret boundaries
+        run: pnpm test:docker:smoke

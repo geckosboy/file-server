@@ -11,7 +11,7 @@ import {
 import { rm } from 'fs/promises';
 import * as path from 'path';
 import { of } from 'rxjs';
-import * as request from 'supertest';
+import request, { type Test as SuperTestRequest } from 'supertest';
 import sharp from 'sharp';
 import { Root } from '../src/enum';
 import { AppController } from '../src/app.controller';
@@ -86,12 +86,12 @@ const createAuthService = () => ({
 	),
 });
 
-const authorized = (agent: request.Test) =>
+const authorized = (agent: SuperTestRequest) =>
 	agent
 		.set('x-client-api-key', testClientApiKey)
 		.set('x-request-id', testRequestId);
 
-const internalAuthorized = (agent: request.Test) => {
+const internalAuthorized = (agent: SuperTestRequest) => {
 	const headers = createInternalServiceForwardHeaders(
 		clientServiceContext,
 		testInternalApiKey,

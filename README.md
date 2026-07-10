@@ -155,6 +155,11 @@ Keep upload/delete endpoints behind that backend or an internal network boundary
 
 ## Document
 
+다른 프로젝트에서 이 file-server를 연동하거나 AI에게 연동 설계를 맡길 때는 먼저 아래 handoff 문서를 전달하세요.
+
+- [File Server Integration Handoff](docs/file-server-integration-handoff.md)
+- [Lifecycle AsyncAPI](docs/asyncapi/file-image-lifecycle.asyncapi.yaml)
+
 Please refer to the Notion link below for explanations such as architecture and trial and error.(Language: 한국어)
 
 Notion: <https://stormy-lighter-fb5.notion.site/File-Server-a01136fb954b4a8180b33ed483e61a2d?pvs=4>

@@ -1,50 +1,65 @@
-name: 'file_server_dev'
+name: file_server_dev
+
+x-app-env: &app-env
+  NODE_ENV: development
+  HOST: 0.0.0.0
+  DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://file_server:file_server@host.docker.internal:5432/file_server}
+  KAFKA_CLIENT_BROKERS: ${DOCKER_KAFKA_CLIENT_BROKERS:-host.docker.internal:9094}
+
+x-app-host: &app-host
+  extra_hosts:
+    - 'host.docker.internal:host-gateway'
 
 services:
-  base_modules:
-    build:
-      context: ${BASE_PATH}
-      dockerfile: docker/apps/Dockerfile.base
-    platform: linux/x86_64
-    command: echo "base_modules build complete"
-
   storage_backend:
+    <<: *app-host
     build:
-      context: ${BASE_PATH}
-      dockerfile: docker/apps/Dockerfile.storage.dev
-      additional_contexts:
-        base_modules: service:base_modules
-    platform: linux/x86_64
+      context: ../..
+      dockerfile: docker/apps/Dockerfile.storage
+    env_file:
+      - path: ../../apps/storage/.env.local.example
+      - path: ../../apps/storage/.env.local
+        required: false
+    environment:
+      <<: *app-env
+      PORT: 3032
+      CACHE_SERVER: http://cache_backend:3030
     volumes:
       - image_dump:/usr/index/apps/storage/dist/apps/storage/assets
     ports:
       - '3032:3032'
-    depends_on:
-      - base_modules
 
   cache_backend:
+    <<: *app-host
     build:
-      context: ${BASE_PATH}
-      dockerfile: docker/apps/Dockerfile.cache.dev
-      additional_contexts:
-        base_modules: service:base_modules
-    platform: linux/x86_64
+      context: ../..
+      dockerfile: docker/apps/Dockerfile.cache
+    env_file:
+      - path: ../../apps/cache/.env.local.example
+      - path: ../../apps/cache/.env.local
+        required: false
+    environment:
+      <<: *app-env
+      PORT: 3030
+      RESIZING_SERVER: http://resize_backend:3031
     ports:
       - '3030:3030'
-    depends_on:
-      - base_modules
 
   resize_backend:
+    <<: *app-host
     build:
-      context: ${BASE_PATH}
-      dockerfile: docker/apps/Dockerfile.resize.dev
-      additional_contexts:
-        base_modules: service:base_modules
-    platform: linux/x86_64
+      context: ../..
+      dockerfile: docker/apps/Dockerfile.resize
+    env_file:
+      - path: ../../apps/resize/.env.local.example
+      - path: ../../apps/resize/.env.local
+        required: false
+    environment:
+      <<: *app-env
+      PORT: 3031
+      STORAGE_SERVER: http://storage_backend:3032
     ports:
       - '3031:3031'
-    depends_on:
-      - base_modules
 
 volumes:
   image_dump:
