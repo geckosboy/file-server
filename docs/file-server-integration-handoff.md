@@ -4,6 +4,7 @@
 - 기준 상태: 아키텍처 개선 계획의 단계 0~5 구현, authoritative image lifecycle 통합 gate는 clean integrated HEAD에서 실행
 - 대상: 이 저장소를 호출하거나 lifecycle 이벤트를 소비할 다른 프로젝트와 해당 프로젝트를 설계하는 AI
 - 전체 구조 시각화: [`architecture.html`](architecture.html)
+- Travel Cloud 실제 Docker 연동: [`travel-cloud-integration-runbook.md`](travel-cloud-integration-runbook.md)
 
 ## 1. 먼저 알아야 할 결론
 
@@ -25,6 +26,8 @@
 - telemetry/lifecycle 목록은 opaque keyset cursor를 사용하고 retention scheduler는 production owner가 명시적으로 승인·활성화하기 전에는 실행되지 않는다.
 
 다른 프로젝트는 현재 구현에 직접 결합하지 말고 별도의 `FileServerClient` 또는 gateway adapter 뒤에서 연동해야 한다. Kafka topic/credential은 관리 API와 운영 secret으로 주입받고, `imageKey`/`assetId`, `variantStatus`, transition 중 optional field도 adapter 뒤에서 흡수해야 한다.
+
+Travel Cloud 통합은 Nginx를 고정 reverse proxy로 사용한다. [`docker-compose.travel-cloud-integration.yml`](../docker/docker-compose.travel-cloud-integration.yml)은 PostgreSQL, ACL Kafka, storage/cache/resize/telemetry-api와 Nginx를 함께 실행하고, `pnpm integration:travel-cloud:provision`이 전용 key/policy/subscription/SCRAM credential을 발급한다. 다른 프로젝트는 `.tmp/travel-cloud-integration/travel-cloud.env`를 runtime secret으로만 읽고 commit하지 않는다. HTTP smoke와 실제 external Kafka consumer/ACL 격리 절차는 전용 runbook을 따른다.
 
 ## 2. 단계 0~3에서 확보된 기준선
 

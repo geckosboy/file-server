@@ -1,0 +1,264 @@
+name: ${TRAVEL_CLOUD_INTEGRATION_PROJECT:-file-server-travel-cloud}
+
+x-common-app-environment: &common-app-environment
+  NODE_ENV: production
+  HOST: 0.0.0.0
+  DATABASE_URL: postgresql://file_server:file_server@postgres:5432/file_server
+  KAFKA_CLIENT_BROKERS: kafka:9092
+  KAFKA_SSL_ENABLED: 'false'
+  KAFKA_SASL_MECHANISM: plain
+  KAFKA_SASL_USERNAME: admin
+  KAFKA_SASL_PASSWORD: travel-cloud-admin-secret
+  CLIENT_API_KEY_PEPPER: travel-cloud-integration-pepper
+  INTERNAL_API_KEY: travel-cloud-internal-key
+  ORIGIN_LIST_STR: http://nginx:8080
+
+x-app-healthcheck: &app-healthcheck
+  interval: 3s
+  timeout: 3s
+  retries: 40
+  start_period: 10s
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-18-alpine}
+    environment:
+      POSTGRES_USER: file_server
+      POSTGRES_PASSWORD: file_server
+      POSTGRES_DB: file_server
+    volumes:
+      - travel_cloud_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U file_server -d file_server']
+      interval: 2s
+      timeout: 5s
+      retries: 40
+
+  kafka:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    hostname: kafka
+    environment:
+      CLUSTER_ID: ${TRAVEL_CLOUD_KAFKA_CLUSTER_ID:-VHJhdmVsQ2xvdWRGaWxlU2Vydg}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://${TRAVEL_CLOUD_KAFKA_ADVERTISED_HOST:-localhost}:${TRAVEL_CLOUD_KAFKA_HOST_PORT:-39094}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_EARLY_START_LISTENERS: CONTROLLER
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN,SCRAM-SHA-512
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="travel-cloud-admin-secret" user_admin="travel-cloud-admin-secret";
+      KAFKA_LISTENER_NAME_EXTERNAL_PLAIN_SASL_JAAS_CONFIG: org.apache.kafka.common.security.plain.PlainLoginModule required user_admin="travel-cloud-admin-secret";
+      KAFKA_LISTENER_NAME_INTERNAL_SCRAM___SHA___512_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required;
+      KAFKA_LISTENER_NAME_EXTERNAL_SCRAM___SHA___512_SASL_JAAS_CONFIG: org.apache.kafka.common.security.scram.ScramLoginModule required;
+      KAFKA_AUTHORIZER_CLASS_NAME: org.apache.kafka.metadata.authorizer.StandardAuthorizer
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: 'false'
+      KAFKA_SUPER_USERS: User:admin;User:ANONYMOUS
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    ports:
+      - '127.0.0.1:${TRAVEL_CLOUD_KAFKA_HOST_PORT:-39094}:9094'
+    volumes:
+      - ./travel-cloud/kafka-admin.properties:/etc/kafka/client-config/admin.properties:ro
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /etc/kafka/client-config/admin.properties --list >/dev/null 2>&1',
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 50
+      start_period: 10s
+
+  kafka-topics:
+    image: apache/kafka:${KAFKA_VERSION:-4.3.1}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./travel-cloud/kafka-admin.properties:/etc/kafka/client-config/admin.properties:ro
+    entrypoint: ['/bin/bash', '-ec']
+    command:
+      - |
+        for topic in \
+          file.image.events.v1 \
+          file.image.events.v1.dlq \
+          file.image.lifecycle.v1 \
+          file.image.lifecycle.v1.dlq \
+          file.image.variant.jobs.v1 \
+          file.image.variant.jobs.v1.dlq \
+          file.image.cache-invalidation.v1 \
+          file.image.cache-invalidation.v1.dlq; do
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server kafka:9092 \
+            --command-config /etc/kafka/client-config/admin.properties \
+            --create --if-not-exists --topic "$$topic" \
+            --partitions 1 --replication-factor 1 \
+            --config min.insync.replicas=1
+        done
+    restart: 'no'
+
+  database-migrate:
+    build:
+      context: ..
+      dockerfile: docker/apps/Dockerfile.telemetry-api
+      target: migrate
+    environment:
+      DATABASE_URL: postgresql://file_server:file_server@postgres:5432/file_server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  telemetry-api:
+    build:
+      context: ..
+      dockerfile: docker/apps/Dockerfile.telemetry-api
+      target: runtime
+    environment:
+      <<: *common-app-environment
+      PORT: 3100
+      TELEMETRY_ADMIN_TOKEN: travel-cloud-admin-token
+      TELEMETRY_STORAGE_DRIVER: prisma
+      CLIENT_SERVICE_REGISTRY_DRIVER: prisma
+      TELEMETRY_KAFKA_CONSUMER_ENABLED: 'true'
+      TELEMETRY_KAFKA_FROM_BEGINNING: 'true'
+      TELEMETRY_KAFKA_GROUP_ID: file-telemetry-api-travel-cloud
+      LIFECYCLE_KAFKA_CONSUMER_ENABLED: 'true'
+      LIFECYCLE_KAFKA_FROM_BEGINNING: 'true'
+      LIFECYCLE_KAFKA_GROUP_ID: file-telemetry-api-lifecycle-travel-cloud
+      LIFECYCLE_TOPIC_PROVISIONING_ENABLED: 'true'
+      LIFECYCLE_TOPIC_ADMIN_BROKERS: kafka:9092
+      LIFECYCLE_CLIENT_TOPIC_PARTITIONS: 1
+      LIFECYCLE_CLIENT_TOPIC_REPLICATION_FACTOR: 1
+      LIFECYCLE_CLIENT_TOPIC_MIN_ISR: 1
+      DATA_RETENTION_ENABLED: 'false'
+    ports:
+      - '127.0.0.1:${TRAVEL_CLOUD_TELEMETRY_HOST_PORT:-13100}:3100'
+    depends_on:
+      database-migrate:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *app-healthcheck
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3100/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+
+  storage:
+    build:
+      context: ..
+      dockerfile: docker/apps/Dockerfile.storage
+    environment:
+      <<: *common-app-environment
+      PORT: 3032
+      CACHE_SERVER: http://cache:3030
+      LIFECYCLE_OUTBOX_PUBLISH_INTERVAL_MS: 250
+      IMAGE_VARIANT_OUTBOX_PUBLISH_INTERVAL_MS: 250
+      IMAGE_RECONCILIATION_INTERVAL_MS: 1000
+      IMAGE_RECONCILIATION_BATCH_SLEEP_MS: 1000
+      IMAGE_RECONCILIATION_STALE_AFTER_MS: 5000
+      IMAGE_RECONCILIATION_LEASE_MS: 900
+    volumes:
+      - travel_cloud_image_data:/usr/index/apps/storage/dist/apps/storage/assets
+    depends_on:
+      database-migrate:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *app-healthcheck
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3032/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+
+  resize:
+    build:
+      context: ..
+      dockerfile: docker/apps/Dockerfile.resize
+    environment:
+      <<: *common-app-environment
+      PORT: 3031
+      STORAGE_SERVER: http://storage:3032
+    depends_on:
+      database-migrate:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *app-healthcheck
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3031/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+
+  cache:
+    build:
+      context: ..
+      dockerfile: docker/apps/Dockerfile.cache
+    environment:
+      <<: *common-app-environment
+      PORT: 3030
+      RESIZING_SERVER: http://resize:3031
+      CACHE_INVALIDATION_KAFKA_ENABLED: 'true'
+      CACHE_INVALIDATION_KAFKA_GROUP_ID: file-cache-invalidation-travel-cloud
+    depends_on:
+      database-migrate:
+        condition: service_completed_successfully
+      kafka-topics:
+        condition: service_completed_successfully
+    healthcheck:
+      <<: *app-healthcheck
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3030/health/live').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+
+  nginx:
+    image: nginx:${NGINX_VERSION:-alpine}
+    ports:
+      - '127.0.0.1:${TRAVEL_CLOUD_PROXY_HOST_PORT:-18088}:8080'
+    volumes:
+      - ./travel-cloud/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      storage:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      resize:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/health/live >/dev/null']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  travel_cloud_postgres_data:
+  travel_cloud_image_data:

@@ -121,6 +121,25 @@ $ pnpm dev:files
 $ docker compose -f docker/apps/docker-compose.dev.yml up -d
 ```
 
+### Travel Cloud Docker integration
+
+Nginx reverse proxy, PostgreSQL, deny-by-default Kafka ACL, storage/cache/resize,
+telemetry-api와 Travel Cloud 전용 provisioning/smoke를 함께 실행하려면:
+
+```bash
+pnpm integration:travel-cloud:up
+pnpm integration:travel-cloud:provision
+pnpm integration:travel-cloud:test
+pnpm integration:travel-cloud:down
+```
+
+격리된 전체 실행과 cleanup을 한 번에 검증하려면
+`pnpm integration:travel-cloud:verify`를 사용합니다. 생성된 API key와 Kafka
+credential은 `.tmp/travel-cloud-integration/travel-cloud.env`에 mode `0600`으로
+기록되며 `down`에서 제거됩니다. 상세 계약은
+[`docs/travel-cloud-integration-runbook.md`](docs/travel-cloud-integration-runbook.md)를
+따릅니다.
+
 ## Local/Internal Access
 
 By default, each Nest app binds to `127.0.0.1` when `HOST` is not set.

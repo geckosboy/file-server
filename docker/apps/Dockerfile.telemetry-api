@@ -10,15 +10,20 @@ WORKDIR /usr/index
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json prisma.config.ts ./
-COPY apps/storage ./apps/storage
+COPY apps/telemetry-api ./apps/telemetry-api
 COPY libs ./libs
 COPY prisma ./prisma
 
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 	pnpm install --frozen-lockfile
-RUN pnpm db:generate && pnpm turbo run build --filter=@file/storage
-RUN pnpm --filter @file/storage --prod deploy --legacy /opt/app \
-	&& cp -R apps/storage/dist /opt/app/dist \
+RUN pnpm db:generate && pnpm turbo run build --filter=@file/telemetry-api
+
+FROM build AS migrate
+CMD ["pnpm", "db:migrate:deploy"]
+
+FROM build AS deploy
+RUN pnpm --filter @file/telemetry-api --prod deploy --legacy /opt/app \
+	&& cp -R apps/telemetry-api/dist /opt/app/dist \
 	&& prisma_source="$(find node_modules/.pnpm -path '*/node_modules/.prisma/client' -type d -print -quit)" \
 	&& prisma_package="$(find /opt/app/node_modules/.pnpm -path '*/node_modules/@prisma/client' -type d -print -quit)" \
 	&& test -n "$prisma_source" -a -n "$prisma_package" \
@@ -32,12 +37,10 @@ FROM node:${NODE_VERSION}-alpine AS runtime
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV TZ=Asia/Seoul
-WORKDIR /usr/index/apps/storage
+WORKDIR /usr/index/apps/telemetry-api
 
-COPY --from=build --chown=node:node /opt/app ./
-RUN mkdir -p dist/apps/storage/assets dist/apps/storage/temp \
-	&& chown -R node:node dist/apps/storage/assets dist/apps/storage/temp
+COPY --from=deploy --chown=node:node /opt/app ./
 
 USER node
-EXPOSE 3032
-CMD ["node", "dist/apps/storage/src/main.js"]
+EXPOSE 3100
+CMD ["node", "dist/apps/telemetry-api/src/main.js"]
