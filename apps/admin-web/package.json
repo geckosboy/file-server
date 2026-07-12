@@ -7,7 +7,7 @@
 	"license": "MIT",
 	"scripts": {
 		"build": "next build",
-		"dev": "next dev",
+		"start:dev": "next dev",
 		"start": "next start",
 		"typecheck": "pnpm exec tsc --noEmit -p tsconfig.json",
 		"lint": "pnpm exec eslint \"src/**/*.{ts,tsx}\"",
