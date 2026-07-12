@@ -51,6 +51,29 @@ export TRAVEL_CLOUD_KAFKA_HOST_PORT=49094
 
 PostgreSQL은 하네스 네트워크 안에서만 접근하며 호스트 포트를 사용하지 않는다.
 
+모든 입력 변수 예시는 [`docker/travel-cloud/harness.env.example`](../docker/travel-cloud/harness.env.example)에 있다.
+
+```bash
+set -a
+source docker/travel-cloud/harness.env.example
+set +a
+```
+
+### 하네스 입력 환경변수 전체 목록
+
+| 변수                                 | 기본값                       | 의미                                                                | 변경 시 주의사항                                            |
+| ------------------------------------ | ---------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `TRAVEL_CLOUD_INTEGRATION_PROJECT`   | `file-server-travel-cloud`   | Compose project 이름이자 cleanup 대상 resource label                | 다른 하네스와 동시에 실행할 때만 고유 이름 사용             |
+| `TRAVEL_CLOUD_PROXY_HOST_PORT`       | `18088`                      | 호스트에 publish하는 Nginx 포트                                     | 포트 충돌 시 변경                                           |
+| `TRAVEL_CLOUD_PROXY_ADVERTISED_HOST` | `127.0.0.1`                  | 생성 env의 HTTP base URL에 기록할 hostname                          | Travel Cloud가 별도 컨테이너면 `host.docker.internal`       |
+| `TRAVEL_CLOUD_TELEMETRY_HOST_PORT`   | `13100`                      | 프로비저닝 스크립트가 접근하는 telemetry-api localhost 포트         | public 서비스 포트가 아니며 외부 노출 금지                  |
+| `TRAVEL_CLOUD_KAFKA_HOST_PORT`       | `39094`                      | Kafka external listener의 호스트 publish 포트                       | 포트 변경 시 advertised endpoint도 같은 값 사용됨           |
+| `TRAVEL_CLOUD_KAFKA_ADVERTISED_HOST` | `localhost`                  | Kafka metadata가 Travel Cloud consumer에게 돌려주는 broker hostname | 별도 컨테이너면 `host.docker.internal`과 `extra_hosts` 필요 |
+| `TRAVEL_CLOUD_KAFKA_CLUSTER_ID`      | `VHJhdmVsQ2xvdWRGaWxlU2Vydg` | disposable KRaft cluster ID                                         | Kafka data를 유지한 채 변경 금지                            |
+| `POSTGRES_VERSION`                   | `18-alpine`                  | PostgreSQL Docker image tag                                         | 의도적인 DB 버전 검증 때만 변경                             |
+| `KAFKA_VERSION`                      | `4.3.1`                      | Apache Kafka Docker image tag                                       | broker/client 호환성 검증 후 변경                           |
+| `NGINX_VERSION`                      | `alpine`                     | Nginx Docker image tag                                              | 의도적인 proxy image upgrade 때만 변경                      |
+
 ## 1. 전체 환경 실행
 
 ```bash
@@ -101,7 +124,25 @@ pnpm integration:travel-cloud:provision
 .tmp/travel-cloud-integration/runtime.json
 ```
 
-예상 환경변수:
+생성되는 파일에는 아래 설명이 `#` 주석으로 함께 기록된다.
+
+### Travel Cloud에 전달되는 환경변수 전체 목록
+
+| 변수                                   | 의미                                                                                | 보안/사용 규칙                                                              |
+| -------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `TRAVEL_FILE_SERVER_BASE_URL`          | Nginx 외부 base URL. `/images`를 붙여 upload/delete, `/images/:path/:name`으로 read | backend adapter에서만 사용                                                  |
+| `TRAVEL_FILE_SERVER_API_KEY`           | Travel Cloud Client Service 인증 key                                                | secret. 브라우저·로그·Kafka payload에 노출 금지                             |
+| `TRAVEL_FILE_SERVER_NAMESPACE`         | 허용된 canonical storage namespace. 기본 `travel-cloud/image`                       | upload multipart `path`에 그대로 사용. read에서는 마지막 `/image` 제외      |
+| `TRAVEL_FILE_SERVER_CLIENT_SERVICE_ID` | 서버가 발급한 Client Service primary key                                            | topic 이름을 직접 계산하는 용도로 사용하지 말고 event ownership 확인에 사용 |
+| `TRAVEL_KAFKA_BROKERS`                 | Travel Cloud에서 접근 가능한 bootstrap broker 목록                                  | 쉼표 구분. KafkaJS 등 client의 `brokers`로 전달                             |
+| `TRAVEL_KAFKA_SECURITY_PROTOCOL`       | 로컬 Kafka transport. 현재 `SASL_PLAINTEXT`                                         | 운영에서는 `SASL_SSL`로 교체                                                |
+| `TRAVEL_KAFKA_SASL_MECHANISM`          | Kafka 인증 방식. 현재 `SCRAM-SHA-512`                                               | client 설정의 SASL mechanism과 동일해야 함                                  |
+| `TRAVEL_KAFKA_USERNAME`                | SCRAM username이며 Kafka principal은 `User:<username>`                              | secret은 아니지만 tenant identity이므로 임의 변경 금지                      |
+| `TRAVEL_KAFKA_PASSWORD`                | 동적으로 발급한 SCRAM password                                                      | secret. 로그·commit 금지                                                    |
+| `TRAVEL_KAFKA_TOPIC`                   | Travel Cloud가 소비할 유일한 lifecycle topic                                        | canonical/타 client topic으로 대체 금지                                     |
+| `TRAVEL_KAFKA_CONSUMER_GROUP`          | ACL이 허용한 유일한 consumer group                                                  | 업무 처리 성공 뒤 offset commit. 다른 group 사용 시 authorization 실패      |
+
+생성 예시:
 
 ```env
 TRAVEL_FILE_SERVER_BASE_URL=http://127.0.0.1:18088/file-server
