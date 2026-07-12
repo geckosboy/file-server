@@ -131,6 +131,64 @@
 				font-size: 0.84rem;
 			}
 
+			section {
+				scroll-margin-top: 18px;
+			}
+
+			.quick-nav {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+				gap: 10px;
+				margin-top: 22px;
+			}
+
+			.quick-nav a {
+				display: block;
+				padding: 12px 14px;
+				border: 1px solid #bfdbfe;
+				border-radius: 14px;
+				background: #ffffff;
+				color: #1d4ed8;
+				font-weight: 750;
+				text-decoration: none;
+			}
+
+			.quick-nav a:hover {
+				background: var(--accent-soft);
+			}
+
+			.steps {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+				gap: 12px;
+				margin: 16px 0;
+			}
+
+			.step {
+				position: relative;
+				padding: 16px 16px 16px 52px;
+				border: 1px solid var(--line);
+				border-radius: 16px;
+				background: #fbfdff;
+			}
+
+			.step b {
+				position: absolute;
+				left: 14px;
+				top: 14px;
+				display: grid;
+				width: 28px;
+				height: 28px;
+				place-items: center;
+				border-radius: 999px;
+				background: var(--accent);
+				color: #fff;
+			}
+
+			.table-scroll {
+				overflow-x: auto;
+			}
+
 			.card {
 				margin-top: 22px;
 				padding: 24px;
@@ -244,21 +302,34 @@
 					공용 이미지 서버의 현재 구조를 기능 경계 기준으로 설명합니다.
 					<code>ImageAsset</code>/<code>ImageVariant</code> 권위 메타데이터,
 					staged upload, 비동기 variant job, filesystem reconciliation, Kafka
-					outbox와 복제 cache invalidation까지 포함합니다.
+					outbox, 복제 cache invalidation과 Nginx 기반 실제 Docker 통합 경로까지
+					포함합니다.
 				</p>
 				<div class="meta">
-					<span class="badge">2026-07-11 기준</span>
+					<span class="badge">2026-07-12 기준</span>
 					<span class="badge">Storage / Resize / Cache</span>
 					<span class="badge">PostgreSQL + Prisma</span>
 					<span class="badge">Kafka + Outbox</span>
 					<span class="badge">Authoritative Image Metadata</span>
 					<span class="badge">Filesystem Adapter</span>
+					<span class="badge">Nginx + Docker Integration</span>
 				</div>
 			</div>
 		</header>
 
 		<main>
-			<section class="card">
+			<nav class="quick-nav" aria-label="아키텍처 빠른 이동">
+				<a href="#overview">핵심 변경</a>
+				<a href="#runtime">전체 런타임</a>
+				<a href="#integration">Docker · Nginx 통합</a>
+				<a href="#contracts">보존 계약</a>
+				<a href="#upload">업로드 수명주기</a>
+				<a href="#kafka">Kafka · Outbox</a>
+				<a href="#health">Health · Metric</a>
+				<a href="#deploy">배포 · 검증</a>
+			</nav>
+
+			<section class="card" id="overview">
 				<h2>1. 이번 구조 변경의 핵심</h2>
 				<p>
 					이미지 파일 자체만 저장하고 telemetry에서 현재 이미지를 추론하던
@@ -332,20 +403,23 @@
 				</div>
 			</section>
 
-			<section class="card">
+			<section class="card" id="runtime">
 				<h2>2. 전체 런타임 구조</h2>
 				<p>
-					외부 조회 진입점은 <code>cache</code>, 업로드·삭제 진입점은
-					<code>storage</code>입니다. <code>resize</code>와 storage 내부 GET은
-					내부 API key와 서명된 tenant context로만 호출됩니다. variant worker와
-					reconciliation scheduler는 현재 storage 프로세스에 함께 배치되지만, DB
-					lease/CAS와 Kafka consumer group으로 중복 실행을 제어합니다.
+					실제 통합 환경의 외부 HTTP 진입점은 <code>Nginx</code> 하나입니다.
+					Nginx가 조회를 <code>cache</code>로, 업로드·삭제를
+					<code>storage</code>로 보냅니다. <code>resize</code>와 storage 내부
+					GET은 내부 API key와 서명된 tenant context로만 호출됩니다. variant
+					worker와 reconciliation scheduler는 현재 storage 프로세스에 함께
+					배치되지만, DB lease/CAS와 Kafka consumer group으로 중복 실행을
+					제어합니다.
 				</p>
 				<h3>전체 플로우 한눈에 보기</h3>
 				<div class="diagram">
 					<pre class="mermaid">
 flowchart TB
 Client["Client Service"]
+Nginx["Nginx reverse proxy<br/>— public HTTP ingress"]
 Operator["Operator"]
 AdminWeb["admin-web"]
 Cache["cache"]
@@ -359,8 +433,9 @@ Reconciler["reconciler"]
 DB[("PostgreSQL<br/>— metadata · outbox · jobs")]
 FS[("filesystem<br/>— source · variants")]
 CacheMemory[("cache memory")]
-Client -->|"GET"| Cache -->|"miss"| Resize -->|"internal GET"| Storage
-Client -->|"upload / delete"| Storage
+Client -->|"GET /file-server/images/*"| Nginx -->|"read route"| Cache
+Client -->|"POST / DELETE"| Nginx -->|"write route"| Storage
+Cache -->|"miss"| Resize -->|"internal GET"| Storage
 Cache --> CacheMemory
 Storage --> DB
 Storage --> FS
@@ -380,15 +455,17 @@ Operator --> AdminWeb --> Telemetry
 					<pre class="mermaid">
 flowchart LR
 Client["Client Service"]
+Nginx["Nginx"]
 Cache["cache"]
 Resize["resize"]
 Storage["storage"]
 DB[("PostgreSQL")]
 FS[("filesystem")]
-Client -->|"GET"| Cache
+Client -->|"HTTP"| Nginx
+Nginx -->|"GET"| Cache
 Cache -->|"cache miss"| Resize
 Resize -->|"internal GET"| Storage
-Client -->|"upload / delete"| Storage
+Nginx -->|"POST / DELETE"| Storage
 Cache -->|"API key"| DB
 Storage -->|"metadata"| DB
 Storage -->|"object I/O"| FS
@@ -424,8 +501,224 @@ Reconciler --> FS
 				</div>
 			</section>
 
-			<section class="card">
-				<h2>3. 계속 보존되는 공통 계약</h2>
+			<section class="card" id="integration">
+				<h2>3. 실제 Docker · Nginx 통합 구조</h2>
+				<p>
+					Travel Cloud 통합 하네스는 PostgreSQL, ACL Kafka, migration/topic
+					bootstrap, storage/resize/cache/telemetry-api와 Nginx를 하나의 Docker
+					Compose project로 실행합니다. HTTP mock이나 Kafka mock을 사용하지
+					않으며 Nginx가 유일한 외부 이미지 HTTP 진입점입니다.
+				</p>
+				<h3>통합 테스트 전체 플로우</h3>
+				<div class="diagram">
+					<pre class="mermaid">
+flowchart TB
+TravelHttp["Travel Cloud<br/>HTTP adapter"]
+TravelConsumer["Travel Cloud<br/>lifecycle consumer"]
+Nginx["Nginx :18088"]
+Cache["cache :3030"]
+Resize["resize :3031"]
+Storage["storage :3032"]
+Telemetry["telemetry-api :3100<br/>loopback control plane"]
+Postgres[("PostgreSQL<br/>metadata · policy · outbox")]
+Kafka[("Kafka<br/>canonical + client topics")]
+Volume[("filesystem volume<br/>source · variants")]
+TravelHttp -->|"GET /file-server/images/*"| Nginx
+TravelHttp -->|"POST · DELETE /file-server/images"| Nginx
+Nginx -->|"read"| Cache -->|"miss"| Resize -->|"internal GET"| Storage
+Nginx -->|"write"| Storage
+Storage --> Postgres
+Storage --> Volume
+Storage -->|"outbox publish"| Kafka
+Telemetry --> Postgres
+Telemetry -->|"consume · provision"| Kafka
+Kafka -->|"SCRAM + literal topic/group ACL"| TravelConsumer
+</pre>
+				</div>
+
+				<div class="grid">
+					<div class="info">
+						<strong>Public data plane</strong>
+						호스트에는 Nginx <code>:18088</code>만 이미지 API로 공개합니다.
+						read는 cache, write/delete는 storage로 고정 라우팅합니다.
+					</div>
+					<div class="info">
+						<strong>Provisioning control plane</strong>
+						telemetry-api <code>:13100</code> host binding은 localhost
+						전용입니다. Client Service/API key/policy/subscription을 발급하는
+						public API가 아닙니다.
+					</div>
+					<div class="info">
+						<strong>Client Kafka plane</strong>
+						외부 listener <code>:39094</code>에서 Travel Cloud 전용 SCRAM
+						principal, literal topic과 consumer group ACL만 허용합니다.
+					</div>
+					<div class="info">
+						<strong>Persistence</strong>
+						PostgreSQL volume과 image filesystem volume은 별도입니다. cleanup은
+						하네스 project label 범위에서 두 volume과 runtime secret까지
+						제거합니다.
+					</div>
+				</div>
+
+				<h3>Nginx 경로 계약</h3>
+				<div class="table-scroll">
+					<table>
+						<thead>
+							<tr>
+								<th>외부 요청</th>
+								<th>내부 대상</th>
+								<th>보존 계약</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td><code>POST /file-server/images</code></td>
+								<td><code>storage:3032/image</code></td>
+								<td>streaming multipart, path-before-file, Idempotency-Key</td>
+							</tr>
+							<tr>
+								<td><code>DELETE /file-server/images?imageKey=…</code></td>
+								<td><code>storage:3032/image</code></td>
+								<td>query/status 보존, 멱등 delete</td>
+							</tr>
+							<tr>
+								<td><code>GET /file-server/images/:path/:name</code></td>
+								<td><code>cache:3030/image/:path/:name</code></td>
+								<td>read는 storage로 직접 가지 않음</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<p>
+					Nginx는 <code>x-client-api-key</code>/<code>Authorization</code>,
+					<code>Idempotency-Key</code>, <code>x-request-id</code>,
+					<code>x-trace-id</code>, query string과 upstream HTTP status를
+					보존합니다. <code>proxy_intercept_errors off</code>이므로
+					readiness/5xx를 이미지 404로 바꾸지 않습니다. Nginx response cache도
+					사용하지 않습니다.
+				</p>
+
+				<h3>Travel Cloud 발급 흐름</h3>
+				<div class="steps">
+					<div class="step">
+						<b>1</b>Compose를 올리고 migration과 canonical topic bootstrap을
+						완료합니다.
+					</div>
+					<div class="step">
+						<b>2</b><code>travel-cloud</code> Client Service와
+						<code>travel-cloud/image</code> policy를 생성합니다.
+					</div>
+					<div class="step">
+						<b>3</b>API key, lifecycle subscription, 전용 topic/principal/group
+						ACL을 발급합니다.
+					</div>
+					<div class="step">
+						<b>4</b>모든 subscription이 <code>PROVISIONED</code>인지 확인한 뒤
+						생성 env를 전달합니다.
+					</div>
+					<div class="step">
+						<b>5</b>Nginx upload/read/delete와 Kafka 허용·거부 경계를 실제
+						client로 검증합니다.
+					</div>
+				</div>
+
+				<h3>환경변수 소유 관계</h3>
+				<div class="table-scroll">
+					<table>
+						<thead>
+							<tr>
+								<th>계약</th>
+								<th>설정 주체</th>
+								<th>반드시 맞아야 하는 대상</th>
+							</tr>
+						</thead>
+						<tbody>
+							<tr>
+								<td>PostgreSQL</td>
+								<td><code>DATABASE_URL</code></td>
+								<td>
+									Prisma CLI, storage, resize, cache, telemetry-api가 같은 DB
+								</td>
+							</tr>
+							<tr>
+								<td>API key 검증</td>
+								<td><code>CLIENT_API_KEY_PEPPER</code></td>
+								<td>발급 시점과 모든 인증 앱에서 같은 secret</td>
+							</tr>
+							<tr>
+								<td>내부 호출</td>
+								<td><code>INTERNAL_API_KEY</code></td>
+								<td>storage, resize, cache, telemetry-api에서 같은 secret</td>
+							</tr>
+							<tr>
+								<td>Upstream URL</td>
+								<td>
+									<code>RESIZING_SERVER</code>, <code>STORAGE_SERVER</code>,
+									<code>CACHE_SERVER</code>
+								</td>
+								<td>Compose service DNS와 앱 책임 방향</td>
+							</tr>
+							<tr>
+								<td>Kafka</td>
+								<td>broker/TLS/SASL + topic/group 변수</td>
+								<td>producer, consumer, bootstrap, ACL의 이름과 보안 설정</td>
+							</tr>
+							<tr>
+								<td>관리 API</td>
+								<td><code>TELEMETRY_ADMIN_TOKEN</code></td>
+								<td>admin-web와 telemetry-api에서 동일, 브라우저에는 비공개</td>
+							</tr>
+							<tr>
+								<td>Travel Cloud</td>
+								<td>
+									<code>TRAVEL_FILE_SERVER_*</code>, <code>TRAVEL_KAFKA_*</code>
+								</td>
+								<td>
+									provision 명령이 만든 <code>.tmp/.../travel-cloud.env</code>를
+									재계산 없이 주입
+								</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<div class="note">
+					변수별 의미와 단위는 각
+					<a href="../apps/storage/.env.local.example">storage</a>,
+					<a href="../apps/resize/.env.local.example">resize</a>,
+					<a href="../apps/cache/.env.local.example">cache</a>,
+					<a href="../apps/telemetry-api/.env.local.example">telemetry-api</a>,
+					<a href="../apps/admin-web/.env.local.example">admin-web</a>,
+					<a href="../apps/lifecycle-consumer-tester/.env.local.example"
+						>lifecycle tester</a
+					>
+					예제를 기준으로 합니다. Travel Cloud 입력은
+					<a href="../docker/travel-cloud/harness.env.example"
+						>harness.env.example</a
+					>을 사용합니다.
+				</div>
+
+				<h3>한 번에 실행·검증·정리</h3>
+				<pre class="code">
+set -a && source docker/travel-cloud/harness.env.example && set +a
+pnpm integration:travel-cloud:verify</pre>
+				<p>
+					상세 명령과 외부 프로젝트 주입값은
+					<a href="travel-cloud-integration-runbook.md"
+						>Travel Cloud 통합 runbook</a
+					>과 <a href="file-server-integration-handoff.md">연동 인계서</a>를
+					따릅니다.
+				</p>
+				<div class="warn">
+					로컬 하네스는 단일 Kafka broker와 SASL_PLAINTEXT를 사용합니다.
+					운영에서는 3 broker replication, SASL_SSL/CA 검증이 별도 배포
+					gate입니다. 또한 현재 filesystem adapter는 여러 호스트의 독립 로컬
+					디스크 구성을 지원하지 않습니다.
+				</div>
+			</section>
+
+			<section class="card" id="contracts">
+				<h2>4. 계속 보존되는 공통 계약</h2>
 				<div class="grid">
 					<div class="info">
 						<strong>Tenant namespace</strong>
@@ -462,7 +755,7 @@ Reconciler --> FS
 			</section>
 
 			<section class="card">
-				<h2>4. 앱과 모듈의 책임</h2>
+				<h2>5. 앱과 모듈의 책임</h2>
 				<div class="grid">
 					<div class="info">
 						<strong>storage</strong>
@@ -502,8 +795,8 @@ Reconciler --> FS
 				</div>
 			</section>
 
-			<section class="card">
-				<h2>5. Staged upload와 성공 시점</h2>
+			<section class="card" id="upload">
+				<h2>6. Staged upload와 성공 시점</h2>
 				<p>
 					같은 <code>(clientServiceId, logicalPath, name)</code>은 하나의
 					asset으로 수렴합니다. HTTP 201은 source가 Ready가 되고 lifecycle
@@ -536,7 +829,7 @@ Commit --> Async
 			</section>
 
 			<section class="card">
-				<h2>6. Asset / Variant / Job 상태 기계</h2>
+				<h2>7. Asset / Variant / Job 상태 기계</h2>
 				<div class="diagram">
 					<pre class="mermaid">
 stateDiagram-v2
@@ -609,7 +902,7 @@ Processing --> Cancelled: stale completion fence
 			</section>
 
 			<section class="card">
-				<h2>7. 조회, resize와 cache 복원력</h2>
+				<h2>8. 조회, resize와 cache 복원력</h2>
 				<h3>Cache hit/miss와 singleflight</h3>
 				<div class="diagram">
 					<pre class="mermaid">
@@ -666,7 +959,7 @@ Variant -->|"no"| SourceFile --> Sharp
 			</section>
 
 			<section class="card">
-				<h2>8. Delete, cache invalidation과 reconciliation</h2>
+				<h2>9. Delete, cache invalidation과 reconciliation</h2>
 				<p>
 					삭제는 filesystem HTTP 호출 하나의 성공 여부가 아니라 metadata state
 					machine으로 관리합니다. 하나의 delete <code>eventId</code>가 source,
@@ -711,7 +1004,7 @@ Remove -->|"failure"| Retry --> Reconcile --> Remove
 			</section>
 
 			<section class="card">
-				<h2>9. 주요 PostgreSQL 모델</h2>
+				<h2>10. 주요 PostgreSQL 모델</h2>
 				<h3>권위 metadata와 관측 데이터의 관계</h3>
 				<div class="diagram">
 					<pre class="mermaid">
@@ -751,8 +1044,8 @@ Telemetry -. "usage / performance" .-> Admin
 				</ul>
 			</section>
 
-			<section class="card">
-				<h2>10. Kafka topic, outbox와 실패 의미</h2>
+			<section class="card" id="kafka">
+				<h2>11. Kafka topic, outbox와 실패 의미</h2>
 				<table>
 					<thead>
 						<tr>
@@ -795,8 +1088,8 @@ Telemetry -. "usage / performance" .-> Admin
 				</div>
 			</section>
 
-			<section class="card">
-				<h2>11. Health, metric과 DB 조회</h2>
+			<section class="card" id="health">
+				<h2>12. Health, metric과 DB 조회</h2>
 				<div class="grid">
 					<div class="info">
 						<strong><code>/health/live</code></strong>
@@ -834,7 +1127,7 @@ Telemetry -. "usage / performance" .-> Admin
 			</section>
 
 			<section class="card">
-				<h2>12. 기능 중심 이름과 전환 명령</h2>
+				<h2>13. 기능 중심 이름과 전환 명령</h2>
 				<p>
 					단계 번호는 일시적인 계획 정보이므로 영구 파일명이나 API contract에
 					사용하지 않습니다. 다른 프로젝트는 아래의 현재 이름만 사용해야 합니다.
@@ -898,8 +1191,8 @@ pnpm test:image-lifecycle:system:e2e</pre>
 				</p>
 			</section>
 
-			<section class="card">
-				<h2>13. 배포, rollback과 검증 순서</h2>
+			<section class="card" id="deploy">
+				<h2>14. 배포, rollback과 검증 순서</h2>
 				<ol>
 					<li>
 						두 expand migration을 적용하고 backfill index의
@@ -948,17 +1241,22 @@ pnpm all:build
 pnpm test:image-lifecycle:system:e2e
 pnpm test:kafka:acl:e2e
 pnpm docker:build
-pnpm test:docker:smoke</pre>
+pnpm test:docker:smoke
+pnpm integration:travel-cloud:verify</pre>
 				<div class="ok">
-					상세 운영 절차는 <code>docs/image-asset-lifecycle-runbook.md</code>,
-					다른 프로젝트의 연동 계약은
-					<code>docs/file-server-integration-handoff.md</code>를 기준으로
-					합니다.
+					상세 운영 절차는
+					<a href="image-asset-lifecycle-runbook.md"
+						>image asset lifecycle runbook</a
+					>, 다른 프로젝트의 연동 계약은
+					<a href="file-server-integration-handoff.md">통합 인계서</a>, 실제
+					Docker/Nginx 실행은
+					<a href="travel-cloud-integration-runbook.md">Travel Cloud runbook</a
+					>을 기준으로 합니다.
 				</div>
 			</section>
 
 			<section class="card">
-				<h2>14. Production filesystem 위치</h2>
+				<h2>15. Production filesystem 위치</h2>
 				<p>
 					현재 production storage 컨테이너는 Docker named volume
 					<code>file_dump_volume</code>을 assets 경로에 mount합니다. 컨테이너를
