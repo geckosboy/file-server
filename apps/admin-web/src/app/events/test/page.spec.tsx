@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { EventsPageContent } from '.././page';
+import { EventsPageContent } from '../page-content';
 import { clientServicesFixture, eventListFixture } from '@/lib/fixtures';
 import type { EventListResponse } from '@/lib/telemetry-api';
 

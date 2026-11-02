@@ -390,7 +390,8 @@ LIFECYCLE_OUTBOX_DEAD_LETTER_RETENTION_DAYS=90
 # Reconciliation
 IMAGE_RECONCILIATION_ENABLED=true
 IMAGE_RECONCILIATION_INTERVAL_MS=60000
-IMAGE_RECONCILIATION_BATCH_SLEEP_MS=60000
+# 기존 배포 호환용: INTERVAL이 없을 때만 scheduler cadence로 사용
+# IMAGE_RECONCILIATION_BATCH_SLEEP_MS=60000
 IMAGE_RECONCILIATION_STALE_AFTER_MS=240000
 IMAGE_RECONCILIATION_LEASE_MS=55000
 IMAGE_RECONCILIATION_LOCK_TIMEOUT_MS=2000
@@ -410,7 +411,7 @@ IMAGE_VARIANT_FAILED_READINESS_THRESHOLD=0
 IMAGE_VARIANT_JOB_FAILED_READINESS_THRESHOLD=0
 ```
 
-effective scheduler cadence는 `IMAGE_RECONCILIATION_BATCH_SLEEP_MS`가 제어하고, 값이 없을 때 `IMAGE_RECONCILIATION_INTERVAL_MS`를 fallback으로 사용한다. 4분 stale threshold + 1분 cadence가 5분 detection 목표다.
+effective scheduler cadence는 `IMAGE_RECONCILIATION_INTERVAL_MS`가 제어한다. 이 값이 없는 기존 배포에서만 `IMAGE_RECONCILIATION_BATCH_SLEEP_MS`를 호환 별칭으로 읽으며, 두 값이 있으면 `INTERVAL`이 우선한다. 4분 stale threshold + 1분 cadence는 bounded small-fixture에서 5분 탐지를 목표로 하는 설정이다. 큰 backlog이나 filesystem inventory를 한번에 모두 검사한다는 hard SLA가 아니며, batch/scan 상한에 따른 지연은 health metric과 alert로 관측한다.
 
 system harness가 crash boundary를 재현할 때만 `NODE_ENV=test`, `IMAGE_LIFECYCLE_TEST_FAILPOINTS_ENABLED=true`, `IMAGE_LIFECYCLE_TEST_FAILPOINT_ACTION=exit`과 함께 `IMAGE_LIFECYCLE_TEST_FAILPOINT`를 설정한다. 지원 값은 `after-pending`, `after-stage-write`, `before-stage-checksum`, `after-stage-checksum`, `before-promote`, `after-promote`, `before-ready-transaction`, `after-ready-transaction`이다. failpoint가 production/non-test process에 유입되면 upload는 fail-closed한다.
 

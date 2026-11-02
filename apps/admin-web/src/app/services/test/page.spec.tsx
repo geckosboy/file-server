@@ -1,6 +1,37 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ServicesPageContent } from '.././page';
+import { ServicesPageContent } from '../page-content';
 import { clientServicesFixture } from '@/lib/fixtures';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import * as ts from 'typescript';
+
+const adminPageRoutes = [
+	'dashboard',
+	'events',
+	'images',
+	'lifecycle-events',
+	'resize-recommendations',
+	'services',
+];
+
+const allowedPageExports = new Set([
+	'default',
+	'config',
+	'dynamic',
+	'dynamicParams',
+	'fetchCache',
+	'generateMetadata',
+	'generateStaticParams',
+	'generateViewport',
+	'maxDuration',
+	'metadata',
+	'preferredRegion',
+	'revalidate',
+	'runtime',
+	'unstable_dynamicStaleTime',
+	'unstable_instant',
+	'viewport',
+]);
 
 const renderServices = () =>
 	renderToStaticMarkup(
@@ -8,6 +39,25 @@ const renderServices = () =>
 	);
 
 describe('서비스 레지스트리 페이지', () => {
+	it.each(adminPageRoutes)(
+		'%s route는 Next page가 허용한 export만 공개한다',
+		(route) => {
+			const filename = join(process.cwd(), 'src', 'app', route, 'page.tsx');
+			const source = ts.createSourceFile(
+				filename,
+				readFileSync(filename, 'utf8'),
+				ts.ScriptTarget.Latest,
+				true,
+				ts.ScriptKind.TSX,
+			);
+			const exportedNames = source.statements.flatMap(readExportedNames);
+
+			expect(
+				exportedNames.filter((name) => !allowedPageExports.has(name)),
+			).toEqual([]);
+		},
+	);
+
 	it('서비스 등록 폼과 등록된 서비스를 표시한다', () => {
 		const html = renderServices();
 
@@ -63,3 +113,48 @@ describe('서비스 레지스트리 페이지', () => {
 		);
 	});
 });
+
+const readExportedNames = (statement: ts.Statement): string[] => {
+	if (ts.isExportAssignment(statement)) {
+		return ['default'];
+	}
+	if (ts.isExportDeclaration(statement)) {
+		if (!statement.exportClause) {
+			return ['*'];
+		}
+		if (ts.isNamespaceExport(statement.exportClause)) {
+			return [statement.exportClause.name.text];
+		}
+		return statement.exportClause.elements.map((element) => element.name.text);
+	}
+	if (
+		!ts.canHaveModifiers(statement) ||
+		!ts
+			.getModifiers(statement)
+			?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+	) {
+		return [];
+	}
+	if (
+		ts
+			.getModifiers(statement)
+			?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword)
+	) {
+		return ['default'];
+	}
+	if (
+		ts.isFunctionDeclaration(statement) ||
+		ts.isClassDeclaration(statement) ||
+		ts.isInterfaceDeclaration(statement) ||
+		ts.isTypeAliasDeclaration(statement) ||
+		ts.isEnumDeclaration(statement)
+	) {
+		return statement.name ? [statement.name.text] : [];
+	}
+	if (ts.isVariableStatement(statement)) {
+		return statement.declarationList.declarations.flatMap((declaration) =>
+			ts.isIdentifier(declaration.name) ? [declaration.name.text] : [],
+		);
+	}
+	return [];
+};

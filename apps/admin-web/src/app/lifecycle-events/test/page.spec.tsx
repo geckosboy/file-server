@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { LifecycleEventsPageContent } from '.././page';
+import { LifecycleEventsPageContent } from '../page-content';
 import {
 	clientServicesFixture,
 	lifecycleEventListFixture,

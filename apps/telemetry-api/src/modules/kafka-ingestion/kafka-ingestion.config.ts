@@ -27,14 +27,21 @@ const DEFAULT_LAG_REFRESH_INTERVAL_MS = 5_000;
 export const readTelemetryKafkaConsumerConfig = (
 	env: NodeJS.ProcessEnv = process.env,
 ): TelemetryKafkaConsumerConfig => {
-	const brokers = parseList(
-		env.TELEMETRY_KAFKA_BROKERS ?? env.KAFKA_CLIENT_BROKERS,
-	);
+	const telemetryBrokers = parseList(env.TELEMETRY_KAFKA_BROKERS);
+	const brokers =
+		telemetryBrokers.length > 0
+			? telemetryBrokers
+			: parseList(env.KAFKA_CLIENT_BROKERS);
 	const explicitEnabled = parseOptionalBoolean(
 		env.TELEMETRY_KAFKA_CONSUMER_ENABLED,
 	);
 	const requestedEnabled = explicitEnabled ?? env.NODE_ENV !== 'test';
-	const enabled = requestedEnabled && brokers.length > 0;
+	if (requestedEnabled && brokers.length === 0) {
+		throw new Error(
+			'TELEMETRY_KAFKA_BROKERS 또는 KAFKA_CLIENT_BROKERS 설정이 필요합니다.',
+		);
+	}
+	const enabled = requestedEnabled;
 	const topic = env.TELEMETRY_KAFKA_TOPIC ?? IMAGE_TELEMETRY_TOPIC;
 
 	return {
@@ -73,12 +80,7 @@ export const readTelemetryKafkaConsumerConfig = (
 		),
 		...(enabled
 			? {}
-			: {
-					disabledReason:
-						brokers.length === 0
-							? 'Kafka broker 설정이 없습니다.'
-							: 'Kafka consumer가 비활성화되어 있습니다.',
-				}),
+			: { disabledReason: 'Kafka consumer가 비활성화되어 있습니다.' }),
 	};
 };
 

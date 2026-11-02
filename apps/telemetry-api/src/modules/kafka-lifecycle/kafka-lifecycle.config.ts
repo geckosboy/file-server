@@ -27,14 +27,21 @@ const DEFAULT_LAG_REFRESH_INTERVAL_MS = 5_000;
 export const readLifecycleKafkaConsumerConfig = (
 	env: NodeJS.ProcessEnv = process.env,
 ): LifecycleKafkaConsumerConfig => {
-	const brokers = parseList(
-		env.LIFECYCLE_KAFKA_BROKERS ?? env.KAFKA_CLIENT_BROKERS,
-	);
+	const lifecycleBrokers = parseList(env.LIFECYCLE_KAFKA_BROKERS);
+	const brokers =
+		lifecycleBrokers.length > 0
+			? lifecycleBrokers
+			: parseList(env.KAFKA_CLIENT_BROKERS);
 	const explicitEnabled = parseOptionalBoolean(
 		env.LIFECYCLE_KAFKA_CONSUMER_ENABLED,
 	);
 	const requestedEnabled = explicitEnabled ?? env.NODE_ENV !== 'test';
-	const enabled = requestedEnabled && brokers.length > 0;
+	if (requestedEnabled && brokers.length === 0) {
+		throw new Error(
+			'LIFECYCLE_KAFKA_BROKERS 또는 KAFKA_CLIENT_BROKERS 설정이 필요합니다.',
+		);
+	}
+	const enabled = requestedEnabled;
 	const topic = env.LIFECYCLE_KAFKA_TOPIC ?? IMAGE_LIFECYCLE_TOPIC;
 
 	return {
@@ -74,10 +81,7 @@ export const readLifecycleKafkaConsumerConfig = (
 		...(enabled
 			? {}
 			: {
-					disabledReason:
-						brokers.length === 0
-							? 'Kafka broker 설정이 없습니다.'
-							: 'Kafka lifecycle consumer가 비활성화되어 있습니다.',
+					disabledReason: 'Kafka lifecycle consumer가 비활성화되어 있습니다.',
 				}),
 	};
 };

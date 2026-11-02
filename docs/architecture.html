@@ -306,7 +306,7 @@
 					포함합니다.
 				</p>
 				<div class="meta">
-					<span class="badge">2026-07-12 기준</span>
+					<span class="badge">2026-11-02 완료 감사 반영</span>
 					<span class="badge">Storage / Resize / Cache</span>
 					<span class="badge">PostgreSQL + Prisma</span>
 					<span class="badge">Kafka + Outbox</span>
@@ -320,6 +320,7 @@
 		<main>
 			<nav class="quick-nav" aria-label="아키텍처 빠른 이동">
 				<a href="#overview">핵심 변경</a>
+				<a href="#completion-audit">완료 감사</a>
 				<a href="#runtime">전체 런타임</a>
 				<a href="#integration">Docker · Nginx 통합</a>
 				<a href="#contracts">보존 계약</a>
@@ -328,6 +329,44 @@
 				<a href="#health">Health · Metric</a>
 				<a href="#deploy">배포 · 검증</a>
 			</nav>
+
+			<section class="card" id="completion-audit">
+				<h2>필수 범위 완료 감사</h2>
+				<p>
+					단계 0~5의 핵심 기능은 구현되어 있고 과거 통합 PASS 기록이 있습니다.
+					최신 revision의 모든 release gate 통과나 운영
+					migration/backfill/cutover 완료와는 구분합니다. 선택 단계 6과
+					TypeScript 7은 현재 범위에서 제외합니다.
+				</p>
+				<ul>
+					<li>
+						reconciliation 실행 주기는
+						<code>IMAGE_RECONCILIATION_INTERVAL_MS</code>가 우선하며, 기존
+						<code>BATCH_SLEEP_MS</code>는 주기 설정이 없을 때만 읽는 폐기 예정
+						별칭입니다.
+					</li>
+					<li>
+						delete HTTP 200은 파일·DB/outbox commit을 의미합니다. 모든 cache
+						replica 무효화는 Kafka를 통한 비동기 수렴이며, 응답 즉시 전역
+						무효화를 보장하지 않습니다.
+					</li>
+					<li>
+						lifecycle 및 Kafka ACL system E2E를 CI gate로 추가했습니다. 이 감사
+						환경의 Docker 소켓·HTTP listen 권한 제한으로 전체 재실행 PASS는 아직
+						확인하지 못했습니다.
+					</li>
+					<li>
+						활성 Kafka consumer의 broker 누락은 부팅 오류입니다. 실제 운영
+						workflow의 host port 공개와 Nginx/firewall 경계는 별도 검증해야
+						하며, 아래 통합 하네스의 내부 전용 network와 동일하다고 가정하지
+						않습니다.
+					</li>
+				</ul>
+				<p>
+					기준별 코드·테스트·검증 결과와 남은 항목:
+					<a href="file-server-completion-audit.md">완료 감사 기록</a>
+				</p>
+			</section>
 
 			<section class="card" id="overview">
 				<h2>1. 이번 구조 변경의 핵심</h2>
@@ -993,8 +1032,9 @@ Remove -->|"failure"| Retry --> Reconcile --> Remove
 						CAS로 여러 scheduler가 실행돼도 같은 결과로 수렴
 					</div>
 					<div class="info">
-						<strong>SLA</strong>기본 5분 안에 stale state를 탐지하며
-						주기·SLA·batch·sleep·lease는 환경변수로 조정
+						<strong>탐지 목표</strong>기본 stale 4분 + 실행 주기 1분이며 소규모
+						장애 fixture에서 검증했습니다. 대량 backlog/inventory의 5분 hard
+						SLA는 미증명이며 batch/scan 처리량과 지연을 별도로 확인해야 합니다.
 					</div>
 					<div class="info">
 						<strong>Metric</strong><code>supported=true</code>,

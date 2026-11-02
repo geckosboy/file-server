@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ImagesPageContent } from '.././page';
+import { ImagesPageContent } from '../page-content';
 import { clientServicesFixture, imageListFixture } from '@/lib/fixtures';
 import type { ImageListResponse } from '@/lib/telemetry-api';
 

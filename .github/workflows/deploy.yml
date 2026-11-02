@@ -86,7 +86,7 @@ jobs:
 
   deploy-resize:
     name: Deploy resize
-    needs: publish
+    needs: [publish, deploy-storage]
     runs-on: [file-server]
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/resize:${{ github.event.workflow_run.head_sha }}
@@ -117,7 +117,7 @@ jobs:
 
   deploy-cache:
     name: Deploy cache
-    needs: publish
+    needs: [publish, deploy-resize]
     runs-on: [file-server]
     env:
       IMAGE: ghcr.io/${{ github.repository_owner }}/cache:${{ github.event.workflow_run.head_sha }}

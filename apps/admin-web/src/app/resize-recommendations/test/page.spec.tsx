@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ResizeRecommendationsPageContent } from '.././page';
+import { ResizeRecommendationsPageContent } from '../page-content';
 import {
 	clientServicesFixture,
 	imageResizeRecommendationsFixture,

@@ -1,14 +1,16 @@
 # File Server Integration Handoff
 
-- 기준일: 2026-07-11
-- 기준 상태: 아키텍처 개선 계획의 단계 0~5 구현, authoritative image lifecycle 통합 gate는 clean integrated HEAD에서 실행
+- 기준일: 2026-11-02 (과거 통합 실행 기록은 각 절의 원래 날짜/revision 유지)
+- 기준 상태: 단계 0~5 핵심 구현 및 과거 통합 PASS 기록 있음. 최신 완료 감사의 차단/잔여 gate는 아래 감사 문서를 따른다. 운영 cutover 완료를 뜻하지 않는다.
 - 대상: 이 저장소를 호출하거나 lifecycle 이벤트를 소비할 다른 프로젝트와 해당 프로젝트를 설계하는 AI
 - 전체 구조 시각화: [`architecture.html`](architecture.html)
 - Travel Cloud 실제 Docker 연동: [`travel-cloud-integration-runbook.md`](travel-cloud-integration-runbook.md)
+- 최신 완료 감사·잔여 검증: [`file-server-completion-audit.md`](file-server-completion-audit.md)
+- 감사 중 admin route의 불허 named export도 분리했으며, `pnpm all:typecheck`는 Next route 타입을 먼저 생성해 이 계약까지 검사한다. HTTP/Kafka 공개 성공 응답 계약은 변경하지 않았다.
 
 ## 1. 먼저 알아야 할 결론
 
-현재 저장소는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리, DB 중심 telemetry 조회와 bounded retention, 호출 timeout/cache stampede 제어, 실제 dependency health, authoritative asset/variant 수명주기를 확보했다. 공유 object storage는 이후 단계의 범위다.
+현재 저장소에는 빌드·배포 기준선, HTTP 이미지 경로의 다중 테넌트 권한 경계, Kafka 이벤트 계약·전달 복원력·client topic 격리, DB 중심 telemetry 조회와 bounded retention, 호출 timeout/cache stampede 제어, 실제 dependency health, authoritative asset/variant 수명주기가 구현되어 있다. 구현·과거 검증과 현재 release 승인은 구분한다. 공유 object storage 등 선택 단계 6은 현재 범위에서 제외한다.
 
 - API key 인증 뒤 `ClientServicePolicy ∩ key scopes`를 read/upload/delete마다 강제한다.
 - canonical storage path와 제한된 glob(`*`, `**`)으로 tenant path 소유권을 판정한다.
@@ -61,6 +63,8 @@ Travel Cloud 통합은 Nginx를 고정 reverse proxy로 사용한다. [`docker-c
 pnpm db:generate
 pnpm db:migrate:deploy
 pnpm all:lint
+pnpm all:typecheck
+pnpm test:scripts
 pnpm all:test
 pnpm test:component:e2e
 pnpm all:build
@@ -455,6 +459,7 @@ interface FileServerClient {
 - PostgreSQL/Kafka/upstream/storage read-write readiness indicator
 - broker high offset과 consumer group offset 차이 기반 Kafka lag, 최초 connect 실패 reconnect/capped backoff
 - upstream/cache/singleflight/lag/DLQ/outbox operational metric
+- 2026-11-02 감사 수정: telemetry/lifecycle Kafka consumer가 활성화되어야 하는데 전용·공통 broker가 모두 누락되면 bootstrap을 거부한다. 더 이상 누락을 `disabled/ready=true`로 위장하지 않는다. test 기본 비활성과 명시적 consumer 비활성은 유지하며, 전용 broker가 공백이면 공통 broker로 fallback한다.
 - `GET /api/admin/health`의 image lifecycle metric은 asset/variant `oldestPendingAgeMs`·`oldestDeletingAgeMs`, jobs `oldestActiveAgeMs`·`lagMs`·failure/state count를 DB에서 계산한다. `IMAGE_RECONCILIATION_HEALTH_LEGACY_COMPAT_ENABLED=true`이면 top-level reconciliation은 Stage 4 `supported=false/orphanCount=null`을 유지하고 실제 값은 transition의 `imageLifecycleSupported`/`imageLifecycleOrphanCount` field로 함께 제공한다.
 
 endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순서는 [`stage4-resilience-health-runbook.md`](stage4-resilience-health-runbook.md)를 따른다.
@@ -508,6 +513,8 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 다른 프로젝트가 임시 코드로 보완하거나 영구 전제로 삼아서는 안 되는 항목이다.
 
 - telemetry의 무손실 전달
+- 임의 규모 inventory/backlog에서 5분 안에 모든 orphan을 탐지·복구한다는 hard SLA (기본 stale/cadence와 소규모 fixture 목표만 검증됨)
+- delete HTTP 200 시점의 모든 cache replica 동시 무효화 (기존 outbox/Kafka 기반 비동기 수렴 계약 유지)
 - storage replica 간 파일 공유
 - 모든 호출에 대한 circuit breaker(현재는 deadline/bounded retry이며 circuit breaker는 도입하지 않음)
 - 여러 replica/region을 하나로 집계한 전역 health(각 endpoint는 해당 process와 dependency snapshot)
@@ -525,6 +532,12 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 따라서 이전 unhandled background rejection은 Stage 2에서 해결되었고 written contract/단일 storage process outage 경로의 release blocker가 아니다. 이 E2E는 process supervisor 재시작, 여러 storage instance 사이의 failover, 장시간 outage/soak까지 증명하지 않으므로 해당 운영 보장은 별도 배포 환경 검증 대상으로 남는다.
 
 ## 10. 연동 전 합의해야 할 체크포인트
+
+### 실제 운영 배포 전
+
+- `.github/workflows/deploy.yml`의 storage/resize/cache host publish는 현재 모든 host 인터페이스에 bind한다. 특히 resize와 storage GET은 내부 전용이므로 Nginx 뒤에 있다는 이유만으로 외부 비노출이라고 가정하지 않는다.
+- 실제 Nginx 위치, Docker network, host firewall과 외부 도달성 증거를 확인한 뒤 내부 서비스의 publish 제거 또는 loopback bind/방화벽 차단을 적용한다. 이 감사에서는 기존 접근 경로를 모른 채 bind 계약을 변경하거나 운영 배포를 실행하지 않았다.
+- 배포 순서는 storage readiness → resize readiness → cache readiness로 수정했다. 기존 컨테이너를 먼저 교체하는 방식이므로 무중단 배포 보장은 아니며 CI와 실인프라 재검증이 필요하다.
 
 ### Client service 연동 등록 전
 

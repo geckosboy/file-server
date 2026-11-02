@@ -17,7 +17,6 @@ const DEFAULT_SCAN_LIMIT = 1_000;
 export interface ImageReconciliationConfig {
 	enabled: boolean;
 	intervalMs: number;
-	batchSleepMs: number;
 	staleAfterMs: number;
 	leaseMs: number;
 	lockTimeoutMs: number;
@@ -45,7 +44,7 @@ export class ImageReconciliationScheduler
 			return;
 		}
 		this.run(config);
-		this.timer = setInterval(() => this.run(config), config.batchSleepMs);
+		this.timer = setInterval(() => this.run(config), config.intervalMs);
 		this.timer.unref?.();
 	}
 
@@ -99,12 +98,8 @@ export const readImageReconciliationConfig = (
 ): ImageReconciliationConfig => ({
 	enabled: env.IMAGE_RECONCILIATION_ENABLED !== 'false',
 	intervalMs: readPositiveInteger(
-		env.IMAGE_RECONCILIATION_INTERVAL_MS,
-		DEFAULT_INTERVAL_MS,
-	),
-	batchSleepMs: readPositiveInteger(
-		env.IMAGE_RECONCILIATION_BATCH_SLEEP_MS ??
-			env.IMAGE_RECONCILIATION_INTERVAL_MS,
+		env.IMAGE_RECONCILIATION_INTERVAL_MS ??
+			env.IMAGE_RECONCILIATION_BATCH_SLEEP_MS,
 		DEFAULT_INTERVAL_MS,
 	),
 	staleAfterMs: readPositiveInteger(

@@ -75,8 +75,10 @@ jobs:
         run: pnpm db:generate
       - name: Lint
         run: pnpm all:lint
-      - name: Typecheck with TypeScript 7
-        run: pnpm typecheck:ts7
+      - name: Typecheck with repository TypeScript
+        run: pnpm all:typecheck
+      - name: Script and CI regression tests
+        run: pnpm test:scripts
       - name: Unit tests
         run: pnpm all:test
       - name: Component E2E tests
@@ -105,6 +107,58 @@ jobs:
         run: pnpm db:generate
       - name: Run real-service system E2E
         run: pnpm test:system:e2e
+
+  image-lifecycle-e2e:
+    name: Authoritative image lifecycle system E2E
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SYSTEM_E2E_COMPOSE_PROJECT: fs-lifecycle-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      SYSTEM_E2E_NETWORK: fs-lifecycle-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run migration, backfill, crash recovery, variant and replica cache gates
+        run: pnpm test:image-lifecycle:system:e2e
+      - name: Clean only this job's infrastructure, including cancellation
+        if: always()
+        run: docker compose -f docker/docker-compose.system-e2e.yml -p "$SYSTEM_E2E_COMPOSE_PROJECT" down --volumes --remove-orphans
+
+  kafka-acl-e2e:
+    name: Kafka tenant and worker ACL isolation
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      KAFKA_ACL_E2E_PROJECT: fs-acl-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Run client, canonical topic, variant job and invalidation isolation
+        run: pnpm test:kafka:acl:e2e
+      - name: Clean only this job's broker, including cancellation
+        if: always()
+        env:
+          # Used only to resolve the required mount during down; no credentials.
+          KAFKA_ACL_E2E_CONFIG_DIR: ${{ runner.temp }}
+        run: docker compose -f docker/docker-compose.kafka-acl-e2e.yml -p "$KAFKA_ACL_E2E_PROJECT" down --volumes --remove-orphans
 
   docker-smoke:
     name: Node 22 container smoke

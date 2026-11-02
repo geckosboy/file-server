@@ -99,6 +99,47 @@ describe('Kafka 텔레메트리 consumer 설정', () => {
 		});
 	});
 
+	it.each([
+		['production 기본 활성화', { NODE_ENV: 'production' }],
+		[
+			'명시적 활성화',
+			{
+				NODE_ENV: 'test',
+				TELEMETRY_KAFKA_CONSUMER_ENABLED: 'true',
+			},
+		],
+	])('%s 상태에서 broker 누락을 정상 비활성으로 위장하지 않는다', (_, env) => {
+		expect(() => readTelemetryKafkaConsumerConfig(env)).toThrow(
+			'TELEMETRY_KAFKA_BROKERS 또는 KAFKA_CLIENT_BROKERS',
+		);
+	});
+
+	it('전용 broker 설정이 공백이면 공통 broker 설정을 사용한다', () => {
+		expect(
+			readTelemetryKafkaConsumerConfig({
+				NODE_ENV: 'production',
+				TELEMETRY_KAFKA_BROKERS: ' , ',
+				KAFKA_CLIENT_BROKERS: 'common-kafka:9092',
+			}),
+		).toMatchObject({
+			enabled: true,
+			brokers: ['common-kafka:9092'],
+		});
+	});
+
+	it('명시적으로 비활성화하면 broker 없이도 준비 가능한 설정을 반환한다', () => {
+		expect(
+			readTelemetryKafkaConsumerConfig({
+				NODE_ENV: 'production',
+				TELEMETRY_KAFKA_CONSUMER_ENABLED: 'false',
+			}),
+		).toMatchObject({
+			enabled: false,
+			brokers: [],
+			disabledReason: 'Kafka consumer가 비활성화되어 있습니다.',
+		});
+	});
+
 	it('DLQ topic과 retry 상한을 환경 변수로 재정의한다', () => {
 		expect(
 			readTelemetryKafkaConsumerConfig({
@@ -246,6 +287,18 @@ describe('Kafka 텔레메트리 consumer 서비스', () => {
 	afterEach(() => {
 		process.env = originalEnv;
 		jest.restoreAllMocks();
+	});
+
+	it('production에서 broker가 없으면 bootstrap을 실패시켜 false healthy를 막는다', async () => {
+		process.env.NODE_ENV = 'production';
+		delete process.env.TELEMETRY_KAFKA_CONSUMER_ENABLED;
+		delete process.env.TELEMETRY_KAFKA_BROKERS;
+		delete process.env.KAFKA_CLIENT_BROKERS;
+
+		await expect(service.onApplicationBootstrap()).rejects.toThrow(
+			'TELEMETRY_KAFKA_BROKERS 또는 KAFKA_CLIENT_BROKERS',
+		);
+		expect(factory.create).not.toHaveBeenCalled();
 	});
 
 	it('Kafka message를 기존 IngestionService로 저장한다', async () => {

@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { DashboardPageContent } from '.././page';
+import { DashboardPageContent } from '../page-content';
 import { clientServicesFixture, dashboardDataFixture } from '@/lib/fixtures';
 import type { DashboardData } from '@/lib/telemetry-api';
 
