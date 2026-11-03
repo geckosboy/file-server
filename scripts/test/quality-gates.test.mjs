@@ -183,6 +183,19 @@ test('deployment has pull-only permission, one rollback-aware dependency-ordered
 	assert.match(workflow, /cancel-in-progress: true/);
 });
 
+test('deployment targets the provided production runner labels, without moving CI onto production', () => {
+	assert.match(
+		job('deploy', deploy),
+		/runs-on: \[self-hosted, linux, x64, production, puddingii\]/,
+	);
+	assert.doesNotMatch(deploy, /runs-on: \[self-hosted, file-server\]/);
+	assert.doesNotMatch(deploy, /runs-on:.*file-server-runner/);
+	assert.doesNotMatch(workflow, /runs-on:.*self-hosted/);
+	assert.match(job('release', deploy), /runs-on: ubuntu-latest/);
+	const labels = read('.github/actionlint.yaml');
+	assert.match(labels, /labels: \[production, puddingii\]/);
+});
+
 test('all external actions including composite setup are full-SHA pinned', () => {
 	for (const source of [workflow, deploy, setup, runtime]) {
 		for (const [, action] of source.matchAll(/- uses: (\S+)/g)) {

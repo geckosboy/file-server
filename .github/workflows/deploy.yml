@@ -72,7 +72,7 @@ jobs:
     name: Deploy storage, resize and cache with rollback
     needs: release
     if: needs.release.outputs.deploy == 'true'
-    runs-on: [self-hosted, file-server]
+    runs-on: [self-hosted, linux, x64, production, puddingii]
     timeout-minutes: 10
     permissions:
       contents: read
