@@ -186,7 +186,7 @@ test('deployment has pull-only permission, one rollback-aware dependency-ordered
 test('deployment targets the provided production runner labels, without moving CI onto production', () => {
 	assert.match(
 		job('deploy', deploy),
-		/runs-on: \[self-hosted, linux, x64, production, puddingii\]/,
+		/runs-on: \[self-hosted, production, puddingii\]/,
 	);
 	assert.doesNotMatch(deploy, /runs-on: \[self-hosted, file-server\]/);
 	assert.doesNotMatch(deploy, /runs-on:.*file-server-runner/);

@@ -65,7 +65,7 @@ Backend dist는 1일, release intent와 작은 image manifest는 2일 보관한�
 
 ## 4. 운영 배포와 rollback
 
-등록된 배포 runner 이름은 `file-server-runner`이며, workflow는 이름이 아니라 `self-hosted`, `linux`, `x64`, `production`, `puddingii` label을 모두 가진 runner를 선택한다. `file-server` label은 필요하지 않다. Bash 4+/Docker/curl과 linux/amd64 실행 환경이 필요하며 기존 Nginx ingress, DB/Kafka와 `file_dump_volume`을 유지한다. CI 및 release 명세 검증은 기존 GitHub-hosted 구성을 유지하고 production runner로 옮기지 않는다.
+등록된 배포 runner 이름은 `file-server-runner`이며, workflow는 이름이 아니라 `self-hosted`, `production`, `puddingii` 세 label을 모두 가진 runner를 선택한다. `linux`, `x64`, `file-server` label은 selector에 넣지 않는다. 실행 환경 자체에는 Bash 4+/Docker/curl과 linux/amd64 호환성이 필요하며 기존 Nginx ingress, DB/Kafka와 `file_dump_volume`을 유지한다. CI 및 release 명세 검증은 기존 GitHub-hosted 구성을 유지하고 production runner로 옮기지 않는다.
 
 필요한 기존 secrets:
 
