@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1.7
+
+ARG NODE_VERSION=22.15.0
+
+FROM node:${NODE_VERSION}-alpine AS build
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
+ENV NEXT_TELEMETRY_DISABLED=1
+WORKDIR /usr/index
+
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json ./
+COPY apps/admin-web/package.json ./apps/admin-web/package.json
+COPY libs/tsconfig/package.json ./libs/tsconfig/package.json
+
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+	pnpm install --frozen-lockfile
+
+COPY apps/admin-web ./apps/admin-web
+COPY libs/tsconfig ./libs/tsconfig
+
+# Next standalone output omits public and .next/static. The source currently has
+# no public directory, so create an empty build-time directory instead of adding
+# a placeholder asset to the repository.
+RUN mkdir -p apps/admin-web/public \
+	&& pnpm turbo run build --filter=@file/admin-web
+
+FROM node:${NODE_VERSION}-alpine AS runtime
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+WORKDIR /usr/index
+
+COPY --from=build --chown=node:node /usr/index/apps/admin-web/.next/standalone ./
+COPY --from=build --chown=node:node /usr/index/apps/admin-web/.next/static ./apps/admin-web/.next/static
+COPY --from=build --chown=node:node /usr/index/apps/admin-web/public ./apps/admin-web/public
+
+USER node
+EXPOSE 3000
+CMD ["node", "apps/admin-web/server.js"]

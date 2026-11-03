@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly SERVICES=(storage resize cache)
+readonly RUNTIME_SERVICES=(storage resize cache)
+readonly ADMIN_SERVICES=(telemetry-api admin-web)
+declare -a SERVICES=()
 readonly CONTAINER_PREFIX=file_server
 SCHEMA_SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/verify-deployment-schema.cjs"
 readonly SCHEMA_SCRIPT_PATH
@@ -13,6 +15,8 @@ declare -a OLD_EXISTS OLD_RUNNING OLD_STOPPED CANDIDATE_CREATED BACKUP_CREATED N
 DEPLOY_SUCCEEDED=0
 ROLLBACK_STARTED=0
 MUTATION_STARTED=0
+DEPLOY_RUNTIME=0
+DEPLOY_ADMIN=0
 
 log() { printf '[deploy] %s\n' "$*" >&2; }
 fail() { log "ERROR: $*"; exit 1; }
@@ -22,11 +26,75 @@ required_value() {
 	[[ -n ${!name:-} ]] || fail "$name is required"
 }
 
+configure_services() {
+	local configured_groups=${DEPLOY_GROUPS-runtime}
+	[[ -n $configured_groups ]] || fail 'DEPLOY_GROUPS must not be empty'
+	[[ $configured_groups != ,* && $configured_groups != *, && $configured_groups != *,,* ]] || \
+		fail 'DEPLOY_GROUPS contains an empty group'
+
+	local group
+	local -a groups=()
+	IFS=',' read -r -a groups <<<"$configured_groups"
+	for group in "${groups[@]}"; do
+		[[ -n $group ]] || fail 'DEPLOY_GROUPS contains an empty group'
+		case $group in
+			runtime)
+				(( DEPLOY_RUNTIME == 0 )) || fail "DEPLOY_GROUPS contains duplicate group: $group"
+				DEPLOY_RUNTIME=1
+				;;
+			admin)
+				(( DEPLOY_ADMIN == 0 )) || fail "DEPLOY_GROUPS contains duplicate group: $group"
+				DEPLOY_ADMIN=1
+				;;
+			*) fail "DEPLOY_GROUPS contains unknown group: $group" ;;
+		esac
+	done
+	[[ $configured_groups != admin,runtime ]] || fail 'DEPLOY_GROUPS must use canonical runtime,admin order'
+
+	if (( DEPLOY_RUNTIME == 1 )); then SERVICES+=("${RUNTIME_SERVICES[@]}"); fi
+	if (( DEPLOY_ADMIN == 1 )); then SERVICES+=("${ADMIN_SERVICES[@]}"); fi
+	((${#SERVICES[@]} > 0)) || fail 'DEPLOY_GROUPS must select at least one group'
+}
+
+env_value() {
+	local file=$1 name=$2 value non_whitespace
+	if ! value=$(
+		awk -v name="$name" '
+			$0 ~ "^[[:space:]]*" name "[[:space:]]*=" {
+				count++
+				line = $0
+				sub("^[[:space:]]*" name "[[:space:]]*=", "", line)
+				value = line
+			}
+			END {
+				if (count != 1) exit 42
+				print value
+			}
+		' "$file"
+	); then
+		fail "$file must define $name exactly once"
+	fi
+	value=${value%$'\r'}
+	non_whitespace=${value//[[:space:]]/}
+	[[ -n $non_whitespace ]] || fail "$file must define a non-empty $name"
+	printf '%s' "$value"
+}
+
+env_declares() {
+	local file=$1 name=$2
+	awk -v name="$name" '
+		$0 ~ "^[[:space:]]*" name "([[:space:]]*=.*)?[[:space:]]*$" { found = 1 }
+		END { exit found ? 0 : 1 }
+	' "$file"
+}
+
 image_for() {
 	case $1 in
 		storage) printf '%s' "$STORAGE_IMAGE" ;;
 		resize) printf '%s' "$RESIZE_IMAGE" ;;
 		cache) printf '%s' "$CACHE_IMAGE" ;;
+		telemetry-api) printf '%s' "$TELEMETRY_API_IMAGE" ;;
+		admin-web) printf '%s' "$ADMIN_WEB_IMAGE" ;;
 	esac
 }
 
@@ -35,6 +103,8 @@ env_path_for() {
 		storage) printf '%s' "$STORAGE_ENV_PATH" ;;
 		resize) printf '%s' "$RESIZE_ENV_PATH" ;;
 		cache) printf '%s' "$CACHE_ENV_PATH" ;;
+		telemetry-api) printf '%s' "$TELEMETRY_API_ENV_PATH" ;;
+		admin-web) printf '%s' "$ADMIN_WEB_ENV_PATH" ;;
 	esac
 }
 
@@ -43,7 +113,13 @@ port_for() {
 		storage) printf '%s' "$STORAGE_PORT" ;;
 		resize) printf '%s' "$RESIZE_PORT" ;;
 		cache) printf '%s' "$CACHE_PORT" ;;
+		telemetry-api) printf '%s' "$TELEMETRY_API_PORT" ;;
+		admin-web) printf '%s' "$ADMIN_WEB_PORT" ;;
 	esac
+}
+
+service_uses_kafka() {
+	[[ $1 != admin-web ]]
 }
 
 container_exists() {
@@ -133,25 +209,67 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 validate_inputs() {
-	local name service image env_path port
-	for name in STORAGE_IMAGE RESIZE_IMAGE CACHE_IMAGE STORAGE_ENV_PATH RESIZE_ENV_PATH CACHE_ENV_PATH STORAGE_PORT RESIZE_PORT CACHE_PORT FILE_SERVER_NET KAFKA_NET FILE_DUMP_VOLUME DEPLOY_RUN_ID; do
+	configure_services
+	local name service image env_path port existing_port database_url
+	local selected_database_url='' database_initialized=0
+	for name in FILE_SERVER_NET DEPLOY_RUN_ID; do
 		required_value "$name"
 	done
+	if (( DEPLOY_RUNTIME == 1 )); then
+		for name in STORAGE_IMAGE RESIZE_IMAGE CACHE_IMAGE STORAGE_ENV_PATH RESIZE_ENV_PATH CACHE_ENV_PATH STORAGE_PORT RESIZE_PORT CACHE_PORT FILE_DUMP_VOLUME KAFKA_NET; do
+			required_value "$name"
+		done
+	fi
+	if (( DEPLOY_ADMIN == 1 )); then
+		for name in TELEMETRY_API_IMAGE ADMIN_WEB_IMAGE TELEMETRY_API_ENV_PATH ADMIN_WEB_ENV_PATH TELEMETRY_API_PORT ADMIN_WEB_PORT KAFKA_NET; do
+			required_value "$name"
+		done
+	fi
 	[[ $DEPLOY_RUN_ID =~ ^[0-9]+(-[0-9]+)*$ ]] || fail 'DEPLOY_RUN_ID must contain numeric components separated by hyphens'
-	[[ $FILE_DUMP_VOLUME == file_dump_volume ]] || fail 'FILE_DUMP_VOLUME must be file_dump_volume'
+	if (( DEPLOY_RUNTIME == 1 )); then
+		[[ $FILE_DUMP_VOLUME == file_dump_volume ]] || fail 'FILE_DUMP_VOLUME must be file_dump_volume'
+	fi
 	[[ $FILE_SERVER_NET != "$KAFKA_NET" ]] || fail 'FILE_SERVER_NET and KAFKA_NET must be different networks'
+	local -a selected_ports=()
 	for service in "${SERVICES[@]}"; do
 		image=$(image_for "$service")
 		env_path=$(env_path_for "$service")
 		port=$(port_for "$service")
 		[[ $image =~ ^ghcr\.io/[A-Za-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || fail "$service image must be an immutable ghcr.io digest"
 		[[ -f $env_path && -r $env_path ]] || fail "$service env path must be a readable file"
-		grep -Eq '^[[:space:]]*DATABASE_URL=' "$env_path" || fail "$service env path must define DATABASE_URL"
+		if [[ $service != admin-web ]]; then
+			database_url=$(env_value "$env_path" DATABASE_URL)
+			if (( database_initialized == 0 )); then
+				selected_database_url=$database_url
+				database_initialized=1
+			else
+				[[ $database_url == "$selected_database_url" ]] || fail 'all selected DB-backed services must use the same DATABASE_URL'
+			fi
+		fi
 		if ! [[ $port =~ ^[0-9]+$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
 			fail "$service port must be between 1 and 65535"
 		fi
+		if ((${#selected_ports[@]} > 0)); then
+			for existing_port in "${selected_ports[@]}"; do
+				[[ $port != "$existing_port" ]] || fail 'service ports must be unique'
+			done
+		fi
+		selected_ports+=("$port")
 	done
-	[[ $STORAGE_PORT != "$RESIZE_PORT" && $STORAGE_PORT != "$CACHE_PORT" && $RESIZE_PORT != "$CACHE_PORT" ]] || fail 'service ports must be unique'
+	if (( DEPLOY_ADMIN == 1 )); then
+		local telemetry_token admin_token admin_base_url proxy_secret proxy_secret_bytes
+		telemetry_token=$(env_value "$TELEMETRY_API_ENV_PATH" TELEMETRY_ADMIN_TOKEN)
+		admin_token=$(env_value "$ADMIN_WEB_ENV_PATH" TELEMETRY_ADMIN_TOKEN)
+		[[ $telemetry_token == "$admin_token" ]] || fail 'telemetry-api and admin-web TELEMETRY_ADMIN_TOKEN values must match'
+		proxy_secret=$(env_value "$ADMIN_WEB_ENV_PATH" ADMIN_WEB_PROXY_SECRET)
+		proxy_secret_bytes=$(printf '%s' "$proxy_secret" | LC_ALL=C wc -c)
+		(( proxy_secret_bytes >= 1 && proxy_secret_bytes <= 128 )) || fail 'admin-web ADMIN_WEB_PROXY_SECRET must be between 1 and 128 bytes'
+		admin_base_url=$(env_value "$ADMIN_WEB_ENV_PATH" TELEMETRY_API_BASE_URL)
+		[[ $admin_base_url == "http://file_server_telemetry-api:${TELEMETRY_API_PORT}/api/admin" ]] || fail 'admin-web TELEMETRY_API_BASE_URL must use the private telemetry-api container address'
+		if env_declares "$ADMIN_WEB_ENV_PATH" NEXT_PUBLIC_TELEMETRY_API_BASE_URL; then
+			fail 'admin-web env must not declare NEXT_PUBLIC_TELEMETRY_API_BASE_URL'
+		fi
+	fi
 	[[ ${DEPLOY_READY_TIMEOUT_SECONDS:-90} =~ ^[0-9]+$ ]] || fail 'DEPLOY_READY_TIMEOUT_SECONDS must be numeric'
 	(( 10#${DEPLOY_READY_TIMEOUT_SECONDS:-90} >= 1 && 10#${DEPLOY_READY_TIMEOUT_SECONDS:-90} <= 90 )) || fail 'DEPLOY_READY_TIMEOUT_SECONDS must be between 1 and 90'
 	command -v docker >/dev/null || fail 'docker is required'
@@ -162,7 +280,9 @@ validate_inputs() {
 preflight_runtime() {
 	docker network inspect "$FILE_SERVER_NET" >/dev/null || fail "FILE_SERVER_NET does not exist"
 	docker network inspect "$KAFKA_NET" >/dev/null || fail "KAFKA_NET does not exist"
-	docker volume inspect "$FILE_DUMP_VOLUME" >/dev/null || fail 'required storage volume does not exist; refusing an empty-data deployment'
+	if (( DEPLOY_RUNTIME == 1 )); then
+		docker volume inspect "$FILE_DUMP_VOLUME" >/dev/null || fail 'required storage volume does not exist; refusing an empty-data deployment'
+	fi
 
 	local index service canonical candidate backup running image platform
 	for index in "${!SERVICES[@]}"; do
@@ -189,17 +309,26 @@ preflight_runtime() {
 }
 
 verify_schema() {
-	local expected_migrations
+	local expected_migrations schema_image schema_env schema_script_target
 	expected_migrations=$(find "$REPOSITORY_ROOT/prisma/migrations" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | LC_ALL=C sort | paste -sd, -)
 	[[ -n $expected_migrations ]] || fail 'no checked-out Prisma migrations were found'
+	if (( DEPLOY_RUNTIME == 1 )); then
+		schema_image=$STORAGE_IMAGE
+		schema_env=$STORAGE_ENV_PATH
+		schema_script_target=/usr/index/apps/storage/verify-deployment-schema.cjs
+	else
+		schema_image=$TELEMETRY_API_IMAGE
+		schema_env=$TELEMETRY_API_ENV_PATH
+		schema_script_target=/usr/index/apps/telemetry-api/verify-deployment-schema.cjs
+	fi
 	log 'Verifying applied migrations and online backfill indexes (read-only).'
 	docker run --rm \
 		--network "$FILE_SERVER_NET" \
-		--env-file "$STORAGE_ENV_PATH" \
+		--env-file "$schema_env" \
 		--env "EXPECTED_MIGRATIONS=$expected_migrations" \
-		--volume "$SCHEMA_SCRIPT_PATH:/usr/index/apps/storage/verify-deployment-schema.cjs:ro" \
-		"$STORAGE_IMAGE" \
-		node /usr/index/apps/storage/verify-deployment-schema.cjs
+		--volume "$SCHEMA_SCRIPT_PATH:$schema_script_target:ro" \
+		"$schema_image" \
+		node "$schema_script_target"
 }
 
 prepare_candidates() {
@@ -211,7 +340,7 @@ prepare_candidates() {
 		port=$(port_for "$service")
 		image=$(image_for "$service")
 		local -a create_args=(
-			create --env-file "$env_path" --env HOST=0.0.0.0
+			create --env-file "$env_path" --env NODE_ENV=production --env HOST=0.0.0.0
 			--network "$FILE_SERVER_NET"
 			--publish "127.0.0.1:${port}:${port}"
 			--name "$candidate" --restart always
@@ -219,11 +348,12 @@ prepare_candidates() {
 		if [[ $service == storage ]]; then
 			create_args+=(--volume "$FILE_DUMP_VOLUME:$STORAGE_ASSETS_PATH")
 		fi
+		if [[ $service == admin-web ]]; then create_args+=(--env HOSTNAME=0.0.0.0); fi
 		create_args+=("$image")
 		MUTATION_STARTED=1
 		CANDIDATE_CREATED[index]=1
 		docker "${create_args[@]}" >/dev/null
-		docker network connect "$KAFKA_NET" "$candidate"
+		if service_uses_kafka "$service"; then docker network connect "$KAFKA_NET" "$candidate"; fi
 	done
 }
 
@@ -297,7 +427,7 @@ main() {
 		exit 1
 	fi
 	trap - EXIT INT TERM
-	log 'Deployment completed: storage, resize, and cache passed /health/ready; stopped backups were removed.'
+	log "Deployment completed: ${SERVICES[*]} passed /health/ready; stopped backups were removed."
 }
 
 main "$@"

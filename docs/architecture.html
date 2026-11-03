@@ -1236,10 +1236,13 @@ pnpm test:image-lifecycle:system:e2e</pre>
 				<p>
 					CI는 영향받은 gate만 선택하고 같은 run의 app/lib build를 재사용합니다.
 					main 전용 CI가 smoke를 통과한 image를 push하고 CD는 작은 digest 명세만
-					검증해 registry digest로 배포합니다. Schema·env·network·volume 사전
-					점검과 정지 candidate 준비 후 storage → resize → cache 순서로
-					교체하고, 실패하면 앞서 교체한 컨테이너까지 복원합니다. 무중단 배포나
-					DB rollback은 보장하지 않습니다. 상세한 선택 기준·재실행·제한은
+					검증해 registry digest로 배포합니다. runtime(이미지 앱 3개)과
+					admin(관리자 API/화면)은 독립 선택하므로 관리자만 수정하면 이미지 앱을
+					다시 빌드하거나 교체하지 않습니다. Schema·env·network·volume 사전
+					점검과 정지 candidate 준비 후 선택된 그룹을 storage → resize → cache →
+					telemetry-api → admin-web 순서로 교체하고, 실패하면 앞서 교체한
+					컨테이너까지 복원합니다. 무중단 배포나 DB rollback은 보장하지
+					않습니다. 상세한 선택 기준·재실행·제한은
 					<a href="ci-cd-runbook.md">CI/CD 운영 설명서</a>를 따릅니다.
 				</p>
 				<ol>

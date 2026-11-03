@@ -642,3 +642,9 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 
 불명확한 업무 요구만 질문하고, file-server의 현재 취약한 동작을 정상 계약으로 고정하지 마라.
 ```
+
+### 관리자 운영 배포 확장
+
+관리자 화면(admin-web)과 API(telemetry-api)도 현재 CD 대상이다. runtime3/admin2 독립 image group으로 변경 영향과 미배포 변경을 선택하며, 관리자만 변경하면 이미지 처리 컨테이너를 빌드·교체하지 않는다. 새 release intent/manifest는 schema 3의 selectedGroups와 정확한 image 집합을 검증한다. 기존 HTTP/imageKey/assetId/Kafka 계약에는 변경이 없다.
+
+운영자는 `TELEMETRY_API_ENV_PATH`, `ADMIN_WEB_ENV_PATH`, `TELEMETRY_API_PORT`, `ADMIN_WEB_PORT` GitHub secret과 서버 env 파일을 추가해야 한다. admin-web의 API URL은 `http://file_server_telemetry-api:3100/api/admin`, 두 앱의 TELEMETRY_ADMIN_TOKEN은 같은 값이다. API 인증은 x-admin-token이며 브라우저에 전달하지 않는다. 관리자 Nginx는 사용자 인증 후 x-file-admin-user/proxy-secret을 덮어쓰며 API를 공용 route로 노출하지 않는다. [CI/CD runbook 8절](ci-cd-runbook.md#8-관리자-운영-배포-준비)과 Nginx 예제를 따른다. PostgreSQL/Kafka/Nginx 설치와 DB migration/backfill은 앱 CD와 별개다.

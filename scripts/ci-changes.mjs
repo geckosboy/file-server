@@ -20,6 +20,7 @@ export const classifyChanges = (files, full = false) => {
 	const docker =
 		common ||
 		files.includes('scripts/verify-deployment-schema.cjs') ||
+		files.includes('scripts/image-groups-smoke.mjs') ||
 		files.some((path) =>
 			/^(?:apps\/(?:storage|resize|cache)\/|libs\/|prisma\/|docker\/apps\/Dockerfile\.(?:storage|resize|cache)$|docker\/docker-compose\.system-e2e\.yml$|\.dockerignore$|scripts\/(?:docker-smoke|deployment-boundary-e2e|system-test-utils)\.mjs$)/.test(
 				path,
@@ -33,6 +34,17 @@ export const classifyChanges = (files, full = false) => {
 				path,
 			),
 		);
+	const adminDocker =
+		common ||
+		files.includes('scripts/verify-deployment-schema.cjs') ||
+		files.includes('scripts/deployment-boundary-e2e.mjs') ||
+		files.some((path) => path.startsWith('docker/nginx/')) ||
+		files.includes('scripts/admin-proxy-smoke.mjs') ||
+		files.some((path) =>
+			/^(?:apps\/(?:admin-web|telemetry-api)\/|libs\/|prisma\/|docker\/apps\/Dockerfile\.(?:admin-web|telemetry-api)$|docker\/docker-compose\.system-e2e\.yml$|\.dockerignore$|scripts\/(?:admin-docker-smoke|image-groups-smoke|system-test-utils)\.mjs$)/.test(
+				path,
+			),
+		);
 	const quality =
 		common ||
 		backend ||
@@ -41,7 +53,7 @@ export const classifyChanges = (files, full = false) => {
 		files.some((path) => !/^(?:docs\/|artifacts\/|.*\.md$)/.test(path));
 	const build =
 		common || backend || files.some((path) => /^(?:apps|libs)\//.test(path));
-	return { quality, build, backend, docker, acl };
+	return { quality, build, backend, docker, acl, adminDocker };
 };
 
 export const classifyMainChanges = (
@@ -51,6 +63,8 @@ export const classifyMainChanges = (
 ) => {
 	const flags = classifyChanges(verifiedFiles, full);
 	flags.docker ||= !deployedFiles || classifyChanges(deployedFiles).docker;
+	flags.adminDocker ||=
+		!deployedFiles || classifyChanges(deployedFiles).adminDocker;
 	return flags;
 };
 
@@ -135,7 +149,7 @@ export const findDeployedBase = async (env, request = fetch) => {
 					);
 					return jobs.some(
 						(job) =>
-							job.name === 'Deploy storage, resize and cache with rollback' &&
+							job.name === 'Deploy selected services with rollback' &&
 							job.conclusion === 'success',
 					)
 						? run.head_sha

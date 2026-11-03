@@ -122,15 +122,21 @@ test('path selection always emits one required result, with no pending workflow-
 
 test('Docker caches are per app and only trusted main publishes tested candidates', () => {
 	const section = runtime;
-	for (const app of ['storage', 'resize', 'cache']) {
+	for (const app of [
+		'storage',
+		'resize',
+		'cache',
+		'telemetry-api',
+		'admin-web',
+	]) {
 		assert.ok(section.includes('cache-from: type=gha,scope=' + app));
 		assert.ok(section.includes('cache-to: type=gha,mode=max,scope=' + app));
 		assert.ok(section.includes('tags: file-server/' + app + ':local'));
 	}
-	assert.equal(section.split('load: true').length - 1, 3);
+	assert.equal(section.split('load: true').length - 1, 5);
 	assert.match(section, /platforms: linux\/amd64/);
 	assert.ok(
-		section.indexOf('run: pnpm test:docker:smoke') <
+		section.indexOf('run: node scripts/image-groups-smoke.mjs') <
 			section.indexOf('ci-images.mjs publish-candidates'),
 	);
 	assert.match(section, /if: inputs.publish-candidates == 'true'/);
@@ -237,4 +243,75 @@ test('the three database-only unit skips run against the existing system E2E Pos
 	assert.match(harness, /database-retention\.postgres\.spec\.ts/);
 	assert.match(harness, /STAGE3_POSTGRES_TEST: 'true'/);
 	assert.match(harness, /RETENTION_POSTGRES_TEST: 'true'/);
+});
+
+test('admin images are independently selected and intent-bound through deployment', () => {
+	for (const name of ['docker-smoke', 'docker-release']) {
+		assert.match(job(name), /outputs\.adminDocker/);
+		assert.match(job(name), /runtime:.*outputs\.docker/);
+		assert.match(job(name), /admin:.*outputs\.adminDocker/);
+	}
+	assert.match(runtime, /if: inputs\.runtime == 'true'/);
+	assert.match(runtime, /if: inputs\.admin == 'true'/);
+	assert.match(runtime, /image-groups-smoke\.mjs/);
+	assert.match(runtime, /steps\.selection\.outputs\.groups/);
+	assert.match(job('result'), /RUNTIME_IMAGES:.*outputs\.docker/);
+	assert.match(job('result'), /ADMIN_IMAGES:.*outputs\.adminDocker/);
+	assert.match(
+		job('release', deploy),
+		/IMAGE_GROUPS:.*intent\.outputs\.groups/,
+	);
+	assert.match(
+		job('deploy', deploy),
+		/DEPLOY_GROUPS:.*release\.outputs\.groups/,
+	);
+	for (const key of [
+		'TELEMETRY_API_ENV_PATH',
+		'ADMIN_WEB_ENV_PATH',
+		'TELEMETRY_API_PORT',
+		'ADMIN_WEB_PORT',
+	])
+		assert.ok(
+			job('deploy', deploy).includes(key + ': $' + '{{ secrets.' + key + ' }}'),
+		);
+});
+test('Next standalone image keeps admin credentials runtime-only and binds non-root', () => {
+	const image = read('docker/apps/Dockerfile.admin-web');
+	assert.match(image, /HOSTNAME=0\.0\.0\.0/);
+	assert.match(image, /USER node/);
+	assert.match(image, /CMD \["node", "apps\/admin-web\/server\.js"\]/);
+	assert.doesNotMatch(
+		image,
+		/^(?:ARG|ENV).*?(?:ADMIN_TOKEN|PROXY_SECRET|NEXT_PUBLIC_)/m,
+	);
+	assert.match(image, /\.next\/standalone/);
+	assert.match(image, /\.next\/static/);
+});
+
+test('composite emits an exact newline-delimited validated admin group selection', async () => {
+	const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+	const { tmpdir } = await import('node:os');
+	const { join } = await import('node:path');
+	const { execFileSync } = await import('node:child_process');
+	const root = await mkdtemp(join(tmpdir(), 'image-groups-output-'));
+	try {
+		const program = runtime
+			.match(/node --input-type=module <<'NODE'\n([\s\S]*?)\n\s*NODE/)?.[1]
+			.replace(/^ {8}/gm, '');
+		assert.ok(program);
+		const output = join(root, 'output');
+		execFileSync(process.execPath, ['--input-type=module'], {
+			input: program,
+			env: {
+				...process.env,
+				BUILD_RUNTIME: 'false',
+				BUILD_ADMIN: 'true',
+				GITHUB_OUTPUT: output,
+			},
+			stdio: ['pipe', 'pipe', 'pipe'],
+		});
+		assert.equal(await readFile(output, 'utf8'), 'groups=admin\n');
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });

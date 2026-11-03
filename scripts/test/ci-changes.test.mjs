@@ -31,6 +31,7 @@ test('superseded pushes retain unverified tests and uncompleted releases without
 		backend: true,
 		docker: true,
 		acl: true,
+		adminDocker: false,
 	});
 	assert.deepEqual(classifyMainChanges(docs, runtime), {
 		quality: false,
@@ -38,10 +39,18 @@ test('superseded pushes retain unverified tests and uncompleted releases without
 		backend: false,
 		docker: true,
 		acl: false,
+		adminDocker: false,
 	});
 	assert.deepEqual(
 		classifyMainChanges(docs, ['apps/admin-web/app/page.tsx', ...docs]),
-		{ quality: false, build: false, backend: false, docker: false, acl: false },
+		{
+			quality: false,
+			build: false,
+			backend: false,
+			docker: false,
+			acl: false,
+			adminDocker: true,
+		},
 	);
 	assert.deepEqual(classifyMainChanges(docs, docs), {
 		quality: false,
@@ -49,6 +58,7 @@ test('superseded pushes retain unverified tests and uncompleted releases without
 		backend: false,
 		docker: false,
 		acl: false,
+		adminDocker: false,
 	});
 	assert.deepEqual(classifyMainChanges(docs, undefined), {
 		quality: false,
@@ -56,6 +66,7 @@ test('superseded pushes retain unverified tests and uncompleted releases without
 		backend: false,
 		docker: true,
 		acl: false,
+		adminDocker: true,
 	});
 });
 test('verified CI and actual deployment are separate baselines', async () => {
@@ -90,7 +101,7 @@ test('runtime push A followed by docs push B compares against deployed P, not ca
 		return reply({
 			jobs: [
 				{
-					name: 'Deploy storage, resize and cache with rollback',
+					name: 'Deploy selected services with rollback',
 					conclusion: url.includes('/2/') ? 'skipped' : 'success',
 				},
 			],
@@ -123,7 +134,7 @@ test('missing deployment, API denial, and untrusted source never authorize incre
 					: {
 							jobs: [
 								{
-									name: 'Deploy storage, resize and cache with rollback',
+									name: 'Deploy selected services with rollback',
 									conclusion: 'skipped',
 								},
 							],
@@ -156,16 +167,18 @@ test('docs and measurement changes do not start build or infrastructure', () => 
 			backend: false,
 			docker: false,
 			acl: false,
+			adminDocker: false,
 		},
 	);
 });
-test('admin UI runs quality but no image infrastructure', () => {
+test('admin UI selects only admin images, not runtime image infrastructure', () => {
 	assert.deepEqual(classifyChanges(['apps/admin-web/app/page.tsx']), {
 		quality: true,
 		build: true,
 		backend: false,
 		docker: false,
 		acl: false,
+		adminDocker: true,
 	});
 });
 test('runtime and shared/schema changes preserve all backend gates', () => {
@@ -178,7 +191,14 @@ test('runtime and shared/schema changes preserve all backend gates', () => {
 	]) {
 		assert.deepEqual(
 			classifyChanges([file]),
-			{ quality: true, build: true, backend: true, docker: true, acl: true },
+			{
+				quality: true,
+				build: true,
+				backend: true,
+				docker: true,
+				acl: true,
+				adminDocker: file !== 'apps/storage/src/x.ts',
+			},
 			file,
 		);
 	}
@@ -190,6 +210,7 @@ test('telemetry-only changes do not rebuild unrelated runtime images', () => {
 		backend: true,
 		docker: false,
 		acl: true,
+		adminDocker: true,
 	});
 });
 test('fault harness and docker changes trigger their own real gates', () => {
@@ -218,6 +239,7 @@ test('manual or missing-base run fails safe to full verification', () => {
 		backend: true,
 		docker: true,
 		acl: true,
+		adminDocker: true,
 	});
 });
 
@@ -228,6 +250,7 @@ test('deployment script edits only run quality; schema preflight edits exercise 
 		backend: false,
 		docker: false,
 		acl: false,
+		adminDocker: false,
 	});
 	assert.deepEqual(classifyChanges(['scripts/verify-deployment-schema.cjs']), {
 		quality: true,
@@ -235,5 +258,35 @@ test('deployment script edits only run quality; schema preflight edits exercise 
 		backend: false,
 		docker: true,
 		acl: false,
+		adminDocker: true,
 	});
+});
+
+test('shared image smoke and boundary harness changes select both groups', () => {
+	for (const file of [
+		'scripts/image-groups-smoke.mjs',
+		'scripts/deployment-boundary-e2e.mjs',
+	]) {
+		const flags = classifyChanges([file]);
+		assert.equal(flags.docker, true, file);
+		assert.equal(flags.adminDocker, true, file);
+	}
+	const pending = classifyMainChanges(
+		['docs/architecture.html'],
+		['apps/admin-web/src/page.tsx', 'apps/storage/src/x.ts'],
+	);
+	assert.equal(pending.quality, false);
+	assert.equal(pending.docker, true);
+	assert.equal(pending.adminDocker, true);
+});
+
+test('admin proxy changes exercise only the admin image group', () => {
+	for (const file of [
+		'docker/nginx/admin.conf.example',
+		'scripts/admin-proxy-smoke.mjs',
+	]) {
+		const flags = classifyChanges([file]);
+		assert.equal(flags.adminDocker, true);
+		assert.equal(flags.docker, false);
+	}
 });

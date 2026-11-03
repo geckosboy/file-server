@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { appsForGroups, parseGroups } from './ci-images.mjs';
 import { randomUUID } from 'node:crypto';
 import { run, runCapture } from './system-test-utils.mjs';
 
@@ -11,6 +12,14 @@ const ciLabel = ciProject
 	: undefined;
 const networks = [`${scope}-files`, `${scope}-kafka`];
 const containers = [];
+const apps = appsForGroups(parseGroups(process.argv[2] ?? 'runtime'));
+const ports = {
+	storage: 3032,
+	resize: 3031,
+	cache: 3030,
+	'telemetry-api': 3100,
+	'admin-web': 3000,
+};
 try {
 	for (const network of networks) {
 		await run('docker', [
@@ -22,11 +31,9 @@ try {
 			network,
 		]);
 	}
-	for (const [app, port] of [
-		['storage', 3032],
-		['resize', 3031],
-		['cache', 3030],
-	]) {
+	for (const app of apps) {
+		const port = ports[app];
+		const appNetworks = app === 'admin-web' ? [networks[0]] : networks;
 		const name = `${scope}-${app}`;
 		containers.push(name);
 		await run('docker', [
@@ -38,13 +45,17 @@ try {
 			...(ciLabel ? ['--label', ciLabel] : []),
 			'--env',
 			'HOST=0.0.0.0',
+			'--env',
+			'HOSTNAME=0.0.0.0',
 			'--network',
 			networks[0],
 			'--publish',
 			`127.0.0.1::${port}`,
-			`file-server/${app}:local`,
+			process.env[`${app.replaceAll('-', '_').toUpperCase()}_IMAGE`] ??
+				`file-server/${app}:local`,
 		]);
-		await run('docker', ['network', 'connect', networks[1], name]);
+		if (appNetworks.length > 1)
+			await run('docker', ['network', 'connect', networks[1], name]);
 		const [inspect] = JSON.parse(await runCapture('docker', ['inspect', name]));
 		assert.equal(inspect.State.Running, false);
 		assert.equal(
@@ -54,17 +65,17 @@ try {
 		assert.ok(inspect.Config.Env.includes('HOST=0.0.0.0'));
 		assert.deepEqual(
 			Object.keys(inspect.NetworkSettings.Networks).sort(),
-			[...networks].sort(),
+			[...appNetworks].sort(),
 		);
 	}
 	console.log(
 		JSON.stringify({
 			event: 'deployment_boundary_passed',
 			scope,
-			apps: 3,
+			apps: apps.length,
 			hostBind: '127.0.0.1',
 			containerBind: '0.0.0.0',
-			networksPerApp: 2,
+			adminWebKafkaAccess: false,
 		}),
 	);
 } finally {

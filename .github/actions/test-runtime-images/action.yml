@@ -1,6 +1,12 @@
 name: Build and test runtime images
-description: Build the three runtime images once, exercise them, and optionally publish exact tested candidates.
+description: Build and smoke only selected runtime/admin groups; publish only exact tested candidates.
 inputs:
+  runtime:
+    description: Build storage, resize and cache as one atomic group
+    default: 'true'
+  admin:
+    description: Build telemetry-api and admin-web as one atomic group
+    default: 'false'
   publish-candidates:
     description: Publish the exact smoke-tested local images to GHCR
     default: 'false'
@@ -14,7 +20,21 @@ runs:
       with:
         generate-prisma: 'false'
     - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+    - name: Validate the selected image groups
+      id: selection
+      shell: bash
+      env:
+        BUILD_RUNTIME: ${{ inputs.runtime }}
+        BUILD_ADMIN: ${{ inputs.admin }}
+      run: |
+        node --input-type=module <<'NODE'
+        import { appendFileSync } from 'node:fs';
+        import { groupsForFlags, validateGroups } from './scripts/ci-images.mjs';
+        const groups = validateGroups(groupsForFlags(process.env.BUILD_RUNTIME, process.env.BUILD_ADMIN));
+        appendFileSync(process.env.GITHUB_OUTPUT, `groups=${groups.join(',')}\n`);
+        NODE
     - name: Build storage with its own reusable layer cache
+      if: inputs.runtime == 'true'
       uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
       with:
         context: .
@@ -26,6 +46,7 @@ runs:
         cache-from: type=gha,scope=storage
         cache-to: type=gha,mode=max,scope=storage,ignore-error=true
     - name: Build resize with its own reusable layer cache
+      if: inputs.runtime == 'true'
       uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
       with:
         context: .
@@ -37,6 +58,7 @@ runs:
         cache-from: type=gha,scope=resize
         cache-to: type=gha,mode=max,scope=resize,ignore-error=true
     - name: Build cache with its own reusable layer cache
+      if: inputs.runtime == 'true'
       uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
       with:
         context: .
@@ -47,12 +69,40 @@ runs:
         labels: org.opencontainers.image.revision=${{ github.sha }}
         cache-from: type=gha,scope=cache
         cache-to: type=gha,mode=max,scope=cache,ignore-error=true
+    - name: Build telemetry-api with its own reusable layer cache
+      if: inputs.admin == 'true'
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      with:
+        context: .
+        file: docker/apps/Dockerfile.telemetry-api
+        platforms: linux/amd64
+        load: true
+        tags: file-server/telemetry-api:local
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha,scope=telemetry-api
+        cache-to: type=gha,mode=max,scope=telemetry-api,ignore-error=true
+    - name: Build admin-web with its own reusable layer cache
+      if: inputs.admin == 'true'
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      with:
+        context: .
+        file: docker/apps/Dockerfile.admin-web
+        platforms: linux/amd64
+        load: true
+        tags: file-server/admin-web:local
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha,scope=admin-web
+        cache-to: type=gha,mode=max,scope=admin-web,ignore-error=true
     - name: Verify loopback publish and dependency network attachment
       shell: bash
-      run: pnpm test:deployment:boundary
+      env:
+        IMAGE_GROUPS: ${{ steps.selection.outputs.groups }}
+      run: node scripts/deployment-boundary-e2e.mjs "$IMAGE_GROUPS"
     - name: Start these exact images and verify readiness and secret boundaries
       shell: bash
-      run: pnpm test:docker:smoke
+      env:
+        IMAGE_GROUPS: ${{ steps.selection.outputs.groups }}
+      run: node scripts/image-groups-smoke.mjs "$IMAGE_GROUPS"
     - name: Log in to GHCR for candidate publishing
       if: inputs.publish-candidates == 'true'
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -63,7 +113,9 @@ runs:
     - name: Publish exact smoke-tested candidate identities
       if: inputs.publish-candidates == 'true'
       shell: bash
-      run: node scripts/ci-images.mjs publish-candidates "$RUNNER_TEMP/published-images"
+      env:
+        IMAGE_GROUPS: ${{ steps.selection.outputs.groups }}
+      run: node scripts/ci-images.mjs publish-candidates "$RUNNER_TEMP/published-images" "$IMAGE_GROUPS"
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       if: inputs.publish-candidates == 'true'
       with:

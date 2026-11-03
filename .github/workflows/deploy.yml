@@ -32,9 +32,12 @@ jobs:
       actions: read
     outputs:
       deploy: ${{ steps.intent.outputs.deploy }}
+      groups: ${{ steps.intent.outputs.groups }}
       storage_image: ${{ steps.images.outputs.storage_image }}
       resize_image: ${{ steps.images.outputs.resize_image }}
       cache_image: ${{ steps.images.outputs.cache_image }}
+      telemetry_api_image: ${{ steps.images.outputs.telemetry_api_image }}
+      admin_web_image: ${{ steps.images.outputs.admin_web_image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -66,10 +69,12 @@ jobs:
       - name: Verify exact candidate identities and record immutable registry digests
         if: steps.intent.outputs.deploy == 'true'
         id: images
-        run: node scripts/ci-images.mjs verify-release "$RUNNER_TEMP/published-images/images.json"
+        env:
+          IMAGE_GROUPS: ${{ steps.intent.outputs.groups }}
+        run: node scripts/ci-images.mjs verify-release "$RUNNER_TEMP/published-images/images.json" "$IMAGE_GROUPS"
 
   deploy:
-    name: Deploy storage, resize and cache with rollback
+    name: Deploy selected services with rollback
     needs: release
     if: needs.release.outputs.deploy == 'true'
     runs-on: [self-hosted, production, puddingii]
@@ -97,6 +102,13 @@ jobs:
       - name: Preflight schema and candidates, then replace in dependency order
         shell: bash
         env:
+          DEPLOY_GROUPS: ${{ needs.release.outputs.groups }}
+          TELEMETRY_API_IMAGE: ${{ needs.release.outputs.telemetry_api_image }}
+          ADMIN_WEB_IMAGE: ${{ needs.release.outputs.admin_web_image }}
+          TELEMETRY_API_ENV_PATH: ${{ secrets.TELEMETRY_API_ENV_PATH }}
+          ADMIN_WEB_ENV_PATH: ${{ secrets.ADMIN_WEB_ENV_PATH }}
+          TELEMETRY_API_PORT: ${{ secrets.TELEMETRY_API_PORT }}
+          ADMIN_WEB_PORT: ${{ secrets.ADMIN_WEB_PORT }}
           STORAGE_IMAGE: ${{ needs.release.outputs.storage_image }}
           RESIZE_IMAGE: ${{ needs.release.outputs.resize_image }}
           CACHE_IMAGE: ${{ needs.release.outputs.cache_image }}

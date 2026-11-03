@@ -26,7 +26,13 @@ after(async () => {
 	);
 });
 
-async function fixture({ oldContainers = true } = {}) {
+const runtimeServices = ['storage', 'resize', 'cache'];
+const adminServices = ['telemetry-api', 'admin-web'];
+
+async function fixture({
+	oldContainers = true,
+	services = runtimeServices,
+} = {}) {
 	const root = await mkdtemp(path.join(tmpdir(), 'deploy-image-services-'));
 	fixtureRoots.add(root);
 	const bin = path.join(root, 'bin');
@@ -35,7 +41,7 @@ async function fixture({ oldContainers = true } = {}) {
 	await import('node:fs/promises').then(({ mkdir }) => mkdir(bin));
 	const containers = {};
 	if (oldContainers) {
-		for (const service of ['storage', 'resize', 'cache']) {
+		for (const service of services) {
 			containers[`file_server_${service}`] = { running: true };
 		}
 	}
@@ -48,7 +54,11 @@ const statePath = process.env.FAKE_DOCKER_STATE;
 const logPath = process.env.FAKE_COMMAND_LOG;
 const args = process.argv.slice(2);
 const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
+const save = () => {
+  const temporary = statePath + '.' + process.pid;
+  fs.writeFileSync(temporary, JSON.stringify(state));
+  fs.renameSync(temporary, statePath);
+};
 const delayAfterMutation = () => {
   if (process.env.FAKE_DELAY_COMMAND && args.join(' ').includes(process.env.FAKE_DELAY_COMMAND)) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_DELAY_MS || 1500));
@@ -119,12 +129,18 @@ if (process.env.FAKE_CURL_SLEEP) {
 		STORAGE_IMAGE: imageDigest,
 		RESIZE_IMAGE: imageDigest.replace('/service', '/resize'),
 		CACHE_IMAGE: imageDigest.replace('/service', '/cache'),
+		TELEMETRY_API_IMAGE: imageDigest.replace('/service', '/telemetry-api'),
+		ADMIN_WEB_IMAGE: imageDigest.replace('/service', '/admin-web'),
 		STORAGE_ENV_PATH: path.join(root, 'storage.env'),
 		RESIZE_ENV_PATH: path.join(root, 'resize.env'),
 		CACHE_ENV_PATH: path.join(root, 'cache.env'),
+		TELEMETRY_API_ENV_PATH: path.join(root, 'telemetry-api.env'),
+		ADMIN_WEB_ENV_PATH: path.join(root, 'admin-web.env'),
 		STORAGE_PORT: '3032',
 		RESIZE_PORT: '3031',
 		CACHE_PORT: '3030',
+		TELEMETRY_API_PORT: '3100',
+		ADMIN_WEB_PORT: '3000',
 		FILE_SERVER_NET: 'file-net',
 		KAFKA_NET: 'kafka-net',
 		FILE_DUMP_VOLUME: 'file_dump_volume',
@@ -137,6 +153,14 @@ if (process.env.FAKE_CURL_SLEEP) {
 			'DATABASE_URL=postgresql://hidden\n',
 		);
 	}
+	await writeFile(
+		path.join(root, 'telemetry-api.env'),
+		'DATABASE_URL=postgresql://hidden\nTELEMETRY_ADMIN_TOKEN=admin-token\n',
+	);
+	await writeFile(
+		path.join(root, 'admin-web.env'),
+		'TELEMETRY_API_BASE_URL=http://file_server_telemetry-api:3100/api/admin\nTELEMETRY_ADMIN_TOKEN=admin-token\nADMIN_WEB_PROXY_SECRET=proxy-secret\n',
+	);
 	return { root, statePath, logPath, env };
 }
 
@@ -192,6 +216,174 @@ test('deploy image services safety', { concurrency: 4 }, async (context) => {
 			testFixture.env.CACHE_PORT = 'not-a-port';
 			const result = await runDeploy(testFixture.env);
 			assert.notEqual(result.code, 0);
+			assert.equal(await readFile(testFixture.logPath, 'utf8'), '');
+		},
+	);
+
+	deployTest(
+		'invalid or duplicate deployment groups fail before Docker access',
+		async () => {
+			for (const groups of [
+				'',
+				'admin,',
+				'runtime,runtime',
+				'admin,runtime',
+				'runtime,unknown',
+			]) {
+				const testFixture = await fixture();
+				testFixture.env.DEPLOY_GROUPS = groups;
+				const result = await runDeploy(testFixture.env);
+				assert.notEqual(result.code, 0);
+				assert.equal(await readFile(testFixture.logPath, 'utf8'), '');
+			}
+		},
+	);
+
+	deployTest(
+		'admin-only deployment requires no runtime image or storage volume and keeps the API private',
+		async () => {
+			const testFixture = await fixture({ services: adminServices });
+			testFixture.env.DEPLOY_GROUPS = 'admin';
+			for (const name of [
+				'STORAGE_IMAGE',
+				'RESIZE_IMAGE',
+				'CACHE_IMAGE',
+				'STORAGE_ENV_PATH',
+				'RESIZE_ENV_PATH',
+				'CACHE_ENV_PATH',
+				'STORAGE_PORT',
+				'RESIZE_PORT',
+				'CACHE_PORT',
+				'FILE_DUMP_VOLUME',
+			]) {
+				delete testFixture.env[name];
+			}
+
+			const result = await runDeploy(testFixture.env);
+			assert.equal(result.code, 0, result.stderr);
+			const state = JSON.parse(await readFile(testFixture.statePath, 'utf8'));
+			assert.deepEqual(Object.keys(state.containers).sort(), [
+				'file_server_admin-web',
+				'file_server_telemetry-api',
+			]);
+			const log = await readFile(testFixture.logPath, 'utf8');
+			assert.doesNotMatch(
+				log,
+				/docker volume inspect|file_server_(storage|resize|cache)/,
+			);
+			assert.match(
+				log,
+				/docker create .*--publish 127\.0\.0\.1:3100:3100 --name file_server_telemetry-api_candidate_123-456/,
+			);
+			assert.match(
+				log,
+				/telemetry-api\/verify-deployment-schema\.cjs:ro .* node \/usr\/index\/apps\/telemetry-api\/verify-deployment-schema\.cjs/,
+			);
+			assert.match(
+				log,
+				/docker create .*--name file_server_admin-web_candidate_123-456 .*--env HOSTNAME=0\.0\.0\.0/,
+			);
+			assert.match(
+				log,
+				/docker network connect kafka-net file_server_telemetry-api_candidate_123-456/,
+			);
+			assert.doesNotMatch(
+				log,
+				/docker network connect kafka-net file_server_admin-web_candidate_123-456/,
+			);
+		},
+	);
+
+	deployTest(
+		'admin secret mismatch fails before Docker access without leaking either value',
+		async () => {
+			const testFixture = await fixture({ services: adminServices });
+			testFixture.env.DEPLOY_GROUPS = 'admin';
+			await writeFile(
+				testFixture.env.ADMIN_WEB_ENV_PATH,
+				'TELEMETRY_API_BASE_URL=http://file_server_telemetry-api:3100/api/admin\nTELEMETRY_ADMIN_TOKEN=different-admin-token\nADMIN_WEB_PROXY_SECRET=private-proxy-secret\n',
+			);
+			const result = await runDeploy(testFixture.env);
+			assert.notEqual(result.code, 0);
+			assert.match(result.stderr, /TELEMETRY_ADMIN_TOKEN values must match/);
+			assert.doesNotMatch(result.stderr, /admin-token|private-proxy-secret/);
+			assert.equal(await readFile(testFixture.logPath, 'utf8'), '');
+		},
+	);
+
+	deployTest(
+		'admin token comparison uses the exact Docker env-file values',
+		async () => {
+			for (const token of ["'admin-token'", ' admin-token']) {
+				const testFixture = await fixture({ services: adminServices });
+				testFixture.env.DEPLOY_GROUPS = 'admin';
+				await writeFile(
+					testFixture.env.ADMIN_WEB_ENV_PATH,
+					`TELEMETRY_API_BASE_URL=http://file_server_telemetry-api:3100/api/admin\nTELEMETRY_ADMIN_TOKEN=${token}\nADMIN_WEB_PROXY_SECRET=proxy-secret\n`,
+				);
+				const result = await runDeploy(testFixture.env);
+				assert.notEqual(result.code, 0);
+				assert.match(result.stderr, /TELEMETRY_ADMIN_TOKEN values must match/);
+				assert.doesNotMatch(result.stderr, /admin-token|proxy-secret/);
+				assert.equal(await readFile(testFixture.logPath, 'utf8'), '');
+			}
+		},
+	);
+
+	deployTest(
+		'admin API must use the private container address and no public override',
+		async () => {
+			const invalidAdminEnvironments = [
+				'TELEMETRY_API_BASE_URL=https://admin-api.example.com/api/admin\nTELEMETRY_ADMIN_TOKEN=admin-token\nADMIN_WEB_PROXY_SECRET=proxy-secret\n',
+				'TELEMETRY_API_BASE_URL=http://file_server_telemetry-api:3100/api/admin\nNEXT_PUBLIC_TELEMETRY_API_BASE_URL=https://public.example.com/api/admin\nTELEMETRY_ADMIN_TOKEN=admin-token\nADMIN_WEB_PROXY_SECRET=proxy-secret\n',
+				'TELEMETRY_API_BASE_URL=http://file_server_telemetry-api:3100/api/admin\nNEXT_PUBLIC_TELEMETRY_API_BASE_URL\nTELEMETRY_ADMIN_TOKEN=admin-token\nADMIN_WEB_PROXY_SECRET=proxy-secret\n',
+			];
+			for (const environment of invalidAdminEnvironments) {
+				const testFixture = await fixture({ services: adminServices });
+				testFixture.env.DEPLOY_GROUPS = 'admin';
+				await writeFile(testFixture.env.ADMIN_WEB_ENV_PATH, environment);
+				const result = await runDeploy(testFixture.env);
+				assert.notEqual(result.code, 0);
+				assert.equal(await readFile(testFixture.logPath, 'utf8'), '');
+				assert.doesNotMatch(result.stderr, /admin-token|proxy-secret/);
+			}
+		},
+	);
+
+	deployTest(
+		'admin proxy secret over 128 bytes fails before Docker access',
+		async () => {
+			const testFixture = await fixture({ services: adminServices });
+			testFixture.env.DEPLOY_GROUPS = 'admin';
+			const oversizedSecret = 'p'.repeat(129);
+			await writeFile(
+				testFixture.env.ADMIN_WEB_ENV_PATH,
+				`TELEMETRY_API_BASE_URL=http://file_server_telemetry-api:3100/api/admin\nTELEMETRY_ADMIN_TOKEN=admin-token\nADMIN_WEB_PROXY_SECRET=${oversizedSecret}\n`,
+			);
+			const result = await runDeploy(testFixture.env);
+			assert.notEqual(result.code, 0);
+			assert.match(result.stderr, /between 1 and 128 bytes/);
+			assert.doesNotMatch(result.stderr, /admin-token/);
+			assert.ok(!result.stderr.includes(oversizedSecret));
+			assert.equal(await readFile(testFixture.logPath, 'utf8'), '');
+		},
+	);
+
+	deployTest(
+		'combined deployment requires one exact shared database URL',
+		async () => {
+			const testFixture = await fixture({
+				services: [...runtimeServices, ...adminServices],
+			});
+			testFixture.env.DEPLOY_GROUPS = 'runtime,admin';
+			await writeFile(
+				testFixture.env.RESIZE_ENV_PATH,
+				'DATABASE_URL=postgresql://different-hidden\n',
+			);
+			const result = await runDeploy(testFixture.env);
+			assert.notEqual(result.code, 0);
+			assert.match(result.stderr, /same DATABASE_URL/);
+			assert.doesNotMatch(result.stderr, /postgresql:/);
 			assert.equal(await readFile(testFixture.logPath, 'utf8'), '');
 		},
 	);
@@ -265,6 +457,36 @@ test('deploy image services safety', { concurrency: 4 }, async (context) => {
 					'docker rename file_server_storage_backup_123-456 file_server_storage',
 				) > log.indexOf('http://127.0.0.1:3030/health/ready'),
 			);
+		},
+	);
+
+	deployTest(
+		'combined deployment rolls back all five services when admin-web readiness fails',
+		async () => {
+			const services = [...runtimeServices, ...adminServices];
+			const testFixture = await fixture({ services });
+			testFixture.env.DEPLOY_GROUPS = 'runtime,admin';
+			await installDeterministicClock(testFixture);
+			testFixture.env.DEPLOY_READY_TIMEOUT_SECONDS = '7';
+			testFixture.env.FAKE_CURL_FAILURE = ':3000/';
+			const result = await runDeploy(testFixture.env);
+			assert.notEqual(result.code, 0);
+			const state = JSON.parse(await readFile(testFixture.statePath, 'utf8'));
+			assert.deepEqual(
+				Object.keys(state.containers).sort(),
+				services.map((service) => `file_server_${service}`).sort(),
+			);
+			assert.ok(
+				Object.values(state.containers).every(({ running }) => running),
+			);
+			const log = await readFile(testFixture.logPath, 'utf8');
+			for (const service of services) {
+				assert.ok(
+					log.indexOf(
+						`docker rename file_server_${service}_backup_123-456 file_server_${service}`,
+					) > log.indexOf('http://127.0.0.1:3000/health/ready'),
+				);
+			}
 		},
 	);
 

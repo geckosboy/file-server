@@ -9,7 +9,31 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { run, runCapture } from './system-test-utils.mjs';
 
-const apps = ['storage', 'resize', 'cache'];
+export const imageGroups = {
+	runtime: ['storage', 'resize', 'cache'],
+	admin: ['telemetry-api', 'admin-web'],
+};
+export const validateGroups = (groups, allowEmpty = false) => {
+	assert.ok(Array.isArray(groups), 'selectedGroups must be an array');
+	assert.ok(allowEmpty || groups.length > 0, 'no image group selected');
+	assert.deepEqual(
+		groups,
+		Object.keys(imageGroups).filter((group) => groups.includes(group)),
+		'unknown, duplicate or non-canonical image groups',
+	);
+	return groups;
+};
+export const parseGroups = (value, allowEmpty = false) =>
+	validateGroups(value ? value.split(',') : [], allowEmpty);
+export const appsForGroups = (groups) =>
+	validateGroups(groups).flatMap((group) => imageGroups[group]);
+export const groupsForFlags = (runtime, admin) => {
+	for (const flag of [runtime, admin])
+		assert.ok(['true', 'false'].includes(flag));
+	return [runtime === 'true' && 'runtime', admin === 'true' && 'admin'].filter(
+		Boolean,
+	);
+};
 const imageId = /^sha256:[a-f0-9]{64}$/;
 export const readSource = (env = process.env) => {
 	const source = {
@@ -25,7 +49,7 @@ export const readSource = (env = process.env) => {
 	return source;
 };
 const validateSource = (data, source, earlierProducer = false) => {
-	assert.equal(data?.schemaVersion, 2);
+	assert.equal(data?.schemaVersion, 3);
 	const actual = { ...data.source };
 	if (earlierProducer) {
 		assert.match(actual.runAttempt ?? '', /^[1-9]\d*$/);
@@ -44,10 +68,15 @@ const validateSource = (data, source, earlierProducer = false) => {
 export const validateIntent = (data, source) => {
 	validateSource(data, source);
 	assert.equal(typeof data.deploy, 'boolean');
+	validateGroups(data.selectedGroups, !data.deploy);
+	assert.equal(data.deploy, data.selectedGroups.length > 0);
 	return data.deploy;
 };
-const validateIdentities = (images, source) => {
-	assert.deepEqual(images.map((i) => i.app).sort(), [...apps].sort());
+const validateIdentities = (images, source, groups) => {
+	assert.deepEqual(
+		images.map((i) => i.app).sort(),
+		appsForGroups(groups).sort(),
+	);
 	for (const image of images) {
 		assert.equal(image.localTag, `file-server/${image.app}:local`);
 		assert.match(image.imageId, imageId);
@@ -57,9 +86,20 @@ const validateIdentities = (images, source) => {
 };
 const repositoryFor = (app, source, registry) =>
 	`${registry}/${source.repository.split('/')[0].toLowerCase()}/${app}`;
-export const validateImages = (data, source, registry = 'ghcr.io') => {
+export const validateImages = (
+	data,
+	source,
+	registry = 'ghcr.io',
+	expectedGroups = ['runtime'],
+) => {
 	validateSource(data, source, true);
-	validateIdentities(data.images, source);
+	validateGroups(data.selectedGroups);
+	assert.deepEqual(
+		data.selectedGroups,
+		validateGroups(expectedGroups),
+		'image selection does not match release intent',
+	);
+	validateIdentities(data.images, source, expectedGroups);
 	for (const image of data.images) {
 		const prefix = repositoryFor(image.app, source, registry) + '@';
 		assert.ok(
@@ -96,8 +136,10 @@ export const publishCandidates = async (
 	directory,
 	source = readSource(),
 	registry = 'ghcr.io',
+	groups = ['runtime'],
 ) => {
 	assert.ok(registry === 'ghcr.io' || /^127\.0\.0\.1:\d+$/.test(registry));
+	const apps = appsForGroups(groups);
 	const tags = apps.map((app) => `file-server/${app}:local`);
 	const actual = await inspect(tags);
 	const images = apps.map((app, i) => ({
@@ -107,7 +149,7 @@ export const publishCandidates = async (
 		revision: actual[i].Config.Labels?.['org.opencontainers.image.revision'],
 		platform: `${actual[i].Os}/${actual[i].Architecture}`,
 	}));
-	validateIdentities(images, source); // Validate all three before any publication.
+	validateIdentities(images, source, groups); // Validate every selected image before publication.
 	await Promise.all(
 		images.map(async (image) => {
 			const repository = repositoryFor(image.app, source, registry);
@@ -122,8 +164,8 @@ export const publishCandidates = async (
 			assert.ok(image.digest, 'registry digest missing after candidate push');
 		}),
 	);
-	const manifest = { schemaVersion: 2, source, images };
-	validateImages(manifest, source, registry);
+	const manifest = { schemaVersion: 3, source, selectedGroups: groups, images };
+	validateImages(manifest, source, registry, groups);
 	mkdirSync(directory, { recursive: true });
 	writeFileSync(
 		resolve(directory, 'images.json'),
@@ -131,9 +173,19 @@ export const publishCandidates = async (
 	);
 	return manifest;
 };
-export const verifyRelease = (path, source = readSource()) => {
-	const images = validateImages(JSON.parse(readFileSync(path, 'utf8')), source);
-	for (const image of images) output(`${image.app}_image`, image.digest);
+export const verifyRelease = (
+	path,
+	source = readSource(),
+	groups = ['runtime'],
+) => {
+	const images = validateImages(
+		JSON.parse(readFileSync(path, 'utf8')),
+		source,
+		'ghcr.io',
+		groups,
+	);
+	for (const image of images)
+		output(`${image.app.replaceAll('-', '_')}_image`, image.digest);
 	return images;
 };
 
@@ -141,23 +193,27 @@ if (
 	process.argv[1] &&
 	import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-	const [command, path, deploy] = process.argv.slice(2);
+	const [command, path, arg, runtime, admin] = process.argv.slice(2);
 	const source = readSource();
 	if (command === 'intent') {
-		assert.ok(['true', 'false'].includes(deploy));
-		writeFileSync(
-			path,
-			JSON.stringify({ schemaVersion: 2, source, deploy: deploy === 'true' }) +
-				'\n',
-		);
-	} else if (command === 'check-intent')
-		output(
-			'deploy',
-			validateIntent(JSON.parse(readFileSync(path, 'utf8')), source),
-		);
-	else if (command === 'publish-candidates')
-		await publishCandidates(path, source);
-	else if (command === 'verify-release') verifyRelease(path, source);
+		assert.ok(['true', 'false'].includes(arg));
+		const selectedGroups = groupsForFlags(runtime, admin);
+		const intent = {
+			schemaVersion: 3,
+			source,
+			deploy: arg === 'true',
+			selectedGroups,
+		};
+		validateIntent(intent, source);
+		writeFileSync(path, JSON.stringify(intent) + '\n');
+	} else if (command === 'check-intent') {
+		const intent = JSON.parse(readFileSync(path, 'utf8'));
+		output('deploy', validateIntent(intent, source));
+		output('groups', intent.selectedGroups.join(','));
+	} else if (command === 'publish-candidates')
+		await publishCandidates(path, source, 'ghcr.io', parseGroups(arg));
+	else if (command === 'verify-release')
+		verifyRelease(path, source, parseGroups(arg));
 	else
 		throw new Error(
 			'Expected intent, check-intent, publish-candidates or verify-release',

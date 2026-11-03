@@ -30,6 +30,7 @@ jobs:
       backend: ${{ steps.paths.outputs.backend }}
       docker: ${{ steps.paths.outputs.docker }}
       acl: ${{ steps.paths.outputs.acl }}
+      adminDocker: ${{ steps.paths.outputs.adminDocker }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -175,7 +176,7 @@ jobs:
     name: Build and test runtime images (read-only)
     needs: changes
     if: >-
-      needs.changes.outputs.docker == 'true' &&
+      (needs.changes.outputs.docker == 'true' || needs.changes.outputs.adminDocker == 'true') &&
       !(github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -189,12 +190,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/test-runtime-images
+        with:
+          runtime: ${{ needs.changes.outputs.docker }}
+          admin: ${{ needs.changes.outputs.adminDocker }}
 
   docker-release:
     name: Build, test and publish candidates (trusted main only)
     needs: changes
     if: >-
-      needs.changes.outputs.docker == 'true' &&
+      (needs.changes.outputs.docker == 'true' || needs.changes.outputs.adminDocker == 'true') &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -210,6 +214,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/test-runtime-images
         with:
+          runtime: ${{ needs.changes.outputs.docker }}
+          admin: ${{ needs.changes.outputs.adminDocker }}
           publish-candidates: 'true'
           registry-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -245,7 +251,9 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           RELEASE_IMAGES: ${{ needs.docker-release.result == 'success' }}
-        run: node scripts/ci-images.mjs intent "$RUNNER_TEMP/ci-release.json" "$RELEASE_IMAGES"
+          RUNTIME_IMAGES: ${{ needs.changes.outputs.docker }}
+          ADMIN_IMAGES: ${{ needs.changes.outputs.adminDocker }}
+        run: node scripts/ci-images.mjs intent "$RUNNER_TEMP/ci-release.json" "$RELEASE_IMAGES" "$RUNTIME_IMAGES" "$ADMIN_IMAGES"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:

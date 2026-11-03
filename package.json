@@ -53,7 +53,9 @@
 		"db:studio": "prisma studio",
 		"kafka:topics:dev": "scripts/kafka/ensure-image-topics.sh dev",
 		"kafka:topics:prod": "scripts/kafka/ensure-image-topics.sh prod",
-		"kafka:lifecycle:consume": "scripts/kafka/consume-image-lifecycle-example.sh"
+		"kafka:lifecycle:consume": "scripts/kafka/consume-image-lifecycle-example.sh",
+		"docker:build:admin": "docker build -f docker/apps/Dockerfile.telemetry-api -t file-server/telemetry-api:local . && docker build -f docker/apps/Dockerfile.admin-web -t file-server/admin-web:local .",
+		"test:docker:admin:smoke": "node scripts/admin-docker-smoke.mjs"
 	},
 	"devDependencies": {
 		"@eslint/js": "^9.39.4",

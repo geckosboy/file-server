@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const root = new URL('../../', import.meta.url);
-const apps = ['storage', 'resize', 'cache', 'telemetry-api'];
+const apps = ['storage', 'resize', 'cache', 'telemetry-api', 'admin-web'];
 const tracked = new Set(
 	execFileSync('git', ['ls-files', '-z'], { cwd: root })
 		.toString()
