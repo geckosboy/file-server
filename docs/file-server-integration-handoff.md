@@ -6,6 +6,7 @@
 - 전체 구조 시각화: [`architecture.html`](architecture.html)
 - Travel Cloud 실제 Docker 연동: [`travel-cloud-integration-runbook.md`](travel-cloud-integration-runbook.md)
 - 최신 완료 감사·측정 근거·운영 적용 경계: [`file-server-completion-audit.md`](file-server-completion-audit.md)
+- CI/CD의 선택 gate·이미지 재사용·배포/rollback: [`ci-cd-runbook.md`](ci-cd-runbook.md)
 - 감사 중 admin route의 불허 named export도 분리했으며, `pnpm all:typecheck`는 Next route 타입을 먼저 생성해 이 계약까지 검사한다. HTTP/Kafka 공개 성공 응답 계약은 변경하지 않았다.
 
 ## 1. 먼저 알아야 할 결론
@@ -538,7 +539,8 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 - `.github/workflows/deploy.yml`은 storage/resize/cache의 host publish를 `127.0.0.1`로 제한한다. 컨테이너 내부 `HOST=0.0.0.0`은 유지하고, 생성 시 FILE_SERVER_NET에 붙인 뒤 시작 전에 KAFKA_NET도 연결한다. default bridge에는 연결하지 않는다.
 - 지원하는 ingress는 같은 호스트의 Nginx → loopback 또는 FILE_SERVER_NET에 연결한 컨테이너 Nginx → 서비스 컨테이너다. 원격 호스트 Nginx가 세 서비스의 host port에 직접 접근하는 배포는 지원하지 않는다. 외부 이미지는 Nginx를 통해서만 제공하고 resize/storage GET은 내부 전용으로 유지한다.
 - `pnpm test:deployment:boundary`가 자격증명 없이 실제 Docker create/inspect로 loopback bind와 정확히 두 network 연결을 검증한다. 실제 Nginx HTTP/Kafka 연쇄는 `pnpm integration:travel-cloud:verify`로 별도 검증한다. 로컬 리허설 통과를 실제 운영 서버 배포 완료로 해석하지 않는다.
-- 배포 순서는 storage readiness → resize readiness → cache readiness로 수정했다. 기존 컨테이너를 먼저 교체하는 방식이므로 무중단 배포 보장은 아니며 CI와 실인프라 재검증이 필요하다.
+- CI는 같은 run의 compiled app/lib를 재사용한다. main 전용 job만 registry 쓰기 권한을 갖고 smoke를 통과한 image ID를 push하며, CD는 작은 source/image-ID/digest manifest만 확인한다. 재빌드하거나 대용량 image archive를 전달하지 않고 registry digest로 배포한다. `latest`와 commit-SHA alias는 더 이상 발행하지 않으므로 registry를 직접 쓰는 도구는 CD가 전달한 digest로 전환해야 한다. HTTP/Kafka 계약은 유지한다.
+- runtime env/network/기존 volume/Prisma migration·index를 read-only로 검사하고 세 stopped candidate의 두 network 연결을 먼저 완료한다. storage readiness → resize readiness → cache readiness 순서로 교체하고 실패 시 앞서 교체한 서비스까지 복원한다. 이는 무중단 보장이 아니며 SIGKILL/host 장애는 별도 운영 복구가 필요하다. 자동 migration/backfill은 하지 않는다. 자세한 gate 선택·rerun·권한·배포 계약은 [CI/CD runbook](ci-cd-runbook.md)을 따른다.
 
 ### Client service 연동 등록 전
 

@@ -973,6 +973,30 @@ try {
 	}
 	await startInfrastructure(infrastructure);
 	await migrateDatabase(infrastructure);
+	// These three tests intentionally skip in unit-only runners. Reuse this
+	// already-migrated disposable DB instead of starting another CI database job.
+	await run(
+		'pnpm',
+		[
+			'--filter',
+			'@file/telemetry-api',
+			'exec',
+			'jest',
+			'--runInBand',
+			'--watchman=false',
+			'--runTestsByPath',
+			'src/modules/admin/test/stage3-admin.postgres.spec.ts',
+			'src/modules/retention/test/database-retention.postgres.spec.ts',
+		],
+		{
+			env: {
+				...process.env,
+				DATABASE_URL: infrastructure.databaseUrl,
+				STAGE3_POSTGRES_TEST: 'true',
+				RETENTION_POSTGRES_TEST: 'true',
+			},
+		},
+	);
 	await startApplications();
 	await runScenario();
 } catch (error) {

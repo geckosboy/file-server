@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
 
 import {
 	createInfrastructureConfig,
 	getFreePort,
 	migrateDatabase,
+	repoRoot,
 	run,
 	runCapture,
 	startInfrastructure,
@@ -95,6 +97,8 @@ const startContainer = async ({ name, image, port, environment }) => {
 		'--detach',
 		'--name',
 		containerNames[name],
+		'--label',
+		`io.file-server.test-project=${infrastructure.project}`,
 		'--network',
 		infrastructure.network,
 		'--network-alias',
@@ -137,6 +141,32 @@ try {
 	}
 	await startInfrastructure(infrastructure);
 	await migrateDatabase(infrastructure);
+	// Exercise the real production preflight inside the isolated pnpm runtime;
+	// mocks cannot prove Prisma resolution or the actual migration/index queries.
+	await run('docker', [
+		'run',
+		'--rm',
+		'--network',
+		infrastructure.network,
+		'--label',
+		`io.file-server.test-project=${infrastructure.project}`,
+		'--env',
+		`DATABASE_URL=${commonEnv.DATABASE_URL}`,
+		'--env',
+		`EXPECTED_MIGRATIONS=${readdirSync(`${repoRoot}/prisma/migrations`, {
+			withFileTypes: true,
+		})
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)
+			.sort()
+			.join(',')}`,
+		'--volume',
+		`${repoRoot}/scripts/verify-deployment-schema.cjs:/usr/index/apps/storage/verify-deployment-schema.cjs:ro`,
+		'--entrypoint',
+		'node',
+		images.storage,
+		'/usr/index/apps/storage/verify-deployment-schema.cjs',
+	]);
 
 	await startContainer({
 		name: 'storage',

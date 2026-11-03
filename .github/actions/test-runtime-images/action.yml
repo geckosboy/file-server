@@ -1,0 +1,79 @@
+name: Build and test runtime images
+description: Build the three runtime images once, exercise them, and optionally publish exact tested candidates.
+inputs:
+  publish-candidates:
+    description: Publish the exact smoke-tested local images to GHCR
+    default: 'false'
+  registry-token:
+    description: Token used only when candidate publishing is explicitly enabled
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-workspace
+      with:
+        generate-prisma: 'false'
+    - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+    - name: Build storage with its own reusable layer cache
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      with:
+        context: .
+        file: docker/apps/Dockerfile.storage
+        platforms: linux/amd64
+        load: true
+        tags: file-server/storage:local
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha,scope=storage
+        cache-to: type=gha,mode=max,scope=storage,ignore-error=true
+    - name: Build resize with its own reusable layer cache
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      with:
+        context: .
+        file: docker/apps/Dockerfile.resize
+        platforms: linux/amd64
+        load: true
+        tags: file-server/resize:local
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha,scope=resize
+        cache-to: type=gha,mode=max,scope=resize,ignore-error=true
+    - name: Build cache with its own reusable layer cache
+      uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      with:
+        context: .
+        file: docker/apps/Dockerfile.cache
+        platforms: linux/amd64
+        load: true
+        tags: file-server/cache:local
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        cache-from: type=gha,scope=cache
+        cache-to: type=gha,mode=max,scope=cache,ignore-error=true
+    - name: Verify loopback publish and dependency network attachment
+      shell: bash
+      run: pnpm test:deployment:boundary
+    - name: Start these exact images and verify readiness and secret boundaries
+      shell: bash
+      run: pnpm test:docker:smoke
+    - name: Log in to GHCR for candidate publishing
+      if: inputs.publish-candidates == 'true'
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ inputs.registry-token }}
+    - name: Publish exact smoke-tested candidate identities
+      if: inputs.publish-candidates == 'true'
+      shell: bash
+      run: node scripts/ci-images.mjs publish-candidates "$RUNNER_TEMP/published-images"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      if: inputs.publish-candidates == 'true'
+      with:
+        name: published-images-${{ github.run_id }}
+        path: ${{ runner.temp }}/published-images/images.json
+        compression-level: 0
+        retention-days: 2
+        overwrite: true
+        if-no-files-found: error
+    - name: Verify exact runtime-resource cleanup, including cancellation
+      if: always()
+      shell: bash
+      run: node scripts/ci-cleanup.mjs system

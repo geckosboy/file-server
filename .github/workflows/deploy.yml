@@ -11,137 +11,103 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_SHA: ${{ github.event.workflow_run.head_sha }}
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+  SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+  SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
 
 jobs:
-  publish:
-    name: Publish ${{ matrix.app }} image
+  release:
+    name: Verify the smoke-tested immutable release manifest
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        app: [storage, resize, cache]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      deploy: ${{ steps.intent.outputs.deploy }}
+      storage_image: ${{ steps.images.outputs.storage_image }}
+      resize_image: ${{ steps.images.outputs.resize_image }}
+      cache_image: ${{ steps.images.outputs.cache_image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+          ref: main
+          persist-credentials: false
+      - name: Reject an obsolete CI commit before using credentials or touching production
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_SHA" = "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        uses: docker/build-push-action@v6
+          name: ci-release-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/ci-release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check explicit release intent and exact run provenance
+        id: intent
+        run: node scripts/ci-images.mjs check-intent "$RUNNER_TEMP/ci-release/ci-release.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.intent.outputs.deploy == 'true'
         with:
-          context: .
-          file: docker/apps/Dockerfile.${{ matrix.app }}
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.app }}:${{ env.IMAGE_SHA }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.app }}:latest
-          cache-from: type=gha,scope=${{ matrix.app }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+          name: published-images-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/published-images
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify exact candidate identities and record immutable registry digests
+        if: steps.intent.outputs.deploy == 'true'
+        id: images
+        run: node scripts/ci-images.mjs verify-release "$RUNNER_TEMP/published-images/images.json"
 
-  deploy-storage:
-    name: Deploy storage
-    needs: publish
-    runs-on: [file-server]
-    env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/storage:${{ github.event.workflow_run.head_sha }}
-      CONTAINER_NAME: file_server_storage
-      FILE_DUMP_VOLUME: file_dump_volume
+  deploy:
+    name: Deploy storage, resize and cache with rollback
+    needs: release
+    if: needs.release.outputs.deploy == 'true'
+    runs-on: [self-hosted, file-server]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
     steps:
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Reject an obsolete CI commit before using credentials or touching production
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_SHA" = "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Replace container without starting it before network attachment
-        run: |
-          set -euo pipefail
-          docker pull "$IMAGE"
-          docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-          docker create \
-            --env-file "${{ secrets.STORAGE_ENV_PATH }}" \
-            --env HOST=0.0.0.0 \
-            --network "${{ secrets.FILE_SERVER_NET }}" \
-            --volume "$FILE_DUMP_VOLUME:/usr/index/apps/storage/dist/apps/storage/assets" \
-            --publish "127.0.0.1:${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }}" \
-            --name "$CONTAINER_NAME" \
-            --restart always \
-            "$IMAGE"
-          docker network connect "${{ secrets.KAFKA_NET }}" "$CONTAINER_NAME"
-          docker start "$CONTAINER_NAME"
-          curl --fail --retry 20 --retry-delay 1 --retry-all-errors \
-            "http://127.0.0.1:${{ secrets.STORAGE_PORT }}/health-check"
-
-  deploy-resize:
-    name: Deploy resize
-    needs: [publish, deploy-storage]
-    runs-on: [file-server]
-    env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/resize:${{ github.event.workflow_run.head_sha }}
-      CONTAINER_NAME: file_server_resize
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Replace container without starting it before network attachment
-        run: |
-          set -euo pipefail
-          docker pull "$IMAGE"
-          docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-          docker create \
-            --env-file "${{ secrets.RESIZE_ENV_PATH }}" \
-            --env HOST=0.0.0.0 \
-            --network "${{ secrets.FILE_SERVER_NET }}" \
-            --publish "127.0.0.1:${{ secrets.RESIZE_PORT }}:${{ secrets.RESIZE_PORT }}" \
-            --name "$CONTAINER_NAME" \
-            --restart always \
-            "$IMAGE"
-          docker network connect "${{ secrets.KAFKA_NET }}" "$CONTAINER_NAME"
-          docker start "$CONTAINER_NAME"
-          curl --fail --retry 20 --retry-delay 1 --retry-all-errors \
-            "http://127.0.0.1:${{ secrets.RESIZE_PORT }}/health-check"
-
-  deploy-cache:
-    name: Deploy cache
-    needs: [publish, deploy-resize]
-    runs-on: [file-server]
-    env:
-      IMAGE: ghcr.io/${{ github.repository_owner }}/cache:${{ github.event.workflow_run.head_sha }}
-      CONTAINER_NAME: file_server_cache
-    steps:
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Replace container without starting it before network attachment
-        run: |
-          set -euo pipefail
-          docker pull "$IMAGE"
-          docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
-          docker create \
-            --env-file "${{ secrets.CACHE_ENV_PATH }}" \
-            --env HOST=0.0.0.0 \
-            --network "${{ secrets.FILE_SERVER_NET }}" \
-            --publish "127.0.0.1:${{ secrets.CACHE_PORT }}:${{ secrets.CACHE_PORT }}" \
-            --name "$CONTAINER_NAME" \
-            --restart always \
-            "$IMAGE"
-          docker network connect "${{ secrets.KAFKA_NET }}" "$CONTAINER_NAME"
-          docker start "$CONTAINER_NAME"
-          curl --fail --retry 20 --retry-delay 1 --retry-all-errors \
-            "http://127.0.0.1:${{ secrets.CACHE_PORT }}/health-check"
+      - name: Preflight schema and candidates, then replace in dependency order
+        shell: bash
+        env:
+          STORAGE_IMAGE: ${{ needs.release.outputs.storage_image }}
+          RESIZE_IMAGE: ${{ needs.release.outputs.resize_image }}
+          CACHE_IMAGE: ${{ needs.release.outputs.cache_image }}
+          STORAGE_ENV_PATH: ${{ secrets.STORAGE_ENV_PATH }}
+          RESIZE_ENV_PATH: ${{ secrets.RESIZE_ENV_PATH }}
+          CACHE_ENV_PATH: ${{ secrets.CACHE_ENV_PATH }}
+          STORAGE_PORT: ${{ secrets.STORAGE_PORT }}
+          RESIZE_PORT: ${{ secrets.RESIZE_PORT }}
+          CACHE_PORT: ${{ secrets.CACHE_PORT }}
+          FILE_SERVER_NET: ${{ secrets.FILE_SERVER_NET }}
+          KAFKA_NET: ${{ secrets.KAFKA_NET }}
+          FILE_DUMP_VOLUME: file_dump_volume
+          DEPLOY_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/deploy-image-services.sh

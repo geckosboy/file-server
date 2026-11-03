@@ -93,7 +93,7 @@ capacity는 별도 ON_DEMAND tenant를 사용해 기존 20개 PRE_GENERATE 설�
 - HTTP 200 후: Kafka 전달, 모든 cache replica 무효화, 늦은 worker output의 reconciliation 수렴. 응답 즉시 전역 동기 무효화를 보장하지 않는다.
 - filesystem은 첫 storage adapter이며 여러 호스트의 독립 local disk 공유/failover는 지원하지 않는다. 선택 단계 6은 수행하지 않았다.
 - 지원 ingress는 host Nginx→loopback 또는 같은 FILE_SERVER_NET의 container Nginx→서비스 컨테이너다. remote Nginx에서 세 서비스 host port를 직접 공개하는 경로는 지원하지 않는다.
-- 배포 workflow는 기존 컨테이너를 교체하므로 무중단 candidate/switch 배포 보장은 아니다. 실제 운영 credentials·Nginx/TLS·backup/PITR 검증과 migration/backfill/drain/cutover는 운영 적용 절차다. 이를 로컬 테스트 PASS로 대신했다고 주장하지 않는다.
+- 후속 [CI/CD 점검](ci-cd-runbook.md)에서 테스트한 image 재사용, read-only schema preflight, stopped candidate와 전체 container rollback을 추가했다. 기존 컨테이너를 교체하므로 무중단 candidate/switch 배포 보장은 아니다. 실제 운영 credentials·Nginx/TLS·backup/PITR 검증과 migration/backfill/drain/cutover는 운영 적용 절차다. 이를 로컬 테스트 PASS로 대신했다고 주장하지 않는다.
 
 ## 5. 재현 명령과 근거 경로
 

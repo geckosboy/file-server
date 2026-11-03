@@ -2,44 +2,8 @@ name: file-server-ci
 
 on:
   pull_request:
-    paths:
-      - 'apps/**'
-      - 'examples/**'
-      - 'libs/**'
-      - 'prisma/**'
-      - 'scripts/**'
-      - 'docker/**'
-      - '.github/workflows/**'
-      - '.dockerignore'
-      - '.eslintrc.js'
-      - '.prettierrc'
-      - 'eslint.config.mjs'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'prisma.config.ts'
-      - 'tsconfig.json'
-      - 'turbo.json'
   push:
     branches: [main]
-    paths:
-      - 'apps/**'
-      - 'examples/**'
-      - 'libs/**'
-      - 'prisma/**'
-      - 'scripts/**'
-      - 'docker/**'
-      - '.github/workflows/**'
-      - '.dockerignore'
-      - '.eslintrc.js'
-      - '.prettierrc'
-      - 'eslint.config.mjs'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'prisma.config.ts'
-      - 'tsconfig.json'
-      - 'turbo.json'
   workflow_dispatch:
 
 concurrency:
@@ -50,29 +14,44 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: 22.15.0
-  PNPM_VERSION: 10.15.0
   TURBO_TELEMETRY_DISABLED: 1
 
 jobs:
-  quality:
-    name: Lint, typecheck, test and build
+  changes:
+    name: Select affected gates
     runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      quality: ${{ steps.paths.outputs.quality }}
+      build: ${{ steps.paths.outputs.build }}
+      backend: ${{ steps.paths.outputs.backend }}
+      docker: ${{ steps.paths.outputs.docker }}
+      acl: ${{ steps.paths.outputs.acl }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          version: ${{ env.PNPM_VERSION }}
-          run_install: false
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - name: Classify paths; unavailable base runs every gate
+        id: paths
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_GIT_TOKEN: ${{ github.token }}
+        run: node scripts/ci-changes.mjs
+
+  quality:
+    name: Lint, typecheck and test
+    needs: changes
+    if: needs.changes.outputs.quality == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm db:generate
+          persist-credentials: false
+      - uses: ./.github/actions/setup-workspace
       - name: Lint
         run: pnpm all:lint
       - name: Typecheck with repository TypeScript
@@ -83,106 +62,191 @@ jobs:
         run: pnpm all:test
       - name: Component E2E tests
         run: pnpm test:component:e2e
+
+  build:
+    name: Build once for this run
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-workspace
       - name: Build all applications and libraries
         run: pnpm all:build
+      - name: Archive backend outputs without node_modules or Next output
+        if: needs.changes.outputs.backend == 'true'
+        run: |
+          tar -czf "$RUNNER_TEMP/backend-dist.tgz" \
+            apps/storage/dist apps/resize/dist apps/cache/dist apps/telemetry-api/dist libs/*/dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: needs.changes.outputs.backend == 'true'
+        with:
+          name: backend-dist-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-dist.tgz
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: error
 
   system-e2e:
     name: PostgreSQL and Kafka system E2E
-    needs: quality
+    needs: [changes, build]
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SYSTEM_E2E_COMPOSE_PROJECT: fs-system-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      SYSTEM_E2E_NETWORK: fs-system-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          version: ${{ env.PNPM_VERSION }}
-          run_install: false
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: ./.github/actions/setup-workspace
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm db:generate
-      - name: Run real-service system E2E
+          name: backend-dist-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-dist
+      - name: Restore this run's compiled apps and libraries
+        run: tar -xzf "$RUNNER_TEMP/backend-dist/backend-dist.tgz"
+      - name: Run all real-service gates without recompilation
+        env:
+          SYSTEM_E2E_SKIP_BUILD: '1'
         run: pnpm test:system:e2e
+      - name: Verify exact runtime-resource cleanup, including cancellation
+        if: always()
+        run: node scripts/ci-cleanup.mjs system
 
   image-lifecycle-e2e:
     name: Authoritative image lifecycle system E2E
-    needs: quality
+    needs: [changes, build]
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       SYSTEM_E2E_COMPOSE_PROJECT: fs-lifecycle-ci-${{ github.run_id }}-${{ github.run_attempt }}
       SYSTEM_E2E_NETWORK: fs-lifecycle-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          version: ${{ env.PNPM_VERSION }}
-          run_install: false
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: ./.github/actions/setup-workspace
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Run migration, backfill, crash recovery, variant and replica cache gates
+          name: backend-dist-${{ github.run_id }}
+          path: ${{ runner.temp }}/backend-dist
+      - name: Restore this run's compiled apps and libraries
+        run: tar -xzf "$RUNNER_TEMP/backend-dist/backend-dist.tgz"
+      - name: Run all real-service gates without recompilation
+        env:
+          IMAGE_LIFECYCLE_E2E_SKIP_BUILD: '1'
         run: pnpm test:image-lifecycle:system:e2e
-      - name: Clean only this job's infrastructure, including cancellation
+      - name: Verify exact runtime-resource cleanup, including cancellation
         if: always()
-        run: docker compose -f docker/docker-compose.system-e2e.yml -p "$SYSTEM_E2E_COMPOSE_PROJECT" down --volumes --remove-orphans
+        run: node scripts/ci-cleanup.mjs system
 
   kafka-acl-e2e:
     name: Kafka tenant and worker ACL isolation
-    needs: quality
+    needs: changes
+    if: needs.changes.outputs.acl == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       KAFKA_ACL_E2E_PROJECT: fs-acl-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          version: ${{ env.PNPM_VERSION }}
-          run_install: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - name: Run client, canonical topic, variant job and invalidation isolation
-        run: pnpm test:kafka:acl:e2e
-      - name: Clean only this job's broker, including cancellation
+          persist-credentials: false
+      - name: Run broker CLI isolation without installing Node dependencies
+        run: bash scripts/kafka/test/kafka-acl-isolation.e2e.sh
+      - name: Verify exact runtime-resource cleanup, including cancellation
         if: always()
         env:
-          # Used only to resolve the required mount during down; no credentials.
           KAFKA_ACL_E2E_CONFIG_DIR: ${{ runner.temp }}
-        run: docker compose -f docker/docker-compose.kafka-acl-e2e.yml -p "$KAFKA_ACL_E2E_PROJECT" down --volumes --remove-orphans
+        run: node scripts/ci-cleanup.mjs acl
 
   docker-smoke:
-    name: Node 22 container smoke
-    needs: quality
+    name: Build and test runtime images (read-only)
+    needs: changes
+    if: >-
+      needs.changes.outputs.docker == 'true' &&
+      !(github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    env:
+      SYSTEM_E2E_COMPOSE_PROJECT: fs-smoke-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      SYSTEM_E2E_NETWORK: fs-smoke-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          version: ${{ env.PNPM_VERSION }}
-          run_install: false
-      - uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: ./.github/actions/test-runtime-images
+
+  docker-release:
+    name: Build, test and publish candidates (trusted main only)
+    needs: changes
+    if: >-
+      needs.changes.outputs.docker == 'true' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SYSTEM_E2E_COMPOSE_PROJECT: fs-smoke-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      SYSTEM_E2E_NETWORK: fs-smoke-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - uses: docker/setup-buildx-action@v3
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Generate Prisma client
-        run: pnpm db:generate
-      - name: Build runtime images
-        run: pnpm docker:build
-      - name: Verify loopback publish and dependency network attachment
-        run: pnpm test:deployment:boundary
-      - name: Start images and verify ports and secret boundaries
-        run: pnpm test:docker:smoke
+          persist-credentials: false
+      - uses: ./.github/actions/test-runtime-images
+        with:
+          publish-candidates: 'true'
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
+
+  result:
+    name: CI result
+    needs:
+      [
+        changes,
+        quality,
+        build,
+        system-e2e,
+        image-lifecycle-e2e,
+        kafka-acl-e2e,
+        docker-smoke,
+        docker-release,
+      ]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Require every selected gate to succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: |
+          case "$RESULTS" in
+            *failure*|*cancelled*) echo "CI gate failed: $RESULTS" >&2; exit 1 ;;
+          esac
+          echo "All selected gates passed; unaffected gates were skipped." >> "$GITHUB_STEP_SUMMARY"
+      - name: Record explicit release intent for this exact successful run
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          RELEASE_IMAGES: ${{ needs.docker-release.result == 'success' }}
+        run: node scripts/ci-images.mjs intent "$RUNNER_TEMP/ci-release.json" "$RELEASE_IMAGES"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: ci-release-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-release.json
+          retention-days: 2
+          overwrite: true
+          if-no-files-found: error

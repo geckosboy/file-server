@@ -1,0 +1,69 @@
+{
+	"scope": "local-only registry publication and CI/CD rehearsal; no GHCR/production operation",
+	"source": {
+		"repository": "geckosboy/file-server",
+		"sha": "61ece09ac19e251b4d1d763625a58663a38b3b55",
+		"runId": "1793679041664",
+		"runAttempt": "1"
+	},
+	"dirtyScope": "uncommitted CI/CD workflows, scripts and Docker layer layout; app source unchanged",
+	"gates": [
+		"real local registry push of tested image IDs, registry content hash and digest pull identity",
+		"real system E2E, including actual 3/3 PostgreSQL repository/retention tests, restored same-run dist and skip-build"
+	],
+	"candidates": {
+		"publicationAndDigestPullMs": 3681,
+		"manifestBytes": 1388,
+		"manifest": {
+			"schemaVersion": 2,
+			"source": {
+				"repository": "geckosboy/file-server",
+				"sha": "61ece09ac19e251b4d1d763625a58663a38b3b55",
+				"runId": "1793679041664",
+				"runAttempt": "1"
+			},
+			"images": [
+				{
+					"app": "storage",
+					"localTag": "file-server/storage:local",
+					"imageId": "sha256:55607d8de2f27a7418bbc0b4bdc4838716c8552322c07d6cf5b285b8260f97f7",
+					"revision": "61ece09ac19e251b4d1d763625a58663a38b3b55",
+					"platform": "linux/amd64",
+					"digest": "127.0.0.1:50096/geckosboy/storage@sha256:55607d8de2f27a7418bbc0b4bdc4838716c8552322c07d6cf5b285b8260f97f7"
+				},
+				{
+					"app": "resize",
+					"localTag": "file-server/resize:local",
+					"imageId": "sha256:e672d77235f9836e86ef42882d9d4936bec689d336f69489cdca7ff84ce34b9b",
+					"revision": "61ece09ac19e251b4d1d763625a58663a38b3b55",
+					"platform": "linux/amd64",
+					"digest": "127.0.0.1:50096/geckosboy/resize@sha256:e672d77235f9836e86ef42882d9d4936bec689d336f69489cdca7ff84ce34b9b"
+				},
+				{
+					"app": "cache",
+					"localTag": "file-server/cache:local",
+					"imageId": "sha256:a56e8b9943d3d3814aa0cfd4ab462447b3c3338eb09a0d0fb4e78e063b5594b4",
+					"revision": "61ece09ac19e251b4d1d763625a58663a38b3b55",
+					"platform": "linux/amd64",
+					"digest": "127.0.0.1:50096/geckosboy/cache@sha256:a56e8b9943d3d3814aa0cfd4ab462447b3c3338eb09a0d0fb4e78e063b5594b4"
+				}
+			]
+		}
+	},
+	"passed": true,
+	"runtimeResourcesCleaned": true,
+	"previousExperiment": {
+		"archiveBytes": 348913398,
+		"exportMs": 20646,
+		"loadVerifyMs": 10267,
+		"decision": "Removed large image archive transport from final workflows; only digest manifest is handed off."
+	},
+	"additionalGates": [
+		"4 manifest-first Docker image builds",
+		"Docker smoke including real storage Prisma migration/index preflight",
+		"deployment loopback/network boundary",
+		"same-run backend app+library archive restore",
+		"unit545/component38/currentTS5.9/build11",
+		"script suite and actionlint/shellcheck; see runbook for current totals"
+	]
+}

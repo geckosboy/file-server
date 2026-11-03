@@ -5,11 +5,22 @@ import { run, runCapture } from './system-test-utils.mjs';
 // Configuration-only Docker rehearsal: no production credentials or app startup.
 const scope = `fs-deploy-boundary-${randomUUID().slice(0, 8)}`;
 const label = `io.file-server.deployment-boundary=${scope}`;
+const ciProject = process.env.SYSTEM_E2E_COMPOSE_PROJECT;
+const ciLabel = ciProject
+	? `io.file-server.test-project=${ciProject}`
+	: undefined;
 const networks = [`${scope}-files`, `${scope}-kafka`];
 const containers = [];
 try {
 	for (const network of networks) {
-		await run('docker', ['network', 'create', '--label', label, network]);
+		await run('docker', [
+			'network',
+			'create',
+			'--label',
+			label,
+			...(ciLabel ? ['--label', ciLabel] : []),
+			network,
+		]);
 	}
 	for (const [app, port] of [
 		['storage', 3032],
@@ -24,6 +35,7 @@ try {
 			name,
 			'--label',
 			label,
+			...(ciLabel ? ['--label', ciLabel] : []),
 			'--env',
 			'HOST=0.0.0.0',
 			'--network',

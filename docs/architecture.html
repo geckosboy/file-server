@@ -1233,6 +1233,15 @@ pnpm test:image-lifecycle:system:e2e</pre>
 
 			<section class="card" id="deploy">
 				<h2>14. 배포, rollback과 검증 순서</h2>
+				<p>
+					CI는 영향받은 gate만 선택하고 같은 run의 app/lib build를 재사용합니다.
+					main 전용 CI가 smoke를 통과한 image를 push하고 CD는 작은 digest 명세만
+					검증해 registry digest로 배포합니다. Schema·env·network·volume 사전
+					점검과 정지 candidate 준비 후 storage → resize → cache 순서로
+					교체하고, 실패하면 앞서 교체한 컨테이너까지 복원합니다. 무중단 배포나
+					DB rollback은 보장하지 않습니다. 상세한 선택 기준·재실행·제한은
+					<a href="ci-cd-runbook.md">CI/CD 운영 설명서</a>를 따릅니다.
+				</p>
 				<ol>
 					<li>
 						두 expand migration을 적용하고 backfill index의
@@ -1306,6 +1315,12 @@ pnpm integration:travel-cloud:verify</pre>
 					재생성해도 volume은 유지되지만 DB metadata와 filesystem backup/restore
 					시점을 함께 맞춰야 합니다.
 				</p>
+				<p>
+					아래는 volume/network 구성 예시입니다. <code>STORAGE_IMAGE</code>는
+					검증된 release manifest의
+					<code>ghcr.io/&lt;owner&gt;/storage@sha256:…</code> 값이며 실제 교체는
+					rollback을 포함한 CI/CD script로 수행합니다.
+				</p>
 				<pre class="code">
 docker create \
   --env-file ${{ secrets.STORAGE_ENV_PATH }} \
@@ -1314,7 +1329,7 @@ docker create \
   --network ${{ secrets.FILE_SERVER_NET }} \
   -p 127.0.0.1:${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }} \
   --name file_server_storage \
-  --restart always ghcr.io/.../storage:latest
+  --restart always "$STORAGE_IMAGE"
 
 docker network connect ${{ secrets.KAFKA_NET }} file_server_storage
 docker start file_server_storage

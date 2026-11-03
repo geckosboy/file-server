@@ -10,12 +10,22 @@ WORKDIR /usr/index
 RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json prisma.config.ts ./
+COPY apps/telemetry-api/package.json ./apps/telemetry-api/package.json
+COPY libs/common-nest/package.json ./libs/common-nest/package.json
+COPY libs/database/package.json ./libs/database/package.json
+COPY libs/global/package.json ./libs/global/package.json
+COPY libs/image-contracts/package.json ./libs/image-contracts/package.json
+COPY libs/nest-common/package.json ./libs/nest-common/package.json
+COPY libs/telemetry-contracts/package.json ./libs/telemetry-contracts/package.json
+COPY libs/tsconfig/package.json ./libs/tsconfig/package.json
+
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+	pnpm install --frozen-lockfile
+
 COPY apps/telemetry-api ./apps/telemetry-api
 COPY libs ./libs
 COPY prisma ./prisma
 
-RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
-	pnpm install --frozen-lockfile
 RUN pnpm db:generate && pnpm turbo run build --filter=@file/telemetry-api
 
 FROM build AS migrate

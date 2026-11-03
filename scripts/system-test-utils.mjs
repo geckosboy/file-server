@@ -221,9 +221,7 @@ export const stopInfrastructure = async (config) => {
 			'--remove-orphans',
 		],
 		{ env: config.env, stdio: 'inherit' },
-	).catch((error) => {
-		console.error(`테스트 인프라 정리 실패: ${error.message}`);
-	});
+	);
 };
 
 export const migrateDatabase = (config) =>
