@@ -43,6 +43,11 @@ test('quality runs current TypeScript and all script/unit/component gates, not a
 	);
 });
 
+test('CI avoids multiplying Jest worker pools inside parallel Turbo packages', () => {
+	assert.match(job('quality'), /run: pnpm all:test -- --runInBand/);
+	assert.match(job('quality'), /run: pnpm test:component:e2e -- --runInBand/);
+});
+
 test('host build runs once and both suites reuse this run apps AND libraries with fresh Prisma', () => {
 	assert.equal(workflow.split('run: pnpm all:build').length - 1, 1);
 	const build = job('build');
@@ -211,7 +216,6 @@ test('source edits do not invalidate the locked dependency install layer', () =>
 		const install = dockerfile.indexOf('pnpm install --frozen-lockfile');
 		assert.ok(dockerfile.indexOf(`COPY apps/${app}/package.json`) < install);
 		for (const lib of [
-			'common-nest',
 			'database',
 			'global',
 			'image-contracts',

@@ -140,6 +140,24 @@ if (process.env.FAKE_CURL_SLEEP) {
 	return { root, statePath, logPath, env };
 }
 
+async function installDeterministicClock(testFixture, startSeconds = 1_000) {
+	const clockStatePath = path.join(testFixture.root, 'clock-state');
+	const datePath = path.join(testFixture.root, 'bin', 'date');
+	await writeFile(clockStatePath, String(startSeconds));
+	await writeFile(
+		datePath,
+		`#!/usr/bin/env node
+const fs = require('node:fs');
+const statePath = process.env.FAKE_CLOCK_STATE;
+const current = Number(fs.readFileSync(statePath, 'utf8'));
+fs.writeFileSync(statePath, String(current + 1));
+process.stdout.write(String(current) + '\\n');
+`,
+	);
+	await chmod(datePath, 0o755);
+	testFixture.env.FAKE_CLOCK_STATE = clockStatePath;
+}
+
 function runDeploy(env) {
 	return new Promise((resolve) => {
 		const child = spawn('bash', [deployScript], { env });
@@ -227,7 +245,8 @@ test('deploy image services safety', { concurrency: 4 }, async (context) => {
 		'downstream readiness timeout rolls back all replaced services',
 		async () => {
 			const testFixture = await fixture();
-			testFixture.env.DEPLOY_READY_TIMEOUT_SECONDS = '3';
+			await installDeterministicClock(testFixture);
+			testFixture.env.DEPLOY_READY_TIMEOUT_SECONDS = '4';
 			testFixture.env.FAKE_CURL_FAILURE = ':3030/';
 			const result = await runDeploy(testFixture.env);
 			assert.notEqual(result.code, 0);

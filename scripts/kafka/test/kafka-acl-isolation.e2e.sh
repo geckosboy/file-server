@@ -15,19 +15,79 @@ bootstrap=kafka:9092
 canonical_topic=file.image.lifecycle.v1
 client_a_topic=file.image.lifecycle.client.client-a.v1
 client_b_topic=file.image.lifecycle.client.client-b.v1
-client_a_group=file-lifecycle-client-a-e2e
+client_a_group='file-lifecycle-client-a-e2e'
 variant_topic=file.image.variant.jobs.v1
 variant_dlq_topic=file.image.variant.jobs.v1.dlq
 invalidation_topic=file.image.cache-invalidation.v1
 invalidation_dlq_topic=file.image.cache-invalidation.v1.dlq
-storage_group=file-image-variant-worker-v1
-cache_group=file-cache-invalidation-v1-e2e
+storage_group='file-image-variant-worker-v1'
+cache_group='file-cache-invalidation-v1-e2e'
 
 cleanup() {
-  "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
-  rm -rf "$config_dir"
+  local original_status="${1:-0}"
+  local cleanup_status=0
+
+  trap - EXIT INT TERM
+  if ! "${compose[@]}" down --volumes --remove-orphans; then
+    echo "Kafka ACL E2E cleanup failed for compose project: $project" >&2
+    cleanup_status=1
+  fi
+  if ! rm -rf "$config_dir"; then
+    echo "Kafka ACL E2E cleanup failed to remove its temporary config directory" >&2
+    cleanup_status=1
+  fi
+
+  if (( original_status != 0 )); then
+    return "$original_status"
+  fi
+  return "$cleanup_status"
 }
-trap cleanup EXIT INT TERM
+
+on_exit() {
+  local original_status=$?
+  local final_status
+  set +e
+  cleanup "$original_status"
+  final_status=$?
+  exit "$final_status"
+}
+
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+diagnose_startup_failure() {
+  local container_id
+
+  echo 'Kafka broker startup failed; collecting bounded diagnostics' >&2
+  echo '--- compose status ---' >&2
+  "${compose[@]}" ps >&2 || echo 'compose status unavailable' >&2
+
+  container_id="$("${compose[@]}" ps --quiet kafka 2>/dev/null || true)"
+  if [[ -n "$container_id" ]]; then
+    echo '--- Docker health log ---' >&2
+    docker inspect --format '{{json .State.Health}}' "$container_id" >&2 || \
+      echo 'Docker health log unavailable' >&2
+    echo '--- broker environment (credential values redacted) ---' >&2
+    while IFS= read -r entry; do
+      case "${entry%%=*}" in
+        *PASSWORD*|*SECRET*|*JAAS*) printf '%s=<redacted>\n' "${entry%%=*}" >&2 ;;
+        *) printf '%s\n' "$entry" >&2 ;;
+      esac
+    done < <(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" 2>/dev/null)
+  else
+    echo 'Kafka container ID unavailable' >&2
+  fi
+
+  echo '--- host client-config permissions (contents omitted) ---' >&2
+  ls -ld "$config_dir" "$config_dir"/* >&2 || echo 'host permission diagnostics unavailable' >&2
+  echo '--- container identity and client-config permissions ---' >&2
+  "${compose[@]}" exec -T kafka sh -c \
+    'id; ls -ld /etc/kafka/client-config /etc/kafka/client-config/*' >&2 || \
+    echo 'container permission diagnostics unavailable' >&2
+  echo '--- broker logs ---' >&2
+  "${compose[@]}" logs --no-color --tail 250 kafka >&2 || echo 'broker logs unavailable' >&2
+}
 
 write_client_config() {
   local file="$1"
@@ -46,8 +106,21 @@ write_client_config client-b.properties client_b client-b-secret
 write_client_config storage.properties storage storage-secret
 write_client_config cache.properties cache cache-secret
 
+# These files contain synthetic E2E-only credentials. Linux bind mounts retain
+# host ownership, so Kafka's unprivileged UID needs directory traversal and
+# file read access even when mktemp/umask default to 0700/0600.
+chmod 0755 "$config_dir"
+chmod 0644 "$config_dir"/*.properties
+
 echo 'Starting isolated Kafka authorization broker'
+set +e
 "${compose[@]}" up --detach --wait --wait-timeout 120
+startup_status=$?
+set -e
+if (( startup_status != 0 )); then
+  diagnose_startup_failure
+  exit "$startup_status"
+fi
 
 for topic in \
   "$canonical_topic" \
@@ -242,8 +315,8 @@ expect_produce_denied cache.properties "$invalidation_topic"
 expect_produce_denied client-a.properties "$variant_topic"
 
 echo 'Kafka ACL isolation assertions passed; cleaning infrastructure'
-cleanup
 trap - EXIT INT TERM
+cleanup 0
 if [[ -n "$("${compose[@]}" ps --quiet 2>/dev/null)" ]]; then
   echo 'Kafka ACL E2E cleanup left running containers' >&2
   exit 1

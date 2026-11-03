@@ -33,7 +33,12 @@
 		"rootDir": "src",
 		"testRegex": ".*\\.spec\\.ts$",
 		"transform": {
-			"^.+\\.(t|j)s$": "ts-jest"
+			"^.+\\.(t|j)s$": [
+				"ts-jest",
+				{
+					"tsconfig": "<rootDir>/../tsconfig.spec.json"
+				}
+			]
 		},
 		"collectCoverageFrom": [
 			"**/*.(t|j)s"
@@ -42,7 +47,9 @@
 		"testEnvironment": "node",
 		"moduleNameMapper": {
 			"^@file/image-contracts$": "<rootDir>/../../image-contracts/src",
-			"^@file/image-contracts/(.*)$": "<rootDir>/../../image-contracts/src/$1"
+			"^@file/image-contracts/(.*)$": "<rootDir>/../../image-contracts/src/$1",
+			"^@file/telemetry-contracts$": "<rootDir>/../../telemetry-contracts/src",
+			"^@file/telemetry-contracts/(.*)$": "<rootDir>/../../telemetry-contracts/src/$1"
 		}
 	}
 }

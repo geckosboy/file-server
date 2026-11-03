@@ -128,3 +128,22 @@ Actions는 full commit SHA로 고정하고 Dependabot의 월 단위 단일 group
 - [Docker: 검토 후 제외한 image archive 전달 방식](https://docs.docker.com/build/ci/github-actions/share-image-jobs/)
 - [GitHub workflow_run 보안·artifact 전달](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)
 - [GitHub concurrency와 workflow path filter](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency)
+
+## 7. 실제 CI clean-checkout 실패 복구
+
+GitHub run `41588818391`, attempt 2에서 typecheck·Docker build·Kafka ACL 기동 실패가 확인됐다. 이전 로컬 PASS는 clean Git checkout 검증을 대신하지 못했다. 로컬에 남은 `dist`와 Git에 없는 legacy `libs/common-nest`가 두 결함을 가렸고, Kafka bind mount는 Linux의 UID/파일 권한 차이를 놓쳤다.
+
+- Typecheck: `--noEmit`은 선언 파일을 생성하지 않는다. `libs/database` 검사만 source alias를 가진 전용 config로 수행하고 Next/Prisma 생성 타입도 검사 명령이 준비한다. 일반 build config는 그대로 검증한다. quality setup의 중복 Prisma 생성은 끈다.
+- Database unit test의 ts-jest도 별도 spec config와 source mapper로 동일한 경계를 사용한다. 기존 `dist`가 없어도 테스트를 typecheck·실행하며 diagnostics를 끄거나 선행 전체 build로 가리지 않는다.
+- Docker: workspace에서 제외되고 Git에도 없는 `common-nest/package.json` COPY를 네 Dockerfile에서 제거한다. COPY 입력의 존재 여부를 로컬 디렉터리가 아닌 **Git 추적 파일**로 검사한다.
+- Kafka: synthetic E2E config만 directory `0755`/file `0644`로 만들어 broker UID 1000이 읽을 수 있게 한다. 인증·ACL·health timeout·전체 wait timeout은 완화하지 않는다. 기동 실패 시 health log/권한/credential을 가린 설정/broker log를 정리 전에 남기고 cleanup 실패도 전파한다.
+
+후속 검증은 저장소 밖에 tracked source와 새 회귀 파일만 복사한 별도 Git tree에서 수행한다. `node_modules`, `dist`, `.next`, `.turbo`, tsbuildinfo, ignored source를 가져오지 않으며 Linux/Node 22.15에서 frozen install부터 시작한다. 실제 GitHub PR 실행 결과와 이 clean 검증 결과를 확인해야 복구 완료로 판단한다.
+
+Turbo가 package 병렬화를 이미 담당하므로 CI의 각 Jest는 `--runInBand`로 실행한다. package마다 worker pool을 추가로 만들어 메모리와 process 수를 배증시키지 않으며 테스트·assertion·timeout은 줄이거나 완화하지 않는다. 중단한 무제한 worker 실험과 실패한 초기 clean unit 시도는 후속 PASS와 구분한다.
+
+배포 rollback 회귀 테스트는 실제 3초 안에 mock Docker가 세 서비스까지 진행한다고 가정해 부하 상황에서 간헐적으로 실패했다. 해당 fixture에만 가상 시계를 사용해 cache readiness 실패와 전체 rollback을 결정적으로 검증한다. 실제 배포의 공유 deadline·HTTP timeout·복원 검증은 변경하지 않는다.
+
+복구본의 별도 Linux tree에서 Node **22.15.0**, pnpm **10.15.0**, TypeScript **5.9.3**으로 frozen install 후 전체 lint **11/11**, source-only no-emit 검사 **12 config**, 단위 **545 PASS**, component E2E **38/38**, build **11/11**을 통과했다. Typecheck 직후에도 두 contract package의 `dist`가 없음을 확인했으며, 마지막 테스트 수정 후 script regression도 Linux에서 **63/63 PASS**했다. PostgreSQL 전용 단위 3개는 일반 unit 실행에서 기존대로 제외되므로 실제 DB 검증은 별도 system gate 결과로 판단한다. 실제 GitHub PR CI의 성공 여부는 로컬 결과와 구분해 해당 commit의 `CI result`에서 확인한다.
+
+같은 source-only tree에서 네 Dockerfile을 모두 build하고 최종 storage/resize/cache image로 실제 PostgreSQL/Kafka Docker smoke와 schema preflight **11 migrations + 2 indexes**를 통과했다. Kafka ACL의 allow/deny 시나리오와 Linux UID의 config 읽기 경계도 검증했다. 기존 workflow timeout은 늘리지 않았으며 운영 배포·registry push는 실행하지 않았다.

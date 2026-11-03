@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const tsc = require.resolve('typescript/bin/tsc');
 const cwd = fileURLToPath(new URL('../', import.meta.url));
-const configs = [
+export const configs = [
 	'libs/global/tsconfig.build.json',
 	'libs/image-contracts/tsconfig.build.json',
 	'libs/nest-common/tsconfig.build.json',
-	'libs/database/tsconfig.build.json',
+	'scripts/tsconfig.database-typecheck.json',
 	'libs/telemetry-contracts/tsconfig.build.json',
 	'apps/storage/tsconfig.build.json',
 	'apps/cache/tsconfig.build.json',
@@ -20,25 +20,34 @@ const configs = [
 	'apps/admin-web/tsconfig.spec.json',
 ];
 
-console.log(
-	`Repository TypeScript ${require('typescript/package.json').version}`,
-);
-// Validate Next's route export contract even in a clean checkout, before build.
-const typegen = spawnSync(
-	'pnpm',
-	['--filter', '@file/admin-web', 'exec', 'next', 'typegen'],
-	{ cwd, stdio: 'inherit' },
-);
-if (typegen.error) console.error(typegen.error.message);
-if (typegen.status !== 0) process.exit(typegen.status ?? 1);
+export const generatedTypeCommands = [
+	['pnpm', ['--filter', '@file/admin-web', 'exec', 'next', 'typegen']],
+	['pnpm', ['db:generate']],
+];
 
-for (const config of configs) {
-	console.log(`[typecheck] ${config}`);
-	const result = spawnSync(
-		process.execPath,
-		[tsc, '-p', config, '--noEmit', '--pretty', 'false'],
-		{ cwd, stdio: 'inherit' },
-	);
-	if (result.error) console.error(result.error.message);
-	if (result.status !== 0) process.exit(result.status ?? 1);
+export function runTypecheck({ spawn = spawnSync, log = console.log } = {}) {
+	log(`Repository TypeScript ${require('typescript/package.json').version}`);
+
+	for (const [command, args] of generatedTypeCommands) {
+		const result = spawn(command, args, { cwd, stdio: 'inherit' });
+		if (result.error) console.error(result.error.message);
+		if (result.status !== 0) return result.status ?? 1;
+	}
+
+	for (const config of configs) {
+		log(`[typecheck] ${config}`);
+		const result = spawn(
+			process.execPath,
+			[tsc, '-p', config, '--noEmit', '--pretty', 'false'],
+			{ cwd, stdio: 'inherit' },
+		);
+		if (result.error) console.error(result.error.message);
+		if (result.status !== 0) return result.status ?? 1;
+	}
+
+	return 0;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+	process.exitCode = runTypecheck();
 }

@@ -11,7 +11,6 @@ RUN corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json prisma.config.ts ./
 COPY apps/resize/package.json ./apps/resize/package.json
-COPY libs/common-nest/package.json ./libs/common-nest/package.json
 COPY libs/database/package.json ./libs/database/package.json
 COPY libs/global/package.json ./libs/global/package.json
 COPY libs/image-contracts/package.json ./libs/image-contracts/package.json

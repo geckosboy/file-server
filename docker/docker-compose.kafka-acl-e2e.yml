@@ -33,7 +33,7 @@ services:
       test:
         [
           'CMD-SHELL',
-          '/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /etc/kafka/client-config/admin.properties --list >/dev/null 2>&1',
+          'test -r /etc/kafka/client-config/admin.properties && /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --command-config /etc/kafka/client-config/admin.properties --list',
         ]
       interval: 2s
       timeout: 5s
