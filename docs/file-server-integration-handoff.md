@@ -1,11 +1,11 @@
 # File Server Integration Handoff
 
-- 기준일: 2026-11-02 (과거 통합 실행 기록은 각 절의 원래 날짜/revision 유지)
-- 기준 상태: 단계 0~5 핵심 구현 및 과거 통합 PASS 기록 있음. 최신 완료 감사의 차단/잔여 gate는 아래 감사 문서를 따른다. 운영 cutover 완료를 뜻하지 않는다.
+- 기준일: 2026-11-03 (과거 통합 실행 기록은 각 절의 원래 날짜/revision 유지)
+- 기준 상태: 단계 0~5 정합성 수정 및 최신 로컬 검증 gate PASS. 실제 PostgreSQL/Kafka·Docker·Nginx와 100만 row 성능·명시한 reconciliation 용량 프로필을 재검증했다. 운영 cutover 완료를 뜻하지 않는다.
 - 대상: 이 저장소를 호출하거나 lifecycle 이벤트를 소비할 다른 프로젝트와 해당 프로젝트를 설계하는 AI
 - 전체 구조 시각화: [`architecture.html`](architecture.html)
 - Travel Cloud 실제 Docker 연동: [`travel-cloud-integration-runbook.md`](travel-cloud-integration-runbook.md)
-- 최신 완료 감사·잔여 검증: [`file-server-completion-audit.md`](file-server-completion-audit.md)
+- 최신 완료 감사·측정 근거·운영 적용 경계: [`file-server-completion-audit.md`](file-server-completion-audit.md)
 - 감사 중 admin route의 불허 named export도 분리했으며, `pnpm all:typecheck`는 Next route 타입을 먼저 생성해 이 계약까지 검사한다. HTTP/Kafka 공개 성공 응답 계약은 변경하지 않았다.
 
 ## 1. 먼저 알아야 할 결론
@@ -33,10 +33,10 @@ Travel Cloud 통합은 Nginx를 고정 reverse proxy로 사용한다. [`docker-c
 
 ## 2. 단계 0~3에서 확보된 기준선
 
-- Node.js `22.15.0`, pnpm `10.15.0`
+- 최신 검증 Node.js `22.23.1`, pnpm `10.15.0` (Node 지원 하한 `22.12.0`)
 - storage, resize, cache 컨테이너는 non-root `node` 사용자로 실행
 - `.env*` 파일은 Docker build context와 runtime image에 포함되지 않음
-- 컴포넌트 E2E 33개 실행
+- 최신 컴포넌트 E2E 38개를 최종 2회 연속 통과
 - 실제 PostgreSQL/Kafka와 다음 연쇄를 검증하는 system E2E 제공:
   - 두 client service/key/policy 생성
   - 이미지 upload
@@ -77,7 +77,7 @@ pnpm test:docker:smoke
 
 `pnpm test:system:e2e`는 Docker/PostgreSQL/Kafka를 사용하며 poison DLQ와 PostgreSQL outage/redelivery까지 포함한다. `pnpm test:kafka:acl:e2e`는 격리된 실제 Kafka authorizer를 띄우고 허용/거부 ACL과 종료 후 container cleanup을 검증한다. 두 명령은 Docker daemon을 사용할 수 있는 환경에서 실행한다.
 
-단계 3의 retention 활성화, 실제 PostgreSQL 검증, 1M-row 성능 evidence는 [`docs/stage3-db-telemetry-runbook.md`](stage3-db-telemetry-runbook.md)의 순서와 매트릭스를 따른다. 성능 fixture 실행 중에는 retention scheduler를 비활성화하며 결과는 `artifacts/stage3-db-telemetry/benchmark-1m.json`에 남긴다. Node `22.15.0`/PostgreSQL `18.4`, 100만 row, warmup 5회/sample 20회의 최종 application-Prisma 경로에서 first page p95 `4.18ms`, middle cursor page p95 `171.95ms`, 24시간 dashboard p95 `67.15ms`, 최대 요청 RSS 증가 `110,592 bytes`였고, 목록은 `take + 1` sentinel을 포함해 요청당 `51`개 row만 materialize했다. 같은 artifact의 direct-SQL 측정은 EXPLAIN 비교를 위한 보조 evidence이며 first/middle/dashboard p95가 각각 `3.43ms`/`2.59ms`/`67.02ms`였다. 같은 fixture에서 실제 compiled `PrismaAdminAnalyticsRepository`를 실행한 `app-probe-1m.json`도 summary p95 `122.37ms`, timeseries p95 `168.99ms`, top images p95 `90.83ms`와 RSS gate를 모두 통과했다.
+단계 3의 retention 활성화와 재현 절차는 [`stage3-db-telemetry-runbook.md`](stage3-db-telemetry-runbook.md)를 따른다. 최신 근거는 **2026-11-03 완료 감사**의 [`telemetry-1m.json`](../artifacts/completion-audit/telemetry-1m.json)과 [`app-probe-1m.json`](../artifacts/completion-audit/app-probe-1m.json)이다. Node `22.23.1`/PostgreSQL `18.6`, 100만 row, warmup 5회/sample 20회에서 first/middle cursor page p95는 **5.42/6.47ms**, 24시간 dashboard p95는 **95.02ms**, 최대 요청 RSS 증가는 **946,176 bytes**였다. 실제 Prisma SQL의 EXPLAIN에서 첫/중간 페이지 모두 index 방문 **51행**, filter/recheck 제거 **0행**으로 bounded scan을 확인했다. authoritative Ready asset 5,000개를 갖춘 실제 compiled admin repository의 summary/timeseries/top images p95는 **74.87/134.09/124.59ms**였다. 성능 fixture 실행 중 retention scheduler는 비활성화한다. `artifacts/stage3-db-telemetry/`의 Node `22.15.0`/PostgreSQL `18.4` 결과는 2026-07의 **과거 비교 근거**이며 최신 결과가 아니다. 환경·실패 시도·reconciliation 5,000-file 프로필의 69.503초 수렴과 일반화 한계는 [완료 감사](file-server-completion-audit.md)를 함께 읽는다.
 
 적용해야 할 Prisma migration은 `prisma/migrations/000001_init`부터 `000011_add_image_asset_backfill_indexes`까지다. 특히 `000003`은 lifecycle event/idempotency 저장소, `000004`는 client subscription, `000005`는 lifecycle outbox, `000007`은 tenant rate-limit/audit, `000008`은 `(event_id, topic)` destination별 outbox 상태·lease/dead-letter와 subscription의 topic/principal/provisioning 상태를 추가하며 `000009`는 단계 3 query/keyset/retention용 index를 추가한다. `000010`은 `ImageAsset`/`ImageVariant`/`ImageVariantJob`, reconciliation lease/metric과 관련 enum/index를 expand-only로 추가한다. `000011`은 telemetry/lifecycle source에 image asset backfill composite index를 `CREATE INDEX CONCURRENTLY`로 추가한다. 배포 전에 `DATABASE_URL`을 설정하고 `pnpm db:migrate:deploy`를 실행하고 두 index의 `pg_index.indisvalid/indisready=true`를 확인한다. interrupted build로 INVALID index가 남으면 runbook대로 migration transaction 밖에서 `DROP INDEX CONCURRENTLY`, `migrate resolve --rolled-back`, deploy 재실행 순서로 복구한다. backfill·switch가 끝나도 이 단계에서 destructive contract migration을 실행하지 않는다.
 
@@ -535,8 +535,9 @@ endpoint, 응답 shape, 환경변수, alert 해석, final integration 검증 순
 
 ### 실제 운영 배포 전
 
-- `.github/workflows/deploy.yml`의 storage/resize/cache host publish는 현재 모든 host 인터페이스에 bind한다. 특히 resize와 storage GET은 내부 전용이므로 Nginx 뒤에 있다는 이유만으로 외부 비노출이라고 가정하지 않는다.
-- 실제 Nginx 위치, Docker network, host firewall과 외부 도달성 증거를 확인한 뒤 내부 서비스의 publish 제거 또는 loopback bind/방화벽 차단을 적용한다. 이 감사에서는 기존 접근 경로를 모른 채 bind 계약을 변경하거나 운영 배포를 실행하지 않았다.
+- `.github/workflows/deploy.yml`은 storage/resize/cache의 host publish를 `127.0.0.1`로 제한한다. 컨테이너 내부 `HOST=0.0.0.0`은 유지하고, 생성 시 FILE_SERVER_NET에 붙인 뒤 시작 전에 KAFKA_NET도 연결한다. default bridge에는 연결하지 않는다.
+- 지원하는 ingress는 같은 호스트의 Nginx → loopback 또는 FILE_SERVER_NET에 연결한 컨테이너 Nginx → 서비스 컨테이너다. 원격 호스트 Nginx가 세 서비스의 host port에 직접 접근하는 배포는 지원하지 않는다. 외부 이미지는 Nginx를 통해서만 제공하고 resize/storage GET은 내부 전용으로 유지한다.
+- `pnpm test:deployment:boundary`가 자격증명 없이 실제 Docker create/inspect로 loopback bind와 정확히 두 network 연결을 검증한다. 실제 Nginx HTTP/Kafka 연쇄는 `pnpm integration:travel-cloud:verify`로 별도 검증한다. 로컬 리허설 통과를 실제 운영 서버 배포 완료로 해석하지 않는다.
 - 배포 순서는 storage readiness → resize readiness → cache readiness로 수정했다. 기존 컨테이너를 먼저 교체하는 방식이므로 무중단 배포 보장은 아니며 CI와 실인프라 재검증이 필요하다.
 
 ### Client service 연동 등록 전

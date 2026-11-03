@@ -2,6 +2,7 @@ import {
 	ImageAssetState,
 	ImageVariantJobState,
 	ImageVariantState,
+	Prisma,
 	type ImageAsset,
 } from '@prisma/client';
 import {
@@ -860,7 +861,10 @@ describe('ImageAssetMetadataRepository', () => {
 			.fn()
 			.mockResolvedValue([{ storageKey: 'products/image/a.png' }]);
 		const variantFindMany = jest.fn().mockResolvedValue([]);
+		const transaction = { imageAsset: { findMany: assetFindMany } };
+		const runTransaction = jest.fn((work) => work(transaction));
 		const repository = new ImageAssetMetadataRepository({
+			$transaction: runTransaction,
 			imageAsset: { findMany: assetFindMany },
 			imageVariant: { findMany: variantFindMany },
 		} as unknown as PrismaService);
@@ -878,7 +882,7 @@ describe('ImageAssetMetadataRepository', () => {
 		expect(assetFindMany).toHaveBeenNthCalledWith(
 			1,
 			expect.objectContaining({
-				take: 25,
+				take: 9,
 				where: expect.objectContaining({
 					status: {
 						in: [ImageAssetState.Pending, ImageAssetState.Deleting],
@@ -889,7 +893,7 @@ describe('ImageAssetMetadataRepository', () => {
 		expect(assetFindMany).toHaveBeenNthCalledWith(
 			2,
 			expect.objectContaining({
-				take: 24,
+				take: 8,
 				where: expect.objectContaining({
 					status: ImageAssetState.Ready,
 					lastReconciledAt: null,
@@ -899,7 +903,7 @@ describe('ImageAssetMetadataRepository', () => {
 		expect(assetFindMany).toHaveBeenNthCalledWith(
 			3,
 			expect.objectContaining({
-				take: 23,
+				take: 8,
 				where: expect.objectContaining({
 					status: ImageAssetState.Ready,
 					lastReconciledAt: { lte: cutoff },
@@ -913,6 +917,154 @@ describe('ImageAssetMetadataRepository', () => {
 					storageKey: {
 						in: ['products/image/a.png', 'products/image/orphan.png'],
 					},
+				}),
+			}),
+		);
+		expect(runTransaction).toHaveBeenCalledWith(expect.any(Function), {
+			isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+			maxWait: 1_000,
+			timeout: 5_000,
+		});
+	});
+
+	it('requires enough reconciliation capacity to service every lane', async () => {
+		const repository = new ImageAssetMetadataRepository({} as PrismaService);
+		const cutoff = new Date('2026-07-10T00:00:00.000Z');
+
+		await expect(
+			repository.listReconciliationCandidates(cutoff, 1),
+		).rejects.toThrow('reconciliation limit must be at least 3');
+		await expect(
+			repository.listReconciliationCandidates(cutoff, 2),
+		).rejects.toThrow('reconciliation limit must be at least 3');
+	});
+
+	it('services every saturated lane across new repository instances', async () => {
+		const assetFindMany = jest.fn().mockImplementation(({ where, take }) => {
+			const lane = Array.isArray(where.status?.in)
+				? 'urgent'
+				: where.lastReconciledAt === null
+					? 'unreconciled'
+					: 'reconciled';
+			return Promise.resolve(
+				Array.from({ length: take }, (_, index) => ({
+					...pendingAsset({ assetId: `${lane}-${index}` }),
+					variants: [],
+				})),
+			);
+		});
+		const prisma = {
+			$transaction: jest.fn((work) =>
+				work({ imageAsset: { findMany: assetFindMany } }),
+			),
+		} as unknown as PrismaService;
+		const cutoff = new Date('2026-07-10T00:00:00.000Z');
+
+		for (let call = 0; call < 3; call += 1) {
+			const repository = new ImageAssetMetadataRepository(prisma);
+			await expect(
+				repository.listReconciliationCandidates(cutoff, 3),
+			).resolves.toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ assetId: 'urgent-0' }),
+					expect.objectContaining({ assetId: 'unreconciled-0' }),
+					expect.objectContaining({ assetId: 'reconciled-0' }),
+				]),
+			);
+		}
+	});
+
+	it('redistributes an empty reconciliation lane without exceeding take', async () => {
+		let materialized = 0;
+		const assetFindMany = jest.fn().mockImplementation(({ where, take }) => {
+			const lane = Array.isArray(where.status?.in)
+				? 'urgent'
+				: where.lastReconciledAt === null
+					? 'unreconciled'
+					: 'reconciled';
+			if (lane === 'unreconciled') return Promise.resolve([]);
+			const excluded = new Set<string>(where.assetId?.notIn ?? []);
+			const rows = Array.from({ length: 10 }, (_, index) => ({
+				...pendingAsset({ assetId: `${lane}-${index}` }),
+				variants: [],
+			}))
+				.filter(({ assetId }) => !excluded.has(assetId))
+				.slice(0, take);
+			materialized += rows.length;
+			return Promise.resolve(rows);
+		});
+		const repository = new ImageAssetMetadataRepository({
+			$transaction: jest.fn((work) =>
+				work({ imageAsset: { findMany: assetFindMany } }),
+			),
+		} as unknown as PrismaService);
+		const cutoff = new Date('2026-07-10T00:00:00.000Z');
+
+		const candidates = await repository.listReconciliationCandidates(cutoff, 3);
+
+		expect(candidates).toHaveLength(3);
+		expect(materialized).toBe(3);
+		expect(new Set(candidates.map(({ assetId }) => assetId))).toEqual(
+			new Set(['urgent-0', 'urgent-1', 'reconciled-0']),
+		);
+		expect(assetFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				take: 1,
+				where: expect.objectContaining({
+					assetId: { notIn: ['urgent-0', 'reconciled-0'] },
+					status: {
+						in: [ImageAssetState.Pending, ImageAssetState.Deleting],
+					},
+				}),
+			}),
+		);
+	});
+
+	it('excludes assets already selected by a different reconciliation lane', async () => {
+		const assetFindMany = jest.fn().mockImplementation(({ where }) => {
+			const excluded = new Set<string>(where.assetId?.notIn ?? []);
+			const lane = Array.isArray(where.status?.in)
+				? ['shared-asset']
+				: where.lastReconciledAt === null
+					? ['shared-asset', 'ready-new']
+					: ['ready-old'];
+			return Promise.resolve(
+				lane
+					.filter((assetId) => !excluded.has(assetId))
+					.slice(0, 1)
+					.map((assetId) => ({
+						...pendingAsset({ assetId }),
+						variants: [],
+					})),
+			);
+		});
+		const repository = new ImageAssetMetadataRepository({
+			$transaction: jest.fn((work) =>
+				work({ imageAsset: { findMany: assetFindMany } }),
+			),
+		} as unknown as PrismaService);
+		const cutoff = new Date('2026-07-10T00:00:00.000Z');
+
+		const candidates = await repository.listReconciliationCandidates(cutoff, 3);
+
+		expect(candidates.map(({ assetId }) => assetId)).toEqual([
+			'shared-asset',
+			'ready-new',
+			'ready-old',
+		]);
+		expect(assetFindMany).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				where: expect.objectContaining({
+					assetId: { notIn: ['shared-asset'] },
+				}),
+			}),
+		);
+		expect(assetFindMany).toHaveBeenNthCalledWith(
+			3,
+			expect.objectContaining({
+				where: expect.objectContaining({
+					assetId: { notIn: ['shared-asset', 'ready-new'] },
 				}),
 			}),
 		);

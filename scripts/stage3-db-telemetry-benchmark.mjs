@@ -15,6 +15,8 @@ const TABLE = `"${BENCHMARK_SCHEMA}"."telemetry_events"`;
 const DEFAULT_ROWS = 1_000_000;
 const DEFAULT_SAMPLES = 20;
 const DEFAULT_WARMUPS = 5;
+const APPLICATION_LIST_TAKE = 51;
+const MAX_APPLICATION_SCAN_ROWS = APPLICATION_LIST_TAKE * 2;
 const GATES = Object.freeze({
 	listP95Ms: 300,
 	dashboardP95Ms: 1_000,
@@ -88,13 +90,14 @@ export function createApplicationOperations(
 			prisma.telemetryEvent.findMany({
 				where: { clientServiceId },
 				orderBy: [{ occurredAt: 'desc' }, { eventId: 'desc' }],
-				take: 51,
+				take: APPLICATION_LIST_TAKE,
 			}),
 		middlePage: () =>
 			prisma.telemetryEvent.findMany({
 				where: {
 					AND: [
 						{ clientServiceId },
+						{ occurredAt: { lte: cursor.occurred_at } },
 						{
 							OR: [
 								{ occurredAt: { lt: cursor.occurred_at } },
@@ -107,7 +110,7 @@ export function createApplicationOperations(
 					],
 				},
 				orderBy: [{ occurredAt: 'desc' }, { eventId: 'desc' }],
-				take: 51,
+				take: APPLICATION_LIST_TAKE,
 			}),
 		dashboard24h: () =>
 			prisma.$queryRawUnsafe(dashboardSql, ...dashboardParameters),
@@ -154,7 +157,7 @@ export function percentile(values, quantile) {
 	return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
 }
 
-export function evaluateGates(measurements) {
+export function evaluateGates(measurements, applicationPlanBounds) {
 	const checks = {
 		firstPageP95: measurements.firstPage.p95Ms <= GATES.listP95Ms,
 		middlePageP95: measurements.middlePage.p95Ms <= GATES.listP95Ms,
@@ -165,13 +168,104 @@ export function evaluateGates(measurements) {
 				measurements.middlePage.maxRssDeltaBytes,
 				measurements.dashboard24h.maxRssDeltaBytes,
 			) <= GATES.rssDeltaBytes,
+		firstPageRowsBounded: applicationPlanBounds.firstPage.bounded,
+		middlePageRowsBounded: applicationPlanBounds.middlePage.bounded,
 	};
 	return { checks, passed: Object.values(checks).every(Boolean) };
+}
+
+export function summarizeTelemetryPlan(explainPlan) {
+	const summary = {
+		scanNodes: 0,
+		indexScanNodes: 0,
+		actualRows: 0,
+		rowsRemovedByFilter: 0,
+		rowsRemovedByIndexRecheck: 0,
+		totalRowsVisited: 0,
+	};
+	const root = Array.isArray(explainPlan) ? explainPlan[0]?.Plan : undefined;
+	visitPlan(root, (node) => {
+		if (node['Relation Name'] !== 'telemetry_events') return;
+		const loops = Number(node['Actual Loops'] ?? 1);
+		const actualRows = Number(node['Actual Rows'] ?? 0) * loops;
+		const removedByFilter = Number(node['Rows Removed by Filter'] ?? 0) * loops;
+		const removedByIndexRecheck =
+			Number(node['Rows Removed by Index Recheck'] ?? 0) * loops;
+		summary.scanNodes += 1;
+		if (String(node['Node Type'] ?? '').includes('Index')) {
+			summary.indexScanNodes += 1;
+		}
+		summary.actualRows += actualRows;
+		summary.rowsRemovedByFilter += removedByFilter;
+		summary.rowsRemovedByIndexRecheck += removedByIndexRecheck;
+	});
+	summary.totalRowsVisited =
+		summary.actualRows +
+		summary.rowsRemovedByFilter +
+		summary.rowsRemovedByIndexRecheck;
+	return summary;
+}
+
+export function evaluateApplicationPlanBounds(plans) {
+	const evaluate = (plan) => {
+		const summary = summarizeTelemetryPlan(plan);
+		return {
+			...summary,
+			bounded:
+				summary.scanNodes > 0 &&
+				summary.totalRowsVisited <= MAX_APPLICATION_SCAN_ROWS,
+		};
+	};
+	return {
+		maxRowsVisited: MAX_APPLICATION_SCAN_ROWS,
+		firstPage: evaluate(plans.firstPage),
+		middlePage: evaluate(plans.middlePage),
+	};
 }
 
 export function sanitizeDatabaseUrl(databaseUrl) {
 	const parsed = new URL(databaseUrl);
 	return `${parsed.protocol}//${parsed.hostname}:${parsed.port || '5432'}${parsed.pathname}`;
+}
+
+function createPrismaQueryCapture(prisma) {
+	let activeCapture = null;
+	prisma.$on('query', (event) => {
+		if (activeCapture && event.query.includes('"telemetry_events"')) {
+			activeCapture.push(event);
+		}
+	});
+
+	return async (operation) => {
+		const events = [];
+		activeCapture = events;
+		try {
+			await operation();
+		} finally {
+			activeCapture = null;
+		}
+		if (events.length !== 1) {
+			throw new Error(
+				`Expected one emitted telemetry Prisma query, received ${events.length}`,
+			);
+		}
+		const event = events[0];
+		const parameters = JSON.parse(event.params);
+		if (!Array.isArray(parameters)) {
+			throw new Error('Emitted Prisma query parameters must be an array');
+		}
+		return {
+			query: event.query,
+			parameters,
+			emittedDurationMs: event.duration,
+		};
+	};
+}
+
+function visitPlan(node, visitor) {
+	if (!node || typeof node !== 'object') return;
+	visitor(node);
+	for (const child of node.Plans ?? []) visitPlan(child, visitor);
 }
 
 async function main() {
@@ -195,7 +289,9 @@ async function main() {
 	});
 	const prisma = new PrismaClient({
 		adapter: new PrismaPg({ connectionString }, { schema: BENCHMARK_SCHEMA }),
+		log: [{ emit: 'event', level: 'query' }],
 	});
+	const capturePrismaQuery = createPrismaQueryCapture(prisma);
 	const startedAt = new Date();
 	try {
 		await prisma.$connect();
@@ -250,7 +346,30 @@ async function main() {
 			middlePage: await measureOperation(application.middlePage, options),
 			dashboard24h: await measureOperation(application.dashboard24h, options),
 		};
-		const gates = evaluateGates(measurements);
+		const capturedApplicationQueries = {
+			firstPage: await capturePrismaQuery(application.firstPage),
+			middlePage: await capturePrismaQuery(application.middlePage),
+		};
+		const applicationExplainAnalyzeBuffers = {};
+		for (const [name, capturedQuery] of Object.entries(
+			capturedApplicationQueries,
+		)) {
+			const plan = await explain(
+				pool,
+				capturedQuery.query,
+				capturedQuery.parameters,
+			);
+			applicationExplainAnalyzeBuffers[name] = {
+				...capturedQuery,
+				plan,
+				scan: summarizeTelemetryPlan(plan),
+			};
+		}
+		const applicationPlanBounds = evaluateApplicationPlanBounds({
+			firstPage: applicationExplainAnalyzeBuffers.firstPage.plan,
+			middlePage: applicationExplainAnalyzeBuffers.middlePage.plan,
+		});
+		const gates = evaluateGates(measurements, applicationPlanBounds);
 		const evidence = {
 			schemaVersion: 1,
 			benchmark: 'stage3-db-telemetry',
@@ -271,7 +390,7 @@ async function main() {
 			applicationProbe: {
 				client: '@prisma/client with @prisma/adapter-pg',
 				schema: BENCHMARK_SCHEMA,
-				listTake: 51,
+				listTake: APPLICATION_LIST_TAKE,
 				middleCursor: {
 					occurredAt: cursor.occurred_at,
 					eventId: cursor.event_id,
@@ -287,6 +406,8 @@ async function main() {
 				...gates,
 			},
 			measurements,
+			applicationExplainAnalyzeBuffers,
+			applicationPlanBounds,
 			supplementalDirectSqlMeasurements,
 			explainAnalyzeBuffers: { before, after },
 			stage3IndexNames: stage3Indexes.map(indexName),

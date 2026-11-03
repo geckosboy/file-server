@@ -71,3 +71,26 @@ test('deployment replaces upstreams before dependent image services', () => {
 	assert.match(resize, /needs: \[publish, deploy-storage\]/);
 	assert.match(cache, /needs: \[publish, deploy-resize\]/);
 });
+
+test('deployment publishes only loopback ports and attaches cache Kafka before start', () => {
+	const deploy = read('.github/workflows/deploy.yml');
+	for (const app of ['STORAGE', 'RESIZE', 'CACHE']) {
+		assert.ok(
+			deploy.includes(
+				`--publish "127.0.0.1:${'${{ secrets.'}${app}_PORT }}:${'${{ secrets.'}${app}_PORT }}"`,
+			),
+		);
+	}
+	assert.doesNotMatch(deploy, /--publish "\$\{\{ secrets\./);
+	assert.equal(
+		deploy.split('--network "${{ secrets.FILE_SERVER_NET }}"').length - 1,
+		3,
+	);
+	assert.doesNotMatch(
+		deploy,
+		/network connect "\$\{\{ secrets.FILE_SERVER_NET/,
+	);
+	const cache = deploy.split('  deploy-cache:')[1];
+	assert.ok(cache.indexOf('secrets.KAFKA_NET') > 0);
+	assert.ok(cache.indexOf('secrets.KAFKA_NET') < cache.indexOf('docker start'));
+});

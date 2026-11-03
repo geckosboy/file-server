@@ -1,0 +1,91 @@
+{
+  "event": "image_reconciliation_capacity_verified",
+  "fixture": {
+    "root": "image-lifecycle-e2e-system-55299/capacity",
+    "directories": 50,
+    "pngFilesCreated": 5000,
+    "readyAssets": 3000,
+    "neverReconciledReadyAssets": 1500,
+    "oldReconciledReadyAssets": 1500,
+    "pendingAssets": 250,
+    "orphanObjects": 1750,
+    "missingReadySentinels": 2,
+    "checksumReadySentinels": 2,
+    "stagedOrphanSentinels": 1,
+    "inboundOrphanSentinels": 1
+  },
+  "profile": {
+    "intervalMs": 250,
+    "staleAfterMs": 60000,
+    "assetBatchSize": 100,
+    "objectScanLimit": 1000,
+    "maximumElapsedMs": 300000
+  },
+  "elapsedMs": 69503,
+  "fairness": {
+    "cutoffTimestamp": "2026-11-03T01:22:37.669Z",
+    "laneCounts": {
+      "urgent": 250,
+      "neverReconciled": 1500,
+      "oldReconciled": 1500
+    },
+    "rejectedTake": [
+      1,
+      2
+    ],
+    "takeThree": [
+      [
+        "urgent",
+        "never-reconciled",
+        "old-reconciled"
+      ],
+      [
+        "urgent",
+        "never-reconciled",
+        "old-reconciled"
+      ],
+      [
+        "urgent",
+        "never-reconciled",
+        "old-reconciled"
+      ]
+    ],
+    "takeFour": [
+      [
+        "urgent",
+        "urgent",
+        "never-reconciled",
+        "old-reconciled"
+      ],
+      [
+        "urgent",
+        "urgent",
+        "never-reconciled",
+        "old-reconciled"
+      ],
+      [
+        "urgent",
+        "urgent",
+        "never-reconciled",
+        "old-reconciled"
+      ]
+    ],
+    "boundedTake": 100
+  },
+  "reports": {
+    "count": 35,
+    "maximumCheckedAssets": 100,
+    "maximumRemovedOrphanObjects": 998,
+    "p95DurationMs": 3231
+  },
+  "childRss": {
+    "processCount": 1,
+    "samples": [
+      {
+        "pid": 56863,
+        "rssBytes": 237305856
+      }
+    ]
+  },
+  "scopeCaveat": "This explicit accelerated profile proves the declared 5,000-file fixture only. The production default 60-second cadence does not prove a five-minute bound for arbitrary backlog or inventory sizes."
+}

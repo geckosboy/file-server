@@ -224,12 +224,12 @@ export class ImageFilesystemStore {
 		}
 
 		const sorted = objects.sort((left, right) =>
-			left.storageKey.localeCompare(right.storageKey),
+			compareCursors(left.storageKey, right.storageKey),
 		);
 		return {
 			items: sorted,
 			nextCursor:
-				files.length > limit ? (sorted.at(-1)?.storageKey ?? null) : null,
+				files.length > limit ? toRelativeCursor(root, files[limit - 1]) : null,
 		};
 	}
 
@@ -272,7 +272,7 @@ export class ImageFilesystemStore {
 		}
 
 		return {
-			items: removed.sort(),
+			items: removed.sort(compareCursors),
 			nextCursor:
 				files.length > limit ? toRelativeCursor(root, files[limit - 1]) : null,
 		};
@@ -300,7 +300,7 @@ export class ImageFilesystemStore {
 		}
 
 		return {
-			items: removed.sort(),
+			items: removed.sort(compareCursors),
 			nextCursor:
 				files.length > limit ? toRelativeCursor(root, files[limit - 1]) : null,
 		};
@@ -382,11 +382,18 @@ const walkFiles = async (
 	if (files.length >= limit) {
 		return files;
 	}
+	const root = options.root ?? directory;
 	let entries;
 	try {
-		entries = (await readdir(directory, { withFileTypes: true })).sort(
-			(left, right) => left.name.localeCompare(right.name),
-		);
+		entries = (await readdir(directory, { withFileTypes: true }))
+			.map((entry) => {
+				const entryPath = path.resolve(directory, entry.name);
+				const cursor = `${toRelativeCursor(root, entryPath)}${
+					entry.isDirectory() ? '/' : ''
+				}`;
+				return { cursor, entry, entryPath };
+			})
+			.sort((left, right) => compareCursors(left.cursor, right.cursor));
 	} catch (error) {
 		if (isNodeError(error) && error.code === 'ENOENT') {
 			return [];
@@ -394,22 +401,21 @@ const walkFiles = async (
 		throw error;
 	}
 
-	for (const entry of entries) {
+	for (const { entry, entryPath } of entries) {
 		if (files.length >= limit) {
 			break;
 		}
-		const entryPath = path.resolve(directory, entry.name);
 		if (
 			entry.isDirectory() &&
 			(options.shouldEnterDirectory?.(entry.name) ?? true)
 		) {
-			await walkFiles(entryPath, limit, files, options);
+			await walkFiles(entryPath, limit, files, { ...options, root });
 		} else if (
 			entry.isFile() &&
 			(options.includeFile?.(entryPath) ?? true) &&
 			(!options.afterCursor ||
-				toRelativeCursor(options.root ?? directory, entryPath) >
-					options.afterCursor)
+				compareCursors(toRelativeCursor(root, entryPath), options.afterCursor) >
+					0)
 		) {
 			files.push(entryPath);
 		}
@@ -422,6 +428,9 @@ const normalizeLimit = (limit: number) =>
 
 const toRelativeCursor = (root: string, file: string) =>
 	path.relative(root, file).split(path.sep).join('/');
+
+const compareCursors = (left: string, right: string) =>
+	left < right ? -1 : left > right ? 1 : 0;
 
 const isNodeError = (error: unknown): error is NodeJS.ErrnoException =>
 	typeof error === 'object' && error !== null && 'code' in error;

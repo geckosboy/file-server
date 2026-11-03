@@ -306,7 +306,7 @@
 					포함합니다.
 				</p>
 				<div class="meta">
-					<span class="badge">2026-11-02 완료 감사 반영</span>
+					<span class="badge">2026-11-03 완료 감사 반영</span>
 					<span class="badge">Storage / Resize / Cache</span>
 					<span class="badge">PostgreSQL + Prisma</span>
 					<span class="badge">Kafka + Outbox</span>
@@ -333,8 +333,8 @@
 			<section class="card" id="completion-audit">
 				<h2>필수 범위 완료 감사</h2>
 				<p>
-					단계 0~5의 핵심 기능은 구현되어 있고 과거 통합 PASS 기록이 있습니다.
-					최신 revision의 모든 release gate 통과나 운영
+					단계 0~5의 구현·정합성 수정과 최신 로컬 검증 gate를 통과했습니다. 실제
+					PostgreSQL/Kafka·Docker·Nginx까지 검증했으며, 운영 서버의
 					migration/backfill/cutover 완료와는 구분합니다. 선택 단계 6과
 					TypeScript 7은 현재 범위에서 제외합니다.
 				</p>
@@ -351,15 +351,15 @@
 						무효화를 보장하지 않습니다.
 					</li>
 					<li>
-						lifecycle 및 Kafka ACL system E2E를 CI gate로 추가했습니다. 이 감사
-						환경의 Docker 소켓·HTTP listen 권한 제한으로 전체 재실행 PASS는 아직
-						확인하지 못했습니다.
+						lifecycle 및 Kafka ACL system E2E를 CI gate로 추가했습니다. 권한
+						경로로 전체 단위·HTTP E2E·기본 빌드·Docker smoke·Kafka ACL·실제
+						Nginx 연동을 재검증했습니다. 최신 성능 및 용량 근거는 아래 감사
+						기록을 따릅니다.
 					</li>
 					<li>
-						활성 Kafka consumer의 broker 누락은 부팅 오류입니다. 실제 운영
-						workflow의 host port 공개와 Nginx/firewall 경계는 별도 검증해야
-						하며, 아래 통합 하네스의 내부 전용 network와 동일하다고 가정하지
-						않습니다.
+						활성 Kafka consumer의 broker 누락은 부팅 오류입니다. 배포 workflow는
+						host port를 loopback에만 공개하며 FILE_SERVER_NET/KAFKA_NET 두
+						network를 시작 전에 연결합니다. 외부 진입은 Nginx만 사용합니다.
 					</li>
 				</ul>
 				<p>
@@ -1275,13 +1275,16 @@ pnpm test:image-lifecycle:system:e2e</pre>
 				<h3>검증 명령</h3>
 				<pre class="code">
 pnpm all:lint
+pnpm all:typecheck
 pnpm all:test
+pnpm test:scripts
 pnpm test:component:e2e
 pnpm all:build
 pnpm test:image-lifecycle:system:e2e
 pnpm test:kafka:acl:e2e
 pnpm docker:build
 pnpm test:docker:smoke
+pnpm test:deployment:boundary
 pnpm integration:travel-cloud:verify</pre>
 				<div class="ok">
 					상세 운영 절차는
@@ -1304,12 +1307,17 @@ pnpm integration:travel-cloud:verify</pre>
 					시점을 함께 맞춰야 합니다.
 				</p>
 				<pre class="code">
-docker run -d \
+docker create \
   --env-file ${{ secrets.STORAGE_ENV_PATH }} \
+  --env HOST=0.0.0.0 \
   -v file_dump_volume:/usr/index/apps/storage/dist/apps/storage/assets \
-  -p ${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }} \
+  --network ${{ secrets.FILE_SERVER_NET }} \
+  -p 127.0.0.1:${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }} \
   --name file_server_storage \
   --restart always ghcr.io/.../storage:latest
+
+docker network connect ${{ secrets.KAFKA_NET }} file_server_storage
+docker start file_server_storage
 
 docker volume inspect file_dump_volume</pre>
 				<div class="warn">

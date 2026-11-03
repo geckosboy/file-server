@@ -182,5 +182,7 @@ jobs:
         run: pnpm db:generate
       - name: Build runtime images
         run: pnpm docker:build
+      - name: Verify loopback publish and dependency network attachment
+        run: pnpm test:deployment:boundary
       - name: Start images and verify ports and secret boundaries
         run: pnpm test:docker:smoke

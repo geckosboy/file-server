@@ -64,6 +64,11 @@ describe('Prisma event list repositories', () => {
 							]),
 						}),
 						{
+							occurredAt: {
+								lte: new Date('2026-07-01T12:00:00.000Z'),
+							},
+						},
+						{
 							OR: [
 								{
 									occurredAt: {

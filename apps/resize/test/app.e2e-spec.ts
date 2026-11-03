@@ -142,6 +142,7 @@ describe('리사이즈 앱 e2e', () => {
 			}),
 		);
 		await app.init();
+		await app.listen(0, '127.0.0.1');
 	});
 
 	afterEach(async () => {
@@ -155,6 +156,7 @@ describe('리사이즈 앱 e2e', () => {
 	});
 
 	it('상태 확인 요청에 정상 응답을 반환한다', () => {
+		expect(app.getHttpServer().listening).toBe(true);
 		return request(app.getHttpServer())
 			.get('/health-check')
 			.expect(200)

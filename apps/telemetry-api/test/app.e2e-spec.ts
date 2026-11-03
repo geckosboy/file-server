@@ -81,6 +81,7 @@ describe('텔레메트리 API e2e', () => {
 
 		app = moduleFixture.createNestApplication();
 		await app.init();
+		await app.listen(0, '127.0.0.1');
 	});
 
 	afterEach(async () => {
@@ -88,6 +89,7 @@ describe('텔레메트리 API e2e', () => {
 	});
 
 	it('관리자 상태 확인 요청에 정상 상태를 반환한다', async () => {
+		expect(app.getHttpServer().listening).toBe(true);
 		await request(app.getHttpServer())
 			.get('/api/admin/health')
 			.set('x-admin-token', adminToken)

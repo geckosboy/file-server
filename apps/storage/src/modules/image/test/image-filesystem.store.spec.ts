@@ -70,6 +70,7 @@ describe('파일시스템 이미지 저장소', () => {
 	});
 
 	afterEach(async () => {
+		jest.restoreAllMocks();
 		await rm(fixtureRoot, { recursive: true, force: true });
 		await rm(sourcePath, { force: true });
 	});
@@ -310,7 +311,146 @@ describe('파일시스템 이미지 저장소', () => {
 			'image-lifecycle-filesystem/image/.staging/b.stage',
 		]);
 	});
+
+	it('object/stage/inbound cursor가 binary full-path 순서로 모든 키를 한 번씩 순회한다', async () => {
+		const scanAssetsRoot = path.resolve(fixtureRoot, 'cursor-assets');
+		const scanTempRoot = path.resolve(fixtureRoot, 'cursor-temp');
+		jest
+			.spyOn(SharpStrategy.prototype, 'getMainDirectory')
+			.mockImplementation((additionalPath) =>
+				path.resolve(scanAssetsRoot, additionalPath ?? ''),
+			);
+		jest
+			.spyOn(SharpStrategy.prototype, 'getTempDirectory')
+			.mockImplementation((additionalPath) =>
+				path.resolve(scanTempRoot, additionalPath ?? ''),
+			);
+		const objectDirectory = path.resolve(
+			scanAssetsRoot,
+			'image-lifecycle-filesystem',
+			'image',
+		);
+		const nestedObjectDirectory = path.resolve(objectDirectory, 'B', 'image');
+		const stagingDirectory = path.resolve(objectDirectory, '.staging');
+		const nestedStagingDirectory = path.resolve(
+			nestedObjectDirectory,
+			'.staging',
+		);
+		await Promise.all([
+			mkdir(stagingDirectory, { recursive: true }),
+			mkdir(nestedStagingDirectory, { recursive: true }),
+		]);
+
+		const objectFiles = [
+			path.resolve(objectDirectory, '-dash.png'),
+			path.resolve(objectDirectory, '0.png'),
+			path.resolve(objectDirectory, 'B.png'),
+			path.resolve(nestedObjectDirectory, 'nested.png'),
+			path.resolve(objectDirectory, 'a.png'),
+		];
+		const stagedFiles = [
+			path.resolve(stagingDirectory, '-dash.stage'),
+			path.resolve(stagingDirectory, '0.stage'),
+			path.resolve(stagingDirectory, 'B.stage'),
+			path.resolve(stagingDirectory, 'a.stage'),
+			path.resolve(nestedStagingDirectory, 'nested.stage'),
+		];
+		await Promise.all(
+			[...objectFiles, ...stagedFiles].map((file) => writeFile(file, file)),
+		);
+		await markFilesStale(stagedFiles);
+
+		const objectItems = await collectCursorPages((cursor) =>
+			store.scanObjects({ limit: 1, cursor }),
+		);
+		expect(
+			objectItems
+				.map((item) => item.storageKey)
+				.filter((key) => key.startsWith('image-lifecycle-filesystem/')),
+		).toEqual([
+			'image-lifecycle-filesystem/image/-dash.png',
+			'image-lifecycle-filesystem/image/0.png',
+			'image-lifecycle-filesystem/image/B.png',
+			'image-lifecycle-filesystem/image/B/image/nested.png',
+			'image-lifecycle-filesystem/image/a.png',
+		]);
+
+		const stagedItems = await collectCursorPages((cursor) =>
+			store.scanAndCleanupStagedObjects({
+				olderThan: new Date('2026-01-01T00:00:00.000Z'),
+				limit: 1,
+				cursor,
+			}),
+		);
+		expect(
+			stagedItems.filter((key) =>
+				key.startsWith('image-lifecycle-filesystem/'),
+			),
+		).toEqual([
+			'image-lifecycle-filesystem/image/.staging/-dash.stage',
+			'image-lifecycle-filesystem/image/.staging/0.stage',
+			'image-lifecycle-filesystem/image/.staging/B.stage',
+			'image-lifecycle-filesystem/image/.staging/a.stage',
+			'image-lifecycle-filesystem/image/B/image/.staging/nested.stage',
+		]);
+
+		const inboundDirectory = path.resolve(
+			scanTempRoot,
+			'image-lifecycle-cursor-order',
+		);
+		const nestedInboundDirectory = path.resolve(inboundDirectory, 'B');
+		await mkdir(nestedInboundDirectory, { recursive: true });
+		const inboundFiles = [
+			path.resolve(inboundDirectory, '-dash.tmp'),
+			path.resolve(inboundDirectory, '0.tmp'),
+			path.resolve(inboundDirectory, 'B.tmp'),
+			path.resolve(nestedInboundDirectory, 'nested.tmp'),
+			path.resolve(inboundDirectory, 'a.tmp'),
+		];
+		await Promise.all(inboundFiles.map((file) => writeFile(file, file)));
+		await markFilesStale(inboundFiles);
+
+		const inboundItems = await collectCursorPages((cursor) =>
+			store.scanAndCleanupInboundTempFiles({
+				olderThan: new Date('2026-01-01T00:00:00.000Z'),
+				limit: 1,
+				cursor,
+			}),
+		);
+		expect(
+			inboundItems.filter((key) =>
+				key.startsWith('image-lifecycle-cursor-order/'),
+			),
+		).toEqual([
+			'image-lifecycle-cursor-order/-dash.tmp',
+			'image-lifecycle-cursor-order/0.tmp',
+			'image-lifecycle-cursor-order/B.tmp',
+			'image-lifecycle-cursor-order/B/nested.tmp',
+			'image-lifecycle-cursor-order/a.tmp',
+		]);
+	});
 });
+
+const collectCursorPages = async <T>(
+	scan: (cursor?: string) => Promise<{ items: T[]; nextCursor: string | null }>,
+) => {
+	const items: T[] = [];
+	let cursor: string | undefined;
+	for (let page = 0; page < 10_000; page += 1) {
+		const result = await scan(cursor);
+		expect(result.items.length).toBeLessThanOrEqual(1);
+		items.push(...result.items);
+		if (!result.nextCursor) return items;
+		if (cursor) expect(result.nextCursor > cursor).toBe(true);
+		cursor = result.nextCursor;
+	}
+	throw new Error('filesystem cursor did not terminate');
+};
+
+const markFilesStale = async (files: string[]) => {
+	const staleTime = new Date('2025-01-01T00:00:00.000Z');
+	await Promise.all(files.map((file) => utimes(file, staleTime, staleTime)));
+};
 
 const stageDefault = (
 	store: ImageFilesystemStore,

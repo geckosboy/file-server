@@ -191,6 +191,11 @@ function toTelemetryEventWhere(
 			...(query.cursor
 				? [
 						{
+							occurredAt: {
+								lte: new Date(query.cursor.occurredAt),
+							},
+						},
+						{
 							OR: [
 								{ occurredAt: { lt: new Date(query.cursor.occurredAt) } },
 								{

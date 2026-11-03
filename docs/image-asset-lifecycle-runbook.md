@@ -413,6 +413,10 @@ IMAGE_VARIANT_JOB_FAILED_READINESS_THRESHOLD=0
 
 effective scheduler cadence는 `IMAGE_RECONCILIATION_INTERVAL_MS`가 제어한다. 이 값이 없는 기존 배포에서만 `IMAGE_RECONCILIATION_BATCH_SLEEP_MS`를 호환 별칭으로 읽으며, 두 값이 있으면 `INTERVAL`이 우선한다. 4분 stale threshold + 1분 cadence는 bounded small-fixture에서 5분 탐지를 목표로 하는 설정이다. 큰 backlog이나 filesystem inventory를 한번에 모두 검사한다는 hard SLA가 아니며, batch/scan 상한에 따른 지연은 health metric과 alert로 관측한다.
 
+Reconciliation metadata batch는 **최소 3, 최대 1,000**이다. 기존 `IMAGE_RECONCILIATION_BATCH_SIZE=1/2` 배포는 3 이상으로 변경해야 하며 작은 값을 조용히 확대하지 않는다. Pending/Deleting, 미검사 Ready, 기검사 Ready 세 lane에 매번 최소 한 자리를 배정하고 남는 자리를 재분배한다. 후보 조회는 bounded `RepeatableRead` snapshot과 선택된 assetId 제외 조건을 사용하므로 상태 전이 중 중복과 lease owner 교체 후 기아를 피한다. backfill batch 크기와는 별개의 설정이다.
+
+Filesystem object/staging/inbound cursor는 locale에 의존하지 않는 binary 상대경로 순서다. 디렉터리 subtree를 포함해 같은 기준으로 순회·비교하므로 대소문자 및 파일명 prefix가 있어도 건너뛰지 않는다. 반환 수는 bounded지만 한 directory의 `readdir`는 그 directory의 entry를 materialize하므로 메모리와 sweep 시간은 실제 디렉터리 크기로도 검증해야 한다.
+
 system harness가 crash boundary를 재현할 때만 `NODE_ENV=test`, `IMAGE_LIFECYCLE_TEST_FAILPOINTS_ENABLED=true`, `IMAGE_LIFECYCLE_TEST_FAILPOINT_ACTION=exit`과 함께 `IMAGE_LIFECYCLE_TEST_FAILPOINT`를 설정한다. 지원 값은 `after-pending`, `after-stage-write`, `before-stage-checksum`, `after-stage-checksum`, `before-promote`, `after-promote`, `before-ready-transaction`, `after-ready-transaction`이다. failpoint가 production/non-test process에 유입되면 upload는 fail-closed한다.
 
 ## 8. reconciliation과 health
@@ -552,6 +556,8 @@ pnpm test:docker:smoke
 `pnpm test:image-lifecycle:system:e2e`의 기본 phase는 migration, one-pass/materialized multi-batch backfill과 incomplete/cutover audit, reconciliation, app crash recovery, variant Kafka retry/poison/duplicate, two-replica cache invalidation, delete/worker race와 cleanup을 실제 PostgreSQL/Kafka/process 경로로 검증한다. 2026-07-11 최종 로컬 실행은 11개 migration과 valid/ready source index, 3-row batch-size-1 backfill/재실행, max-batch incomplete dry-run, post-snapshot delete tombstone, DB gap 0이지만 ingestion drain confirmation이 없는 audit의 exit code 2, 그 뒤 지연 lifecycle ingest를 반영한 drain-confirmed zero-gap audit, 7개 crash boundary, reconciliation `9,420ms`, late Deleted variant cleanup `102ms`를 통과했다. variant 개수별 upload p95는 0/1/5/20개에서 각각 `73.19/184.04/129.99/303.12ms`였다. 성공 시 `image_lifecycle_system_e2e_passed` JSON을 출력하고 자신이 만든 Docker container/network/volume을 정리해야 한다.
 
 ### 11.3 documentation
+
+기본 `capacity` phase는 별도 ON_DEMAND Client Service에서 PNG 5,000개(Ready 3,000 + Pending 250 + orphan 1,750), 두 Ready lane의 missing/checksum sentinel, staging/inbound temp를 검증한다. 실제 scheduler를 `interval=250ms`, `stale=60s`, `batch=100`, `scan=1,000` 프로필로 실행하며 후보 lane·파일/DB 수렴·5분 gate·tick p95·해당 child RSS 표본을 `artifacts/completion-audit/reconciliation-capacity.json`에 기록한다. UTC timestamp fixture와 variant/job 0건을 검증해 시간대와 PRE_GENERATE 부하가 결과를 오염시키지 않게 한다. 이 명시적 프로필의 결과를 기본 60초 cadence나 무제한 inventory의 보장으로 일반화하지 않는다. 독립 디버깅은 `env IMAGE_LIFECYCLE_E2E_PHASES=capacity pnpm test:image-lifecycle:system:e2e`이며, 부분 실행만으로 기본 전체 phase 통과를 주장하지 않는다. 최신 결과는 [완료 감사 기록](file-server-completion-audit.md)을 따른다.
 
 ```bash
 pnpm exec prettier --check docs/file-server-integration-handoff.md docs/image-asset-lifecycle-runbook.md

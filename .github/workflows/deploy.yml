@@ -73,12 +73,12 @@ jobs:
           docker create \
             --env-file "${{ secrets.STORAGE_ENV_PATH }}" \
             --env HOST=0.0.0.0 \
+            --network "${{ secrets.FILE_SERVER_NET }}" \
             --volume "$FILE_DUMP_VOLUME:/usr/index/apps/storage/dist/apps/storage/assets" \
-            --publish "${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }}" \
+            --publish "127.0.0.1:${{ secrets.STORAGE_PORT }}:${{ secrets.STORAGE_PORT }}" \
             --name "$CONTAINER_NAME" \
             --restart always \
             "$IMAGE"
-          docker network connect "${{ secrets.FILE_SERVER_NET }}" "$CONTAINER_NAME"
           docker network connect "${{ secrets.KAFKA_NET }}" "$CONTAINER_NAME"
           docker start "$CONTAINER_NAME"
           curl --fail --retry 20 --retry-delay 1 --retry-all-errors \
@@ -105,11 +105,11 @@ jobs:
           docker create \
             --env-file "${{ secrets.RESIZE_ENV_PATH }}" \
             --env HOST=0.0.0.0 \
-            --publish "${{ secrets.RESIZE_PORT }}:${{ secrets.RESIZE_PORT }}" \
+            --network "${{ secrets.FILE_SERVER_NET }}" \
+            --publish "127.0.0.1:${{ secrets.RESIZE_PORT }}:${{ secrets.RESIZE_PORT }}" \
             --name "$CONTAINER_NAME" \
             --restart always \
             "$IMAGE"
-          docker network connect "${{ secrets.FILE_SERVER_NET }}" "$CONTAINER_NAME"
           docker network connect "${{ secrets.KAFKA_NET }}" "$CONTAINER_NAME"
           docker start "$CONTAINER_NAME"
           curl --fail --retry 20 --retry-delay 1 --retry-all-errors \
@@ -136,11 +136,12 @@ jobs:
           docker create \
             --env-file "${{ secrets.CACHE_ENV_PATH }}" \
             --env HOST=0.0.0.0 \
-            --publish "${{ secrets.CACHE_PORT }}:${{ secrets.CACHE_PORT }}" \
+            --network "${{ secrets.FILE_SERVER_NET }}" \
+            --publish "127.0.0.1:${{ secrets.CACHE_PORT }}:${{ secrets.CACHE_PORT }}" \
             --name "$CONTAINER_NAME" \
             --restart always \
             "$IMAGE"
-          docker network connect "${{ secrets.FILE_SERVER_NET }}" "$CONTAINER_NAME"
+          docker network connect "${{ secrets.KAFKA_NET }}" "$CONTAINER_NAME"
           docker start "$CONTAINER_NAME"
           curl --fail --retry 20 --retry-delay 1 --retry-all-errors \
             "http://127.0.0.1:${{ secrets.CACHE_PORT }}/health-check"

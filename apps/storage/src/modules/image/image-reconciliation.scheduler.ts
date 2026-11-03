@@ -114,10 +114,7 @@ export const readImageReconciliationConfig = (
 		env.IMAGE_RECONCILIATION_LOCK_TIMEOUT_MS,
 		DEFAULT_LOCK_TIMEOUT_MS,
 	),
-	batchSize: readPositiveInteger(
-		env.IMAGE_RECONCILIATION_BATCH_SIZE,
-		DEFAULT_BATCH_SIZE,
-	),
+	batchSize: readReconciliationBatchSize(env.IMAGE_RECONCILIATION_BATCH_SIZE),
 	objectScanLimit: readPositiveInteger(
 		env.IMAGE_RECONCILIATION_OBJECT_SCAN_LIMIT,
 		DEFAULT_SCAN_LIMIT,
@@ -137,4 +134,12 @@ export const readImageReconciliationConfig = (
 const readPositiveInteger = (value: string | undefined, fallback: number) => {
 	const parsed = value === undefined ? fallback : Number(value);
 	return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const readReconciliationBatchSize = (value: string | undefined) => {
+	const size = readPositiveInteger(value, DEFAULT_BATCH_SIZE);
+	if (size < 3) {
+		throw new Error('IMAGE_RECONCILIATION_BATCH_SIZE는 3 이상이어야 합니다.');
+	}
+	return size;
 };

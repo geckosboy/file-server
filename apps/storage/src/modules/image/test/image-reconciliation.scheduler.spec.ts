@@ -74,6 +74,17 @@ describe('이미지 reconciliation scheduler', () => {
 		).toEqual(expect.objectContaining({ intervalMs: 30_000 }));
 	});
 
+	it.each(['1', '2'])(
+		'batch=%s는 세 복구 lane의 공정성을 보장할 수 없어 거부한다',
+		(batchSize) => {
+			expect(() =>
+				readImageReconciliationConfig({
+					IMAGE_RECONCILIATION_BATCH_SIZE: batchSize,
+				}),
+			).toThrow('IMAGE_RECONCILIATION_BATCH_SIZE');
+		},
+	);
+
 	it('같은 프로세스의 중복 tick을 합치고 bounded reconciliation 입력을 전달한다', async () => {
 		jest.useFakeTimers();
 		let resolveRun: (() => void) | undefined;

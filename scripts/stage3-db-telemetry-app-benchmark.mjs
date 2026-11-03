@@ -11,6 +11,48 @@ const DEFAULT_WARMUPS = 5;
 const LIST_P95_GATE_MS = 300;
 const DASHBOARD_P95_GATE_MS = 1_000;
 const RSS_GATE_BYTES = 100 * 1024 * 1024;
+const BENCHMARK_SCHEMA = 'stage3_telemetry_benchmark';
+const AUTHORITATIVE_CLIENT_SERVICE_ID = 'service-03';
+
+export function authoritativeFixtureStatements() {
+	const schema = `"${BENCHMARK_SCHEMA}"`;
+	return [
+		`DROP TABLE IF EXISTS ${schema}."image_lifecycle_events", ${schema}."image_assets", ${schema}."client_services" CASCADE`,
+		`CREATE UNLOGGED TABLE ${schema}."client_services" (LIKE public."client_services" INCLUDING ALL)`,
+		`CREATE UNLOGGED TABLE ${schema}."image_assets" (LIKE public."image_assets" INCLUDING ALL)`,
+		`CREATE UNLOGGED TABLE ${schema}."image_lifecycle_events" (LIKE public."image_lifecycle_events" INCLUDING ALL)`,
+		`INSERT INTO ${schema}."client_services" (
+			"id", "slug", "name", "owner", "status", "created_at", "updated_at"
+		) VALUES (
+			'${AUTHORITATIVE_CLIENT_SERVICE_ID}', '${AUTHORITATIVE_CLIENT_SERVICE_ID}',
+			'Stage 3 authoritative benchmark', 'completion-audit', 'ACTIVE', NOW(), NOW()
+		)`,
+		`INSERT INTO ${schema}."image_assets" (
+			"asset_id", "client_service_id", "idempotency_key", "external_image_id",
+			"logical_path", "name", "original_name", "storage_key", "content_type",
+			"input_bytes", "bytes", "checksum", "width", "height", "format",
+			"status", "ready_at", "created_at", "updated_at"
+		)
+		SELECT DISTINCT ON ("event"."image_key")
+			'benchmark-asset-' || md5("event"."image_key"),
+			'${AUTHORITATIVE_CLIENT_SERVICE_ID}',
+			'benchmark:' || md5("event"."image_key"),
+			"event"."image_id", "event"."path", "event"."name", "event"."name",
+			"event"."image_key", 'image/jpeg', "event"."input_bytes",
+			"event"."output_bytes", md5("event"."image_key"),
+			"event"."width", "event"."height", "event"."format",
+			'Ready'::public."ImageAssetState", "event"."occurred_at",
+			"event"."occurred_at", "event"."occurred_at"
+		FROM ${schema}."telemetry_events" AS "event"
+		WHERE "event"."client_service_id" = '${AUTHORITATIVE_CLIENT_SERVICE_ID}'
+			AND "event"."event_type" = 'image.upload.completed'
+			AND "event"."status" = 'success'
+		ORDER BY "event"."image_key", "event"."occurred_at" DESC, "event"."event_id" DESC`,
+		`ANALYZE ${schema}."client_services"`,
+		`ANALYZE ${schema}."image_assets"`,
+		`ANALYZE ${schema}."image_lifecycle_events"`,
+	];
+}
 
 async function main() {
 	const databaseUrl = process.env.STAGE3_BENCHMARK_DATABASE_URL;
@@ -44,12 +86,35 @@ async function main() {
 	await prisma.$connect();
 
 	try {
+		for (const statement of authoritativeFixtureStatements()) {
+			await prisma.$executeRawUnsafe(statement);
+		}
+		const fixture = await readAuthoritativeFixture(prisma);
 		const repository = new PrismaAdminAnalyticsRepository(prisma);
 		const now = new Date();
 		const range = {
 			from: new Date(now.getTime() - 24 * 60 * 60 * 1_000).toISOString(),
 			to: now.toISOString(),
 		};
+		const representative = await repository.listTopImages({
+			...range,
+			clientServiceSlug: AUTHORITATIVE_CLIENT_SERVICE_ID,
+			limit: 50,
+		});
+		if (representative.items.length === 0) {
+			throw new Error(
+				'authoritative benchmark returned no representative ImageAsset results',
+			);
+		}
+		if (
+			representative.items.some(
+				(item) => !item.assetId || item.assetStatus !== 'Ready',
+			)
+		) {
+			throw new Error(
+				'authoritative benchmark returned a legacy or non-Ready image result',
+			);
+		}
 		const measurements = {
 			summary: await measure(
 				() => repository.getSummary(range),
@@ -65,7 +130,7 @@ async function main() {
 				() =>
 					repository.listTopImages({
 						...range,
-						clientServiceSlug: 'service-03',
+						clientServiceSlug: AUTHORITATIVE_CLIENT_SERVICE_ID,
 						limit: 50,
 					}),
 				warmups,
@@ -85,14 +150,32 @@ async function main() {
 				) <= RSS_GATE_BYTES,
 		};
 		const evidence = {
-			schemaVersion: 1,
+			schemaVersion: 2,
 			benchmark: 'stage3-db-telemetry-application-probe',
 			database: sanitizeDatabaseUrl(databaseUrl),
 			queryScope: {
 				mode: 'built-prisma-repository',
+				assetMode: 'authoritative-ImageAsset-with-dual-read-compatible',
 				implementation:
 					'apps/telemetry-api/dist/.../prisma-admin-analytics.repository.js',
 				note: 'This probe measures the actual compiled PrismaAdminAnalyticsRepository path over the 1M fixture. EXPLAIN (ANALYZE, BUFFERS) for equivalent bounded SQL is in benchmark-1m.json.',
+			},
+			fixture: {
+				schema: BENCHMARK_SCHEMA,
+				tables: [
+					'telemetry_events',
+					'client_services',
+					'image_assets',
+					'image_lifecycle_events',
+				],
+				authoritativeClientServiceId: AUTHORITATIVE_CLIENT_SERVICE_ID,
+				assetDualReadEnabled:
+					process.env.IMAGE_ASSET_DUAL_READ_ENABLED !== 'false',
+				...fixture,
+				representativeResultCount: representative.items.length,
+				representativeAssetStatuses: [
+					...new Set(representative.items.map((item) => item.assetStatus)),
+				],
 			},
 			run: {
 				rows: 1_000_000,
@@ -155,10 +238,47 @@ async function measure(operation, warmups, samples) {
 	};
 }
 
-function withSearchPath(databaseUrl) {
+export function withSearchPath(databaseUrl) {
 	const url = new URL(databaseUrl);
-	url.searchParams.set('options', '-c search_path=stage3_telemetry_benchmark');
+	url.searchParams.set('options', `-c search_path=${BENCHMARK_SCHEMA},public`);
 	return url.toString();
+}
+
+async function readAuthoritativeFixture(prisma) {
+	const [row] = await prisma.$queryRawUnsafe(`
+		SELECT
+			(SELECT COUNT(*)::int FROM "image_assets") AS "assetCount",
+			(SELECT COUNT(*)::int FROM "client_services") AS "clientServiceCount",
+			(SELECT COUNT(DISTINCT "image_key")::int
+			 FROM "telemetry_events"
+			 WHERE "client_service_id" = '${AUTHORITATIVE_CLIENT_SERVICE_ID}'
+				AND "event_type" = 'image.upload.completed'
+				AND "status" = 'success'
+			) AS "sourceUploadImageCount",
+			(SELECT COUNT(*)::int
+			 FROM "image_assets" AS "asset"
+			 JOIN "telemetry_events" AS "event"
+				ON "event"."image_key" = "asset"."storage_key"
+				AND "event"."client_service_id" = "asset"."client_service_id"
+			 WHERE "event"."occurred_at" >= NOW() - INTERVAL '24 hours'
+			) AS "representativeEventMatches"
+	`);
+	const fixture = {
+		assetCount: Number(row?.assetCount ?? 0),
+		clientServiceCount: Number(row?.clientServiceCount ?? 0),
+		sourceUploadImageCount: Number(row?.sourceUploadImageCount ?? 0),
+		representativeEventMatches: Number(row?.representativeEventMatches ?? 0),
+	};
+	if (
+		fixture.assetCount !== fixture.sourceUploadImageCount ||
+		fixture.clientServiceCount !== 1 ||
+		fixture.representativeEventMatches === 0
+	) {
+		throw new Error(
+			`authoritative benchmark fixture is not representative: ${JSON.stringify(fixture)}`,
+		);
+	}
+	return fixture;
 }
 
 function sanitizeDatabaseUrl(databaseUrl) {

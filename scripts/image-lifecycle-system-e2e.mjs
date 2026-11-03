@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import {
 	access,
 	mkdir,
@@ -42,6 +43,7 @@ import {
 } from './image-lifecycle-system-e2e-helpers.mjs';
 
 const { Pool } = pg;
+const require = createRequire(import.meta.url);
 const fixturePrefix = imageLifecycleFixtureId('system');
 const infrastructure = await createInfrastructureConfig(
 	'image-lifecycle-system-e2e',
@@ -53,6 +55,10 @@ const children = [];
 const storageRuntimeRoot = resolve(repoRoot, 'apps/storage/dist/apps/storage');
 const storageAssetRoot = resolve(storageRuntimeRoot, 'assets');
 const storageTempRoot = resolve(storageRuntimeRoot, 'temp');
+const capacityInboundTempPath = resolve(
+	storageTempRoot,
+	`${fixturePrefix}-capacity-inbound.tmp`,
+);
 const ports = {
 	telemetry: await getFreePort(),
 	storage: await getFreePort(),
@@ -78,7 +84,7 @@ const invalidationDlqTopic = `${invalidationTopic}.dlq`;
 const stages = new Set(
 	(
 		process.env.IMAGE_LIFECYCLE_E2E_PHASES ??
-		'migration,backfill,reconciliation,apps,kafka,delete'
+		'migration,backfill,reconciliation,apps,kafka,delete,capacity'
 	)
 		.split(',')
 		.map((value) => value.trim())
@@ -90,6 +96,7 @@ const uploadSamples = readPositiveInteger(
 );
 const pool = new Pool({ connectionString: infrastructure.databaseUrl, max: 8 });
 let cleanupStarted = false;
+let primaryStorageChild;
 
 const commonAppEnv = {
 	NODE_ENV: 'production',
@@ -119,6 +126,7 @@ const cleanup = async () => {
 	await rm(resolve(storageTempRoot, `${fixturePrefix}-inbound.tmp`), {
 		force: true,
 	}).catch(() => undefined);
+	await rm(capacityInboundTempPath, { force: true }).catch(() => undefined);
 	await stopInfrastructure(infrastructure);
 	await assertDockerResourcesRemoved(infrastructure.project);
 };
@@ -154,19 +162,22 @@ try {
 	const reconciliationFixture = stages.has('reconciliation')
 		? await prepareReconciliationFixtureAndAssertLease()
 		: undefined;
-	if (stages.has('apps')) {
+	if (stages.has('apps') || stages.has('capacity')) {
 		await startApplications();
 		if (reconciliationFixture) {
 			await assertProductionReconciliation(reconciliationFixture);
 		}
-		const tenant = await provisionTenant();
-		await assertProcessBoundaryRecovery(tenant);
-		const latency = await assertUploadLatency(tenant);
-		await assertAuthoritativeAdminReads(tenant);
-		if (stages.has('kafka'))
-			await assertKafkaDeliverySemantics(tenant, latency);
-		if (stages.has('delete'))
-			await assertDeleteCleanup(tenant, latency.deleteTarget);
+		if (stages.has('apps')) {
+			const tenant = await provisionTenant();
+			await assertProcessBoundaryRecovery(tenant);
+			const latency = await assertUploadLatency(tenant);
+			await assertAuthoritativeAdminReads(tenant);
+			if (stages.has('kafka'))
+				await assertKafkaDeliverySemantics(tenant, latency);
+			if (stages.has('delete'))
+				await assertDeleteCleanup(tenant, latency.deleteTarget);
+		}
+		if (stages.has('capacity')) await assertReconciliationCapacity();
 	}
 	console.log(
 		JSON.stringify({
@@ -741,6 +752,7 @@ async function startApplications() {
 			IMAGE_RECONCILIATION_STALE_AFTER_MS: '60000',
 			IMAGE_RECONCILIATION_LEASE_MS: '5000',
 			IMAGE_RECONCILIATION_BATCH_SIZE: '100',
+			IMAGE_RECONCILIATION_OBJECT_SCAN_LIMIT: '1000',
 			IMAGE_RECONCILIATION_ORPHAN_DELETE_ENABLED: 'true',
 			IMAGE_RECONCILIATION_READINESS_MAX_STALENESS_MS: '5000',
 			IMAGE_ASSET_FAILED_READINESS_THRESHOLD: '100',
@@ -749,6 +761,7 @@ async function startApplications() {
 			IMAGE_PREGENERATION_SYNC_COMPAT_ENABLED: 'false',
 		},
 	});
+	primaryStorageChild = storage;
 	children.push(storage);
 	await waitForHttp(`${urls.storage}/health/ready`, {
 		child: storage,
@@ -865,6 +878,33 @@ async function provisionTenant() {
 		201,
 	);
 	return { service, headers: { 'x-client-api-key': key.apiKey } };
+}
+
+async function provisionCapacityTenant() {
+	const service = await fetchJson(
+		`${urls.telemetry}/api/admin/client-services`,
+		{
+			method: 'POST',
+			headers: adminHeaders,
+			body: JSON.stringify({
+				slug: `${fixturePrefix}-capacity`,
+				name: 'Image reconciliation capacity E2E',
+				owner: 'ci',
+			}),
+		},
+		201,
+	);
+	const policy = await fetchJson(
+		`${urls.telemetry}/api/admin/client-services/${service.id}/image-resize-policy`,
+		{
+			method: 'PATCH',
+			headers: adminHeaders,
+			body: JSON.stringify({ mode: 'ON_DEMAND' }),
+		},
+	);
+	assert.equal(policy.mode, 'ON_DEMAND');
+	assert.deepEqual(policy.variants, []);
+	return service;
 }
 
 async function assertProcessBoundaryRecovery(tenant) {
@@ -1678,6 +1718,670 @@ async function assertDeleteCleanup(tenant, target) {
 		{ headers: adminHeaders },
 	);
 	assert.ok(!admin.items.some((item) => item.imageKey === target.imageKey));
+}
+
+async function assertReconciliationCapacity() {
+	assert.ok(primaryStorageChild, 'capacity phase requires the storage process');
+	const capacityService = await provisionCapacityTenant();
+	const leaseOwner = `${fixturePrefix}-capacity-owner`;
+	const leaseToken = `${fixturePrefix}-capacity-token`;
+	await poll(
+		async () => {
+			const { rows } = await pool.query(
+				`INSERT INTO image_reconciliation_leases (
+					lease_name, owner, token, expires_at, created_at, updated_at
+				) VALUES (
+					'image-asset-reconciliation', $1, $2,
+					NOW() + INTERVAL '5 minutes', NOW(), NOW()
+				)
+				ON CONFLICT (lease_name) DO UPDATE SET
+					owner=EXCLUDED.owner,
+					token=EXCLUDED.token,
+					expires_at=EXCLUDED.expires_at,
+					updated_at=NOW()
+				WHERE image_reconciliation_leases.expires_at <= NOW()
+					OR (
+						image_reconciliation_leases.owner=$1
+						AND image_reconciliation_leases.token=$2
+					)
+				RETURNING owner, token`,
+				[leaseOwner, leaseToken],
+			);
+			assert.equal(rows[0]?.owner, leaseOwner);
+			assert.equal(rows[0]?.token, leaseToken);
+		},
+		{ timeoutMs: 30_000, intervalMs: 100 },
+	);
+
+	let fixture;
+	let fairness;
+	const capacityLogChunks = [];
+	const captureCapacityLog = (chunk) => capacityLogChunks.push(String(chunk));
+	let startedAt;
+	try {
+		fixture = await prepareReconciliationCapacityFixture(capacityService.id);
+		await assertCapacityHasNoVariantWork(fixture.assetIdPrefix);
+		fairness = await assertCompiledRepositoryReconciliationFairness(
+			fixture.assetIdPrefix,
+		);
+		const extended = await pool.query(
+			`UPDATE image_reconciliation_leases
+			 SET expires_at=NOW() + INTERVAL '5 minutes', updated_at=NOW()
+			 WHERE lease_name='image-asset-reconciliation'
+				AND owner=$1 AND token=$2
+			 RETURNING token`,
+			[leaseOwner, leaseToken],
+		);
+		assert.equal(
+			extended.rows[0]?.token,
+			leaseToken,
+			'capacity setup may extend only its own reconciliation lease',
+		);
+	} finally {
+		primaryStorageChild.stdout.on('data', captureCapacityLog);
+		primaryStorageChild.stderr.on('data', captureCapacityLog);
+		startedAt = Date.now();
+		await pool.query(
+			`DELETE FROM image_reconciliation_leases
+			 WHERE lease_name='image-asset-reconciliation'
+				AND owner=$1 AND token=$2`,
+			[leaseOwner, leaseToken],
+		);
+	}
+
+	assert.ok(fixture);
+	assert.ok(Number.isSafeInteger(startedAt));
+	await poll(
+		async () => {
+			const { rows } = await pool.query(
+				`SELECT
+					COUNT(*) FILTER (WHERE status='Ready')::int AS ready,
+					COUNT(*) FILTER (WHERE status='Pending')::int AS pending,
+					COUNT(*) FILTER (WHERE status='Failed')::int AS failed,
+					COUNT(*) FILTER (
+						WHERE status='Ready'
+							AND asset_id=ANY($2::text[])
+							AND last_reconciled_at >= $3
+					)::int AS original_ready_reconciled,
+					COUNT(*) FILTER (
+						WHERE status='Ready' AND asset_id=ANY($4::text[])
+					)::int AS pending_recovered,
+					COUNT(*) FILTER (
+						WHERE status='Failed'
+							AND asset_id=ANY($5::text[])
+							AND failure_reason LIKE 'reconciliation:%'
+					)::int AS sentinel_failures
+				 FROM image_assets
+				 WHERE asset_id LIKE $1`,
+				[
+					`${fixture.assetIdPrefix}%`,
+					fixture.originalReadyAssetIds,
+					toUtcTimestamp(new Date(startedAt)),
+					fixture.pendingAssetIds,
+					fixture.sentinelAssetIds,
+				],
+			);
+			assert.equal(Number(rows[0]?.pending), 0);
+			assert.equal(Number(rows[0]?.ready), 3_246);
+			assert.equal(Number(rows[0]?.failed), 4);
+			assert.equal(
+				Number(rows[0]?.original_ready_reconciled),
+				fixture.originalReadyAssetIds.length,
+			);
+			assert.equal(
+				Number(rows[0]?.pending_recovered),
+				fixture.pendingAssetIds.length,
+			);
+			assert.equal(Number(rows[0]?.sentinel_failures), 4);
+			await assertCapacityHasNoVariantWork(fixture.assetIdPrefix);
+			await assert.rejects(access(fixture.stagePath));
+			await assert.rejects(access(fixture.inboundTempPath));
+			assert.deepEqual(
+				await listFilesRecursively(fixture.capacityRoot),
+				fixture.expectedRemainingFiles,
+				'capacity orphan removal is incomplete',
+			);
+		},
+		{ timeoutMs: 5 * 60_000, intervalMs: 250 },
+	);
+	const elapsedMs = Date.now() - startedAt;
+	assert.ok(
+		elapsedMs <= 5 * 60_000,
+		`capacity reconciliation exceeded five minutes: ${elapsedMs}ms`,
+	);
+
+	const finalFiles = await listFilesRecursively(fixture.capacityRoot);
+	assert.deepEqual(
+		finalFiles,
+		fixture.expectedRemainingFiles,
+		'capacity reconciliation must process every declared object exactly once and remove every orphan',
+	);
+	const stableBefore = await capacityDatabaseSnapshot(fixture.assetIdPrefix);
+	await sleep(1_000);
+	const stableAfter = await capacityDatabaseSnapshot(fixture.assetIdPrefix);
+	assert.deepEqual(
+		stableAfter,
+		stableBefore,
+		'repeated reconciliation must converge',
+	);
+	await assertCapacityHasNoVariantWork(fixture.assetIdPrefix);
+	assert.deepEqual(
+		await listFilesRecursively(fixture.capacityRoot),
+		finalFiles,
+		'repeated reconciliation must not change the converged filesystem',
+	);
+	primaryStorageChild.stdout.off('data', captureCapacityLog);
+	primaryStorageChild.stderr.off('data', captureCapacityLog);
+
+	const reports = parseReconciliationReports(capacityLogChunks);
+	assert.ok(
+		reports.length > 0,
+		'capacity phase captured no reconciliation logs',
+	);
+	for (const report of reports) {
+		assert.ok(
+			report.checkedAssets <= 100,
+			`reconciliation exceeded asset batch bound: ${report.checkedAssets}`,
+		);
+		assert.ok(
+			report.removedOrphanObjects <= 1_000,
+			`reconciliation exceeded orphan scan bound: ${report.removedOrphanObjects}`,
+		);
+	}
+	assert.ok(
+		reports.reduce(
+			(sum, report) => sum + Number(report.removedOrphanObjects ?? 0),
+			0,
+		) >= 1_750,
+		'capacity reports did not account for every orphan object',
+	);
+	const rss = await sampleChildRss(primaryStorageChild);
+	const artifact = {
+		event: 'image_reconciliation_capacity_verified',
+		fixture: {
+			root: `${fixturePrefix}/capacity`,
+			directories: 50,
+			pngFilesCreated: 5_000,
+			readyAssets: 3_000,
+			neverReconciledReadyAssets: 1_500,
+			oldReconciledReadyAssets: 1_500,
+			pendingAssets: 250,
+			orphanObjects: 1_750,
+			missingReadySentinels: 2,
+			checksumReadySentinels: 2,
+			stagedOrphanSentinels: 1,
+			inboundOrphanSentinels: 1,
+		},
+		profile: {
+			intervalMs: 250,
+			staleAfterMs: 60_000,
+			assetBatchSize: 100,
+			objectScanLimit: 1_000,
+			maximumElapsedMs: 5 * 60_000,
+		},
+		elapsedMs,
+		fairness,
+		reports: {
+			count: reports.length,
+			maximumCheckedAssets: Math.max(
+				...reports.map((report) => Number(report.checkedAssets ?? 0)),
+			),
+			maximumRemovedOrphanObjects: Math.max(
+				...reports.map((report) => Number(report.removedOrphanObjects ?? 0)),
+			),
+			p95DurationMs: percentile(
+				reports.map((report) => Number(report.durationMs ?? 0)),
+				0.95,
+			),
+		},
+		childRss: rss,
+		scopeCaveat:
+			'This explicit accelerated profile proves the declared 5,000-file fixture only. The production default 60-second cadence does not prove a five-minute bound for arbitrary backlog or inventory sizes.',
+	};
+	const artifactDirectory = resolve(repoRoot, 'artifacts/completion-audit');
+	await mkdir(artifactDirectory, { recursive: true });
+	await writeFile(
+		resolve(artifactDirectory, 'reconciliation-capacity.json'),
+		`${JSON.stringify(artifact, null, 2)}\n`,
+	);
+	console.log(JSON.stringify(artifact));
+}
+
+async function prepareReconciliationCapacityFixture(clientServiceId) {
+	const { normalizeSafeFileName } = require(
+		resolve(repoRoot, 'libs/image-contracts/dist/index.js'),
+	);
+	const capacityRoot = resolve(storageAssetRoot, fixturePrefix, 'capacity');
+	await Promise.all([
+		rm(capacityRoot, { recursive: true, force: true }),
+		rm(capacityInboundTempPath, { force: true }),
+	]);
+	const assetIdPrefix = `${fixturePrefix}-capacity-asset-`;
+	const image = Buffer.from(
+		'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR42mP8z8AARAwMjDAGAAANHQEDasKb6QAAAABJRU5ErkJggg==',
+		'base64',
+	);
+	const checksum = createHash('sha256').update(image).digest('hex');
+	const staleAt = new Date(Date.now() - 10 * 60_000);
+	const files = Array.from({ length: 5_000 }, (_, index) => {
+		const directoryIndex = Math.floor(index / 100);
+		const fileIndex = index % 100;
+		const names = [
+			`-dash.${String(fileIndex).padStart(2, '0')}.png`,
+			`0digit_${String(fileIndex).padStart(2, '0')}.png`,
+			`Upper-${String(fileIndex).padStart(2, '0')}.png`,
+			`_under.${String(fileIndex).padStart(2, '0')}.png`,
+			`lower-${String(fileIndex).padStart(2, '0')}.png`,
+		];
+		const name = `${String(index).padStart(4, '0')}-${names[index % names.length]}`;
+		assert.equal(
+			normalizeSafeFileName(name, 'capacity fixture name'),
+			name,
+			`capacity fixture name is not canonical: ${name}`,
+		);
+		const logicalPath = `${fixturePrefix}/capacity/D${String(
+			directoryIndex,
+		).padStart(2, '0')}/image`;
+		return {
+			index,
+			name,
+			logicalPath,
+			storageKey: `${logicalPath}/${name}`,
+			absolutePath: resolve(storageAssetRoot, logicalPath, name),
+		};
+	});
+	for (let directoryIndex = 0; directoryIndex < 50; directoryIndex += 1) {
+		await mkdir(
+			resolve(
+				capacityRoot,
+				`D${String(directoryIndex).padStart(2, '0')}`,
+				'image',
+			),
+			{ recursive: true },
+		);
+	}
+	await runBounded(files, 64, ({ absolutePath }) =>
+		writeFile(absolutePath, image),
+	);
+
+	const sentinelIndexes = new Set([0, 1, 1_500, 1_501]);
+	const missingIndexes = new Set([0, 1_500]);
+	const checksumIndexes = new Set([1, 1_501]);
+	const assets = files.slice(0, 3_250).map((file) => {
+		const ready = file.index < 3_000;
+		return {
+			...file,
+			assetId: `${assetIdPrefix}${String(file.index).padStart(4, '0')}`,
+			status: ready ? 'Ready' : 'Pending',
+			bytes: ready ? image.length : null,
+			checksum: ready
+				? checksumIndexes.has(file.index)
+					? '0'.repeat(64)
+					: checksum
+				: null,
+			readyAt: ready ? staleAt : null,
+			lastReconciledAt: ready && file.index >= 1_500 ? staleAt : null,
+		};
+	});
+	await insertCapacityAssets(clientServiceId, assets, staleAt, image.length);
+
+	await runBounded(files.slice(3_250), 64, ({ absolutePath }) =>
+		utimes(absolutePath, staleAt, staleAt),
+	);
+	for (const index of missingIndexes) {
+		await rm(files[index].absolutePath, { force: true });
+	}
+	const stagePath = resolve(
+		capacityRoot,
+		'D00',
+		'image',
+		'.staging',
+		'capacity-orphan.stage',
+	);
+	await Promise.all([
+		mkdir(resolve(stagePath, '..'), { recursive: true }),
+		mkdir(storageTempRoot, { recursive: true }),
+	]);
+	await Promise.all([
+		writeFile(stagePath, image),
+		writeFile(capacityInboundTempPath, image),
+	]);
+	await Promise.all([
+		utimes(stagePath, staleAt, staleAt),
+		utimes(capacityInboundTempPath, staleAt, staleAt),
+	]);
+
+	const sentinelAssetIds = assets
+		.filter(({ index }) => sentinelIndexes.has(index))
+		.map(({ assetId }) => assetId);
+	const originalReadyAssetIds = assets
+		.filter(({ index }) => index < 3_000 && !sentinelIndexes.has(index))
+		.map(({ assetId }) => assetId);
+	const pendingAssetIds = assets
+		.filter(({ status }) => status === 'Pending')
+		.map(({ assetId }) => assetId);
+	const expectedRemainingFiles = files
+		.slice(0, 3_250)
+		.filter(({ index }) => !missingIndexes.has(index))
+		.map(({ absolutePath }) => absolutePath)
+		.sort(compareText);
+	return {
+		capacityRoot,
+		assetIdPrefix,
+		stagePath,
+		inboundTempPath: capacityInboundTempPath,
+		sentinelAssetIds,
+		originalReadyAssetIds,
+		pendingAssetIds,
+		expectedRemainingFiles,
+	};
+}
+
+async function insertCapacityAssets(
+	clientServiceId,
+	assets,
+	staleAt,
+	inputBytes,
+) {
+	await pool.query(`DELETE FROM image_assets WHERE asset_id LIKE $1`, [
+		`${fixturePrefix}-capacity-asset-%`,
+	]);
+	for (let offset = 0; offset < assets.length; offset += 250) {
+		const batch = assets.slice(offset, offset + 250);
+		await pool.query(
+			`INSERT INTO image_assets (
+				asset_id, client_service_id, idempotency_key, logical_path, name,
+				original_name, storage_key, content_type, input_bytes, bytes,
+				checksum, width, height, format, status, ready_at,
+				last_reconciled_at, created_at, updated_at
+			)
+			SELECT * FROM UNNEST(
+				$1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
+				$6::text[], $7::text[], $8::text[], $9::integer[], $10::integer[],
+				$11::text[], $12::integer[], $13::integer[], $14::text[],
+				$15::"ImageAssetState"[], $16::timestamp[], $17::timestamp[],
+				$18::timestamp[], $19::timestamp[]
+			)`,
+			[
+				batch.map(({ assetId }) => assetId),
+				batch.map(() => clientServiceId),
+				batch.map(({ assetId }) => assetId),
+				batch.map(({ logicalPath }) => logicalPath),
+				batch.map(({ name }) => name),
+				batch.map(({ name }) => name),
+				batch.map(({ storageKey }) => storageKey),
+				batch.map(() => 'image/png'),
+				batch.map(() => inputBytes),
+				batch.map(({ bytes }) => bytes),
+				batch.map(({ checksum }) => checksum),
+				batch.map(({ status }) => (status === 'Ready' ? 2 : null)),
+				batch.map(({ status }) => (status === 'Ready' ? 2 : null)),
+				batch.map(({ status }) => (status === 'Ready' ? 'png' : null)),
+				batch.map(({ status }) => status),
+				batch.map(({ readyAt }) => (readyAt ? toUtcTimestamp(readyAt) : null)),
+				batch.map(({ lastReconciledAt }) =>
+					lastReconciledAt ? toUtcTimestamp(lastReconciledAt) : null,
+				),
+				batch.map(() => toUtcTimestamp(staleAt)),
+				batch.map(() => toUtcTimestamp(staleAt)),
+			],
+		);
+	}
+}
+
+async function assertCompiledRepositoryReconciliationFairness(assetIdPrefix) {
+	assert.equal(
+		commonAppEnv.DATABASE_URL,
+		infrastructure.databaseUrl,
+		'capacity repository must use only the disposable E2E database',
+	);
+	const previousDatabaseUrl = process.env.DATABASE_URL;
+	process.env.DATABASE_URL = infrastructure.databaseUrl;
+	const { ImageAssetMetadataRepository, PrismaService } = require(
+		resolve(repoRoot, 'libs/database/dist/index.js'),
+	);
+	const cutoffTimestamp = toUtcTimestamp(new Date(Date.now() - 60_000));
+	const laneCounts = await readCapacityLaneCounts(
+		assetIdPrefix,
+		cutoffTimestamp,
+	);
+	assert.deepEqual(
+		laneCounts,
+		{ urgent: 250, neverReconciled: 1_500, oldReconciled: 1_500 },
+		`capacity fixture did not saturate every reconciliation lane at ${cutoffTimestamp}`,
+	);
+	const cutoff = new Date(cutoffTimestamp);
+	const runProbe = async (take, calls) => {
+		const prisma = new PrismaService();
+		await prisma.onModuleInit();
+		try {
+			const batches = [];
+			for (let call = 0; call < calls; call += 1) {
+				const repository = new ImageAssetMetadataRepository(prisma);
+				const rows = await repository.listReconciliationCandidates(
+					cutoff,
+					take,
+				);
+				assert.ok(rows.length <= take);
+				batches.push(rows.map(reconciliationLane));
+			}
+			return batches;
+		} finally {
+			await prisma.onModuleDestroy();
+		}
+	};
+	const assertRejectedTake = async (take) => {
+		const prisma = new PrismaService();
+		await prisma.onModuleInit();
+		try {
+			const repository = new ImageAssetMetadataRepository(prisma);
+			await assert.rejects(
+				repository.listReconciliationCandidates(cutoff, take),
+			);
+		} finally {
+			await prisma.onModuleDestroy();
+		}
+	};
+	try {
+		await assertRejectedTake(1);
+		await assertRejectedTake(2);
+		const takeThree = await runProbe(3, 3);
+		for (const lanes of takeThree) {
+			assert.deepEqual(
+				new Set(lanes),
+				new Set(['urgent', 'never-reconciled', 'old-reconciled']),
+			);
+		}
+		const takeFour = await runProbe(4, 3);
+		for (const lanes of takeFour) {
+			assert.deepEqual(
+				new Set(lanes),
+				new Set(['urgent', 'never-reconciled', 'old-reconciled']),
+			);
+		}
+		const bounded = await runProbe(100, 1);
+		assert.equal(bounded[0].length, 100);
+		assert.deepEqual(
+			new Set(bounded[0]),
+			new Set(['urgent', 'never-reconciled', 'old-reconciled']),
+		);
+		return {
+			cutoffTimestamp,
+			laneCounts,
+			rejectedTake: [1, 2],
+			takeThree,
+			takeFour,
+			boundedTake: bounded[0].length,
+		};
+	} finally {
+		if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+		else process.env.DATABASE_URL = previousDatabaseUrl;
+	}
+}
+
+async function readCapacityLaneCounts(assetIdPrefix, cutoffTimestamp) {
+	const { rows } = await pool.query(
+		`SELECT
+			COUNT(*) FILTER (
+				WHERE status IN ('Pending', 'Deleting') AND updated_at <= $2::timestamp
+			)::int AS urgent,
+			COUNT(*) FILTER (
+				WHERE status='Ready' AND last_reconciled_at IS NULL
+					AND updated_at <= $2::timestamp
+			)::int AS never_reconciled,
+			COUNT(*) FILTER (
+				WHERE status='Ready' AND last_reconciled_at <= $2::timestamp
+			)::int AS old_reconciled
+		 FROM image_assets
+		 WHERE asset_id LIKE $1`,
+		[`${assetIdPrefix}%`, cutoffTimestamp],
+	);
+	return {
+		urgent: Number(rows[0]?.urgent ?? 0),
+		neverReconciled: Number(rows[0]?.never_reconciled ?? 0),
+		oldReconciled: Number(rows[0]?.old_reconciled ?? 0),
+	};
+}
+
+function reconciliationLane(asset) {
+	if (asset.status === 'Pending' || asset.status === 'Deleting')
+		return 'urgent';
+	return asset.lastReconciledAt === null
+		? 'never-reconciled'
+		: 'old-reconciled';
+}
+
+function parseReconciliationReports(lines) {
+	const output = lines.join('');
+	const reports = [];
+	const marker = 'image reconciliation ';
+	let cursor = 0;
+	while (cursor < output.length) {
+		const markerIndex = output.indexOf(marker, cursor);
+		if (markerIndex < 0) break;
+		const jsonStart = output.indexOf('{', markerIndex + marker.length);
+		const jsonEnd = output.indexOf('}', jsonStart + 1);
+		if (jsonStart < 0 || jsonEnd < 0) break;
+		try {
+			reports.push(JSON.parse(output.slice(jsonStart, jsonEnd + 1)));
+		} catch {
+			// A malformed or unrelated log line must not hide later reports.
+		}
+		cursor = jsonEnd + 1;
+	}
+	return reports;
+}
+
+async function capacityDatabaseSnapshot(assetIdPrefix) {
+	const { rows } = await pool.query(
+		`SELECT status, COUNT(*)::int AS count
+		 FROM image_assets WHERE asset_id LIKE $1
+		 GROUP BY status ORDER BY status`,
+		[`${assetIdPrefix}%`],
+	);
+	return rows;
+}
+
+async function assertCapacityHasNoVariantWork(assetIdPrefix) {
+	const { rows } = await pool.query(
+		`SELECT
+			(SELECT COUNT(*)::int
+			 FROM image_variants AS variant
+			 JOIN image_assets AS asset ON asset.asset_id=variant.asset_id
+			 WHERE asset.asset_id LIKE $1) AS variants,
+			(SELECT COUNT(*)::int
+			 FROM image_variant_jobs AS job
+			 JOIN image_assets AS asset ON asset.asset_id=job.asset_id
+			 WHERE asset.asset_id LIKE $1) AS jobs`,
+		[`${assetIdPrefix}%`],
+	);
+	assert.equal(
+		Number(rows[0]?.variants),
+		0,
+		'capacity fixture created variants',
+	);
+	assert.equal(
+		Number(rows[0]?.jobs),
+		0,
+		'capacity fixture created variant jobs',
+	);
+}
+
+async function listFilesRecursively(root) {
+	const files = [];
+	const visit = async (directory) => {
+		for (const entry of (
+			await readdir(directory, { withFileTypes: true })
+		).sort((left, right) => compareText(left.name, right.name))) {
+			const path = resolve(directory, entry.name);
+			if (entry.isDirectory()) await visit(path);
+			else if (entry.isFile()) files.push(path);
+		}
+	};
+	await visit(root);
+	return files.sort(compareText);
+}
+
+async function runBounded(items, concurrency, operation) {
+	let cursor = 0;
+	await Promise.all(
+		Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+			while (cursor < items.length) {
+				const index = cursor;
+				cursor += 1;
+				await operation(items[index], index);
+			}
+		}),
+	);
+}
+
+async function sampleChildRss(child) {
+	if (!child?.pid || child.exitCode !== null || child.signalCode !== null) {
+		return {
+			processCount: 0,
+			samples: [],
+			unavailableReason: 'child-not-running',
+		};
+	}
+	try {
+		const output = await runCapture('ps', [
+			'-o',
+			'pid=,rss=',
+			'-p',
+			String(child.pid),
+		]);
+		const samples = output
+			.split(/\r?\n/)
+			.filter(Boolean)
+			.map((line) => {
+				const [pid, rssKiB] = line.trim().split(/\s+/).map(Number);
+				return { pid, rssBytes: rssKiB * 1_024 };
+			})
+			.filter(
+				({ pid, rssBytes }) =>
+					Number.isFinite(pid) && Number.isFinite(rssBytes),
+			);
+		return { processCount: samples.length, samples };
+	} catch (error) {
+		return {
+			processCount: 0,
+			samples: [],
+			unavailableReason: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+function percentile(values, fraction) {
+	const sorted = values.slice().sort((left, right) => left - right);
+	return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)] ?? 0;
+}
+
+function compareText(left, right) {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function toUtcTimestamp(value) {
+	return value.toISOString();
 }
 
 function createKafka() {

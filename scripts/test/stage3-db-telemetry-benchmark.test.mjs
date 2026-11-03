@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
 	createApplicationOperations,
+	evaluateApplicationPlanBounds,
 	evaluateGates,
 	parseArgs,
 	percentile,
 	sanitizeDatabaseUrl,
+	summarizeTelemetryPlan,
 } from '../stage3-db-telemetry-benchmark.mjs';
 
 describe('stage3 DB telemetry benchmark contract', () => {
@@ -28,19 +30,45 @@ describe('stage3 DB telemetry benchmark contract', () => {
 
 	it('fails when either list, dashboard, or RSS gate is exceeded', () => {
 		const passing = measurementFixture();
-		assert.equal(evaluateGates(passing).passed, true);
+		const boundedPlans = applicationPlanBoundsFixture();
+		assert.equal(evaluateGates(passing, boundedPlans).passed, true);
 
 		const failing = measurementFixture();
 		failing.middlePage.p95Ms = 301;
-		assert.deepEqual(evaluateGates(failing), {
+		assert.deepEqual(evaluateGates(failing, boundedPlans), {
 			checks: {
 				firstPageP95: true,
 				middlePageP95: false,
 				dashboardP95: true,
 				rssDelta: true,
+				firstPageRowsBounded: true,
+				middlePageRowsBounded: true,
 			},
 			passed: false,
 		});
+	});
+
+	it('counts actual telemetry scan rows and filter removals across plan loops', () => {
+		const plan = telemetryScanPlan(51, 3, 2, 1);
+		assert.deepEqual(summarizeTelemetryPlan(plan), {
+			scanNodes: 1,
+			indexScanNodes: 1,
+			actualRows: 102,
+			rowsRemovedByFilter: 6,
+			rowsRemovedByIndexRecheck: 2,
+			totalRowsVisited: 110,
+		});
+	});
+
+	it('rejects an application plan that scans the first half before the cursor', () => {
+		const bounds = evaluateApplicationPlanBounds({
+			firstPage: telemetryScanPlan(51),
+			middlePage: telemetryScanPlan(51, 499_949),
+		});
+		assert.equal(bounds.maxRowsVisited, 102);
+		assert.equal(bounds.firstPage.bounded, true);
+		assert.equal(bounds.middlePage.totalRowsVisited, 500_000);
+		assert.equal(bounds.middlePage.bounded, false);
 	});
 
 	it('redacts credentials from evidence metadata', () => {
@@ -80,7 +108,10 @@ describe('stage3 DB telemetry benchmark contract', () => {
 			orderBy: [{ occurredAt: 'desc' }, { eventId: 'desc' }],
 			take: 51,
 		});
-		assert.deepEqual(calls[1].where.AND[1].OR, [
+		assert.deepEqual(calls[1].where.AND[1], {
+			occurredAt: { lte: occurredAt },
+		});
+		assert.deepEqual(calls[1].where.AND[2].OR, [
 			{ occurredAt: { lt: occurredAt } },
 			{ occurredAt, eventId: { lt: 'evt-100' } },
 		]);
@@ -99,4 +130,31 @@ function measurementFixture() {
 		middlePage: { p95Ms: 200, maxRssDeltaBytes: 2048 },
 		dashboard24h: { p95Ms: 900, maxRssDeltaBytes: 4096 },
 	};
+}
+
+function applicationPlanBoundsFixture() {
+	return evaluateApplicationPlanBounds({
+		firstPage: telemetryScanPlan(51),
+		middlePage: telemetryScanPlan(51),
+	});
+}
+
+function telemetryScanPlan(
+	actualRows,
+	rowsRemovedByFilter = 0,
+	actualLoops = 1,
+	rowsRemovedByIndexRecheck = 0,
+) {
+	return [
+		{
+			Plan: {
+				'Node Type': 'Index Scan',
+				'Relation Name': 'telemetry_events',
+				'Actual Rows': actualRows,
+				'Actual Loops': actualLoops,
+				'Rows Removed by Filter': rowsRemovedByFilter,
+				'Rows Removed by Index Recheck': rowsRemovedByIndexRecheck,
+			},
+		},
+	];
 }

@@ -26,6 +26,10 @@ const DEFAULT_RECONCILIATION_LEASE_NAME = 'image-asset-reconciliation';
 const DEFAULT_RECONCILIATION_LOCK_TIMEOUT_MS = 1_000;
 const RECONCILIATION_METRIC_ID = 'image-asset-reconciliation';
 
+type ReconciliationCandidate = Prisma.ImageAssetGetPayload<{
+	include: { variants: true };
+}>;
+
 class VariantJobFencedError extends Error {}
 
 export type AssetTransactionWork = (
@@ -446,41 +450,106 @@ export class ImageAssetMetadataRepository {
 
 	async listReconciliationCandidates(updatedBefore: Date, limit: number) {
 		const take = boundedLimit(limit);
-		const urgent = await this.prisma.imageAsset.findMany({
-			where: {
-				status: {
-					in: [ImageAssetState.Pending, ImageAssetState.Deleting],
-				},
-				updatedAt: { lte: updatedBefore },
-			},
-			include: { variants: true },
-			orderBy: [{ updatedAt: 'asc' }, { assetId: 'asc' }],
-			take,
-		});
-		if (urgent.length >= take) return urgent;
-		const unreconciled = await this.prisma.imageAsset.findMany({
-			where: {
-				status: ImageAssetState.Ready,
-				lastReconciledAt: null,
-				updatedAt: { lte: updatedBefore },
-			},
-			include: { variants: true },
-			orderBy: [{ updatedAt: 'asc' }, { assetId: 'asc' }],
-			take: take - urgent.length,
-		});
-		if (urgent.length + unreconciled.length >= take) {
-			return [...urgent, ...unreconciled];
+		if (take < 3) {
+			throw new Error('reconciliation limit must be at least 3');
 		}
-		const reconciled = await this.prisma.imageAsset.findMany({
-			where: {
-				status: ImageAssetState.Ready,
-				lastReconciledAt: { lte: updatedBefore },
+
+		return this.prisma.$transaction(
+			async (transaction) => {
+				const queries: Array<
+					(
+						laneTake: number,
+						excludedAssetIds: string[],
+					) => Promise<ReconciliationCandidate[]>
+				> = [
+					(laneTake, excludedAssetIds) =>
+						transaction.imageAsset.findMany({
+							where: {
+								status: {
+									in: [ImageAssetState.Pending, ImageAssetState.Deleting],
+								},
+								updatedAt: { lte: updatedBefore },
+								...(excludedAssetIds.length > 0
+									? { assetId: { notIn: excludedAssetIds } }
+									: {}),
+							},
+							include: { variants: true },
+							orderBy: [{ updatedAt: 'asc' }, { assetId: 'asc' }],
+							take: laneTake,
+						}),
+					(laneTake, excludedAssetIds) =>
+						transaction.imageAsset.findMany({
+							where: {
+								status: ImageAssetState.Ready,
+								lastReconciledAt: null,
+								updatedAt: { lte: updatedBefore },
+								...(excludedAssetIds.length > 0
+									? { assetId: { notIn: excludedAssetIds } }
+									: {}),
+							},
+							include: { variants: true },
+							orderBy: [{ updatedAt: 'asc' }, { assetId: 'asc' }],
+							take: laneTake,
+						}),
+					(laneTake, excludedAssetIds) =>
+						transaction.imageAsset.findMany({
+							where: {
+								status: ImageAssetState.Ready,
+								lastReconciledAt: { lte: updatedBefore },
+								...(excludedAssetIds.length > 0
+									? { assetId: { notIn: excludedAssetIds } }
+									: {}),
+							},
+							include: { variants: true },
+							orderBy: [{ lastReconciledAt: 'asc' }, { assetId: 'asc' }],
+							take: laneTake,
+						}),
+				];
+				const lanes = queries.map((query) => ({
+					query,
+					rows: [] as ReconciliationCandidate[],
+					exhausted: false,
+				}));
+				const seenAssetIds = new Set<string>();
+				const quotas = Array<number>(lanes.length).fill(Math.floor(take / 3));
+				for (let slot = 0; slot < take % lanes.length; slot += 1) {
+					quotas[slot] += 1;
+				}
+
+				const fetchLane = async (laneIndex: number, laneTake: number) => {
+					if (laneTake <= 0 || lanes[laneIndex].exhausted) return 0;
+					const lane = lanes[laneIndex];
+					const batch = await lane.query(laneTake, [...seenAssetIds]);
+					const uniqueRows = batch.filter(({ assetId }) => {
+						if (seenAssetIds.has(assetId)) return false;
+						seenAssetIds.add(assetId);
+						return true;
+					});
+					lane.rows.push(...uniqueRows);
+					if (uniqueRows.length < laneTake) lane.exhausted = true;
+					return uniqueRows.length;
+				};
+
+				for (let laneIndex = 0; laneIndex < lanes.length; laneIndex += 1) {
+					await fetchLane(laneIndex, quotas[laneIndex]);
+				}
+
+				let remaining = take - seenAssetIds.size;
+				while (remaining > 0) {
+					const laneIndex = lanes.findIndex((lane) => !lane.exhausted);
+					if (laneIndex < 0) break;
+					const added = await fetchLane(laneIndex, remaining);
+					remaining -= added;
+				}
+
+				return lanes.flatMap((lane) => lane.rows);
 			},
-			include: { variants: true },
-			orderBy: [{ lastReconciledAt: 'asc' }, { assetId: 'asc' }],
-			take: take - urgent.length - unreconciled.length,
-		});
-		return [...urgent, ...unreconciled, ...reconciled];
+			{
+				isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+				maxWait: 1_000,
+				timeout: 5_000,
+			},
+		);
 	}
 
 	async listTrackedStorageKeys(storageKeys: string[]) {
