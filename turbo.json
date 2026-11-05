@@ -1,0 +1,76 @@
+{
+	"$schema": "https://turborepo.dev/schema.json",
+	"ui": "stream",
+	"tasks": {
+		"build": {
+			"dependsOn": [
+				"^build"
+			],
+			"outputs": [
+				"dist/**",
+				".next/**",
+				"!.next/cache/**",
+				"tsconfig.build.tsbuildinfo"
+			]
+		},
+		"lint": {
+			"outputs": []
+		},
+		"lint:fix": {
+			"cache": false,
+			"outputs": []
+		},
+		"test": {
+			"outputs": []
+		},
+		"test:e2e": {
+			"outputs": []
+		},
+		"format": {
+			"cache": false,
+			"outputs": []
+		},
+		"start:dev": {
+			"cache": false,
+			"dependsOn": [
+				"^build"
+			],
+			"persistent": true
+		}
+	},
+	"globalEnv": [
+		"NODE_ENV",
+		"HOST",
+		"PORT",
+		"ORIGIN_LIST_STR",
+		"CACHE_SERVER",
+		"STORAGE_SERVER",
+		"RESIZING_SERVER",
+		"KAFKA_CLIENT_BROKERS",
+		"TELEMETRY_KAFKA_BROKERS",
+		"TELEMETRY_KAFKA_CONSUMER_ENABLED",
+		"TELEMETRY_KAFKA_CLIENT_ID",
+		"TELEMETRY_KAFKA_GROUP_ID",
+		"TELEMETRY_KAFKA_TOPIC",
+		"TELEMETRY_KAFKA_FROM_BEGINNING",
+		"TELEMETRY_API_BASE_URL",
+		"NEXT_PUBLIC_TELEMETRY_API_BASE_URL",
+		"CLIENT_SERVICE_REGISTRY_DRIVER",
+		"TELEMETRY_STORAGE_DRIVER",
+		"LIFECYCLE_KAFKA_CLIENT_ID",
+		"LIFECYCLE_KAFKA_GROUP_ID",
+		"LIFECYCLE_KAFKA_TOPIC",
+		"LIFECYCLE_KAFKA_FROM_BEGINNING",
+		"LIFECYCLE_CONSUMER_TESTER_ENABLED",
+		"LIFECYCLE_CONSUMER_TESTER_MAX_EVENTS",
+		"CLIENT_SERVICE_ID",
+		"CLIENT_SERVICE_SLUG",
+		"KAFKA_LIFECYCLE_EVENT_TYPES"
+	],
+	"globalPassThroughEnv": [
+		"DATABASE_URL",
+		"CLIENT_API_KEY_PEPPER",
+		"TELEMETRY_ADMIN_TOKEN",
+		"INTERNAL_API_KEY"
+	]
+}

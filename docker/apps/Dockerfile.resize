@@ -1,34 +1,50 @@
-FROM node:20-alpine AS ts-compiler
-WORKDIR /usr/index
-COPY ../../.yarn ./.yarn
-COPY ../../yarn.lock ../../package*.json ../../tsconfig.json ../../.yarnrc.yml ./
-COPY ../../apps ./apps
-COPY ../../libs ./libs
-RUN yarn set version 4.5.0
-RUN yarn install --immutable
-RUN yarn file:resize build
+# syntax=docker/dockerfile:1.7
 
-# Remove other app module
-# Reinstall production module
-FROM node:20-alpine AS dev-remover
-WORKDIR /usr/index
-COPY --from=ts-compiler /usr/index/.yarn ./.yarn
-COPY --from=ts-compiler /usr/index/package*.json /usr/index/yarn.lock  /usr/index/.yarnrc.yml ./
-COPY --from=ts-compiler /usr/index/apps/resize/ecosystem.config.js /usr/index/apps/resize/
-COPY --from=ts-compiler /usr/index/apps/resize/dist ./apps/resize/dist
-COPY --from=ts-compiler /usr/index/apps/resize/package.json ./apps/resize/
-COPY --from=ts-compiler /usr/index/libs ./libs
-RUN yarn set version 4.5.0
-RUN yarn workspaces focus @file/resize --production
+ARG NODE_VERSION=22.15.0
 
-FROM keymetrics/pm2:18-alpine
-# 나중에 ENV 지울 것(테스트용임)
-ENV ORIGIN_LIST_STR http://localhost:3044
-ENV KAFKA_CLIENT_BROKERS host.docker.internal:9094
+FROM node:${NODE_VERSION}-alpine AS build
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
 WORKDIR /usr/index
-ENV TZ=Asia/Seoul
+
+RUN corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json tsconfig.json prisma.config.ts ./
+COPY apps/resize/package.json ./apps/resize/package.json
+COPY libs/database/package.json ./libs/database/package.json
+COPY libs/global/package.json ./libs/global/package.json
+COPY libs/image-contracts/package.json ./libs/image-contracts/package.json
+COPY libs/nest-common/package.json ./libs/nest-common/package.json
+COPY libs/telemetry-contracts/package.json ./libs/telemetry-contracts/package.json
+COPY libs/tsconfig/package.json ./libs/tsconfig/package.json
+
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+	pnpm install --frozen-lockfile
+
+COPY apps/resize ./apps/resize
+COPY libs ./libs
+COPY prisma ./prisma
+
+RUN pnpm db:generate && pnpm turbo run build --filter=@file/resize
+RUN pnpm --filter @file/resize --prod deploy --legacy /opt/app \
+	&& cp -R apps/resize/dist /opt/app/dist \
+	&& prisma_source="$(find node_modules/.pnpm -path '*/node_modules/.prisma/client' -type d -print -quit)" \
+	&& prisma_package="$(find /opt/app/node_modules/.pnpm -path '*/node_modules/@prisma/client' -type d -print -quit)" \
+	&& test -n "$prisma_source" -a -n "$prisma_package" \
+	&& prisma_node_modules="$(dirname "$(dirname "$prisma_package")")" \
+	&& mkdir -p "$prisma_node_modules/.prisma" \
+	&& cp -R "$prisma_source" "$prisma_node_modules/.prisma/client" \
+	&& find /opt/app -type f -name '.env*' -delete \
+	&& rm -rf /opt/app/src /opt/app/test
+
+FROM node:${NODE_VERSION}-alpine AS runtime
 ENV NODE_ENV=production
-COPY --from=dev-remover /usr/index ./
-RUN chmod -R 777 /usr/index
+ENV HOST=0.0.0.0
+ENV TZ=Asia/Seoul
+WORKDIR /usr/index/apps/resize
 
-CMD ["pm2-runtime", "start", "/usr/index/apps/resize/ecosystem.config.js", "--env", "production"]
+COPY --from=build --chown=node:node /opt/app ./
+
+USER node
+EXPOSE 3031
+CMD ["node", "dist/apps/resize/src/main.js"]

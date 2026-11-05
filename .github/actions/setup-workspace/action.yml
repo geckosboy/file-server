@@ -1,0 +1,25 @@
+name: Set up file-server workspace
+description: Install the locked toolchain; compiled artifacts are shared only within one run.
+inputs:
+  generate-prisma:
+    description: Generate the host Prisma client when running Node services or tests
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      with:
+        version: 10.15.0
+        run_install: false
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 22.15.0
+        cache: pnpm
+        cache-dependency-path: pnpm-lock.yaml
+    - name: Install locked dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Generate host Prisma client
+      if: inputs.generate-prisma == 'true'
+      shell: bash
+      run: pnpm db:generate

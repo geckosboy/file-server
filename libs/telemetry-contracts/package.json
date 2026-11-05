@@ -1,0 +1,76 @@
+{
+	"name": "@file/telemetry-contracts",
+	"version": "0.0.1",
+	"main": "dist/index",
+	"types": "dist/index",
+	"private": true,
+	"description": "",
+	"author": "",
+	"license": "MIT",
+	"scripts": {
+		"build": "pnpm exec tsc -p tsconfig.build.json",
+		"generate:asyncapi": "pnpm run build && node scripts/generate-asyncapi.mjs",
+		"check:asyncapi": "pnpm run build && node scripts/generate-asyncapi.mjs --check",
+		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint": "pnpm exec eslint \"src/**/*.ts\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" --fix",
+		"test": "pnpm exec jest --passWithNoTests",
+		"test:e2e": "pnpm exec jest --config ./test/jest-e2e.json --passWithNoTests"
+	},
+	"dependencies": {
+		"class-transformer": "^0.5.1",
+		"class-validator": "^0.14.1"
+	},
+	"devDependencies": {
+		"@file/tsconfig": "workspace:*"
+	},
+	"jest": {
+		"moduleFileExtensions": [
+			"js",
+			"json",
+			"ts"
+		],
+		"rootDir": "src",
+		"testRegex": ".*\\.spec\\.ts$",
+		"transform": {
+			"^.+\\.(t|j)s$": "ts-jest"
+		},
+		"collectCoverageFrom": [
+			"**/*.(t|j)s"
+		],
+		"coverageDirectory": "../coverage",
+		"testEnvironment": "node"
+	},
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"require": "./dist/index.js",
+			"default": "./dist/index.js"
+		},
+		"./events": {
+			"types": "./dist/events.d.ts",
+			"require": "./dist/events.js",
+			"default": "./dist/events.js"
+		},
+		"./lifecycle": {
+			"types": "./dist/lifecycle.d.ts",
+			"require": "./dist/lifecycle.js",
+			"default": "./dist/lifecycle.js"
+		},
+		"./lifecycle-topics": {
+			"types": "./dist/lifecycle-topics.d.ts",
+			"require": "./dist/lifecycle-topics.js",
+			"default": "./dist/lifecycle-topics.js"
+		},
+		"./image-operations": {
+			"types": "./dist/image-operations.d.ts",
+			"require": "./dist/image-operations.js",
+			"default": "./dist/image-operations.js"
+		},
+		"./admin-api": {
+			"types": "./dist/admin-api.d.ts",
+			"require": "./dist/admin-api.js",
+			"default": "./dist/admin-api.js"
+		}
+	}
+}

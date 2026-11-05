@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 2,
+  "benchmark": "stage3-db-telemetry-application-probe",
+  "database": "postgresql://127.0.0.1:60351/file_server",
+  "queryScope": {
+    "mode": "built-prisma-repository",
+    "assetMode": "authoritative-ImageAsset-with-dual-read-compatible",
+    "implementation": "apps/telemetry-api/dist/.../prisma-admin-analytics.repository.js",
+    "note": "This probe measures the actual compiled PrismaAdminAnalyticsRepository path over the 1M fixture. EXPLAIN (ANALYZE, BUFFERS) for equivalent bounded SQL is in benchmark-1m.json."
+  },
+  "fixture": {
+    "schema": "stage3_telemetry_benchmark",
+    "tables": [
+      "telemetry_events",
+      "client_services",
+      "image_assets",
+      "image_lifecycle_events"
+    ],
+    "authoritativeClientServiceId": "service-03",
+    "assetDualReadEnabled": true,
+    "assetCount": 5000,
+    "clientServiceCount": 1,
+    "sourceUploadImageCount": 5000,
+    "representativeEventMatches": 4318,
+    "representativeResultCount": 50,
+    "representativeAssetStatuses": [
+      "Ready"
+    ]
+  },
+  "run": {
+    "rows": 1000000,
+    "warmups": 5,
+    "samples": 20,
+    "node": "v22.23.1",
+    "nodeGcExposed": true
+  },
+  "gates": {
+    "thresholds": {
+      "topImagesP95Ms": 300,
+      "summaryP95Ms": 1000,
+      "timeseriesP95Ms": 1000,
+      "rssDeltaBytes": 104857600
+    },
+    "checks": {
+      "topImagesP95": true,
+      "summaryP95": true,
+      "timeseriesP95": true,
+      "rssDelta": true
+    },
+    "passed": true
+  },
+  "measurements": {
+    "summary": {
+      "resultRows": 1,
+      "p50Ms": 62.69,
+      "p95Ms": 74.87,
+      "maxMs": 78.45,
+      "maxRssDeltaBytes": 61440,
+      "durationsMs": [
+        65.74,
+        69.95,
+        63.9,
+        67.88,
+        64.31,
+        62.65,
+        72.5,
+        64.89,
+        63.07,
+        62.55,
+        62.48,
+        62.69,
+        62.63,
+        62.32,
+        62.61,
+        74.87,
+        78.45,
+        62.06,
+        62.41,
+        62.52
+      ]
+    },
+    "timeseries": {
+      "resultRows": 25,
+      "p50Ms": 112.83,
+      "p95Ms": 134.09,
+      "maxMs": 143.05,
+      "maxRssDeltaBytes": 139264,
+      "durationsMs": [
+        112.83,
+        115.2,
+        109.05,
+        108.74,
+        111.18,
+        110.12,
+        123.54,
+        134.09,
+        111.59,
+        112.75,
+        116.44,
+        117.08,
+        126.25,
+        119.34,
+        131.39,
+        143.05,
+        109.2,
+        109.66,
+        108.28,
+        121.96
+      ]
+    },
+    "topImages": {
+      "resultRows": 50,
+      "p50Ms": 96.88,
+      "p95Ms": 124.59,
+      "maxMs": 207.31,
+      "maxRssDeltaBytes": 36864,
+      "durationsMs": [
+        91.58,
+        88.35,
+        101.63,
+        97.16,
+        98.3,
+        92.89,
+        90.21,
+        207.31,
+        115.62,
+        109.2,
+        113.19,
+        124.59,
+        102.5,
+        94.78,
+        92.81,
+        92.51,
+        95.25,
+        92.72,
+        96.88,
+        101.03
+      ]
+    }
+  }
+}

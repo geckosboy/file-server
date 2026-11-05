@@ -1,0 +1,38 @@
+# 운영 파일로 복사한 뒤 domain/TLS 경로/secret을 교체하여 Nginx에 read-only mount합니다.
+# 이 파일은 nginx.conf의 http 블록 안에서 include하는 server 설정 예제입니다.
+# Docker Nginx를 FILE_SERVER_NET에 연결합니다. API는 외부로 proxy하지 않습니다.
+server {
+    listen 443 ssl;
+    server_name admin.example.com;
+    ssl_certificate /run/secrets/admin-fullchain.pem;
+    ssl_certificate_key /run/secrets/admin-privkey.pem;
+
+    auth_basic "File server administrator";
+    auth_basic_user_file /run/secrets/admin.htpasswd;
+    proxy_connect_timeout 2s;
+    proxy_read_timeout 10s;
+    proxy_send_timeout 10s;
+    proxy_buffering off;
+    proxy_intercept_errors off;
+	# Docker DNS를 짧게 캐시해 컨테이너 교체 뒤 이전 IP에 고착되지 않게 합니다.
+	resolver 127.0.0.11 valid=5s ipv6=off;
+	set $admin_web_upstream file_server_admin-web:3000;
+
+    location = /health/live { deny all; }
+    location = /health/ready { deny all; }
+
+    location / {
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Request-Id $request_id;
+        # $remote_user는 Basic Auth를 통과한 사용자이며 외부 입력 header가 아닙니다.
+        proxy_set_header X-File-Admin-User $remote_user;
+        # admin-web env의 ADMIN_WEB_PROXY_SECRET과 같은 값(예: 무작위 64자리 hex).
+        proxy_set_header X-File-Admin-Proxy-Secret "REPLACE_WITH_ADMIN_WEB_PROXY_SECRET";
+		# 변수 proxy_pass가 요청 시점에 resolver를 사용합니다.
+		proxy_pass http://$admin_web_upstream;
+    }
+}

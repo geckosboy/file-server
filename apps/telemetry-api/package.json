@@ -1,0 +1,64 @@
+{
+	"name": "@file/telemetry-api",
+	"version": "0.0.1",
+	"private": true,
+	"description": "Image telemetry ingestion and admin query API",
+	"author": "",
+	"license": "MIT",
+	"scripts": {
+		"build": "nest build",
+		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+		"start": "nest start",
+		"start:dev": "nest start --watch",
+		"start:debug": "nest start --debug --watch",
+		"start:prod": "node dist/apps/telemetry-api/src/main",
+		"lint": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
+		"test": "pnpm exec jest --passWithNoTests",
+		"test:watch": "jest --watch",
+		"test:cov": "jest --coverage",
+		"test:e2e": "pnpm exec jest --config ./test/jest-e2e.json --passWithNoTests"
+	},
+	"dependencies": {
+		"@file/database": "workspace:*",
+		"@file/image-contracts": "workspace:*",
+		"@file/nest-common": "workspace:*",
+		"@nestjs/common": "^11.1.27",
+		"@nestjs/core": "^11.1.27",
+		"@nestjs/platform-express": "^11.1.28",
+		"kafkajs": "^2.2.4",
+		"reflect-metadata": "^0.2.2",
+		"rxjs": "^7.8.2",
+		"@file/telemetry-contracts": "workspace:*"
+	},
+	"devDependencies": {
+		"@file/tsconfig": "workspace:*",
+		"@nestjs/cli": "^11.0.23"
+	},
+	"jest": {
+		"moduleFileExtensions": [
+			"js",
+			"json",
+			"ts"
+		],
+		"rootDir": "src",
+		"testRegex": ".*\\.spec\\.ts$",
+		"transform": {
+			"^.+\\.(t|j)s$": "ts-jest"
+		},
+		"collectCoverageFrom": [
+			"**/*.(t|j)s"
+		],
+		"coverageDirectory": "../coverage",
+		"testEnvironment": "node",
+		"moduleNameMapper": {
+			"^src/(.*)$": "<rootDir>/$1",
+			"^@file/database$": "<rootDir>/../../../libs/database/src",
+			"^@file/image-contracts$": "<rootDir>/../../../libs/image-contracts/src",
+			"^@file/image-contracts/(.*)$": "<rootDir>/../../../libs/image-contracts/src/$1",
+			"^@file/nest-common$": "<rootDir>/../../../libs/nest-common/src",
+			"^@file/telemetry-contracts$": "<rootDir>/../../../libs/telemetry-contracts/src",
+			"^@file/telemetry-contracts/(.*)$": "<rootDir>/../../../libs/telemetry-contracts/src/$1"
+		}
+	}
+}

@@ -6,7 +6,8 @@ import { AppConfig } from './config';
 async function bootstrap() {
 	const app = await NestFactory.create(AppModule);
 	const logger = new Logger();
-	const { PORT, isDevelopment, isProduction, originList } = app.get(AppConfig);
+	const { PORT, HOST, isDevelopment, isProduction, originList } =
+		app.get(AppConfig);
 
 	app.enableCors({ origin: originList, credentials: true });
 	app.useGlobalPipes(
@@ -19,8 +20,8 @@ async function bootstrap() {
 		}),
 	);
 
-	await app.listen(PORT, () => {
-		logger.log(`Nest on: http://localhost:${PORT}`);
+	await app.listen(PORT, HOST ?? '127.0.0.1', () => {
+		logger.log(`Nest on: ${HOST ?? '127.0.0.1'}:${PORT}`);
 	});
 }
 bootstrap();

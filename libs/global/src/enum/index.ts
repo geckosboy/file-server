@@ -8,10 +8,6 @@ export const Environment = {
 	Test: 'test',
 } as const;
 
-export const KafkaTopic = {
-	IMAGE_TOPIC: 'image-topic',
-} as const;
-
 export const Root = resolve(__dirname, '../../');
 export const BuildRoot = resolve(__dirname, '../../../../../');
 export const getFilePath = (filename: string, isBuild?: boolean) => {
@@ -24,6 +20,5 @@ export const File = FileEnum;
 export default {
 	File,
 	Environment,
-	KafkaTopic,
 	Root,
 };

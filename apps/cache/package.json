@@ -12,14 +12,60 @@
 		"start:dev": "nest start --watch",
 		"start:debug": "nest start --debug --watch",
 		"start:prod": "node dist/apps/cache/src/main",
-		"lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix"
+		"lint": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\"",
+		"lint:fix": "pnpm exec eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
+		"test": "pnpm exec jest --passWithNoTests",
+		"test:e2e": "pnpm exec jest --config ./test/jest-e2e.json --passWithNoTests"
 	},
 	"dependencies": {
-		"@file/global": "*",
-		"node-cache": "^5.1.2"
+		"@file/global": "workspace:*",
+		"@file/image-contracts": "workspace:*",
+		"@file/nest-common": "workspace:*",
+		"@file/telemetry-contracts": "workspace:*",
+		"@nestjs/common": "^11.1.27",
+		"@nestjs/core": "^11.1.27",
+		"@nestjs/microservices": "^11.1.27",
+		"@nestjs/platform-express": "^11.1.28",
+		"class-transformer": "^0.5.1",
+		"class-validator": "^0.14.1",
+		"kafkajs": "^2.2.4",
+		"mime-types": "^2.1.35",
+		"node-cache": "^5.1.2",
+		"reflect-metadata": "^0.2.2",
+		"rxjs": "^7.8.2",
+		"@file/database": "workspace:*"
 	},
 	"devDependencies": {
-		"@nestjs/cli": "^10.0.0",
-		"config": "*"
+		"@file/tsconfig": "workspace:*",
+		"@nestjs/cli": "^11.0.23"
+	},
+	"jest": {
+		"moduleFileExtensions": [
+			"js",
+			"json",
+			"ts"
+		],
+		"rootDir": "src",
+		"testRegex": ".*\\.spec\\.ts$",
+		"transform": {
+			"^.+\\.(t|j)s$": "ts-jest"
+		},
+		"collectCoverageFrom": [
+			"**/*.(t|j)s"
+		],
+		"coverageDirectory": "../coverage",
+		"testEnvironment": "node",
+		"moduleNameMapper": {
+			"^src/(.*)$": "<rootDir>/$1",
+			"^@file/global$": "<rootDir>/../../../libs/global/src",
+			"^@file/global/(.*)$": "<rootDir>/../../../libs/global/src/$1",
+			"^@file/nest-common$": "<rootDir>/../../../libs/nest-common/src",
+			"^@file/nest-common/(.*)$": "<rootDir>/../../../libs/nest-common/src/$1",
+			"^@file/image-contracts$": "<rootDir>/../../../libs/image-contracts/src",
+			"^@file/image-contracts/(.*)$": "<rootDir>/../../../libs/image-contracts/src/$1",
+			"^@file/database$": "<rootDir>/../../../libs/database/src",
+			"^@file/telemetry-contracts$": "<rootDir>/../../../libs/telemetry-contracts/src",
+			"^@file/telemetry-contracts/(.*)$": "<rootDir>/../../../libs/telemetry-contracts/src/$1"
+		}
 	}
 }

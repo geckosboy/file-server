@@ -1,0 +1,55 @@
+name: ${SYSTEM_E2E_COMPOSE_PROJECT:-file-server-system-e2e}
+
+services:
+  postgres:
+    image: postgres:${SYSTEM_E2E_POSTGRES_VERSION:-18-alpine}
+    environment:
+      POSTGRES_DB: file_server
+      POSTGRES_USER: file_server
+      POSTGRES_PASSWORD: file_server
+    ports:
+      - '${SYSTEM_E2E_POSTGRES_PORT:-55432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U file_server -d file_server']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  kafka:
+    image: apache/kafka:${SYSTEM_E2E_KAFKA_VERSION:-4.3.1}
+    ports:
+      - '${SYSTEM_E2E_KAFKA_PORT:-59094}:9094'
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:${SYSTEM_E2E_KAFKA_PORT:-59094}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx256m
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1',
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+networks:
+  default:
+    name: ${SYSTEM_E2E_NETWORK:-file-server-system-e2e}

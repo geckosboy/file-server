@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		// "composite": true,
+		"module": "CommonJS",
+		"esModuleInterop": true,
+		"declaration": true,
+		"removeComments": true,
+		"emitDecoratorMetadata": true,
+		"experimentalDecorators": true,
+		"allowSyntheticDefaultImports": true,
+		"target": "ESNext",
+		"sourceMap": true,
+		"outDir": "./dist",
+		"incremental": true,
+		"skipLibCheck": true,
+		"strict": true
+	},
+	"exclude": ["node_modules", "dist"]
+}

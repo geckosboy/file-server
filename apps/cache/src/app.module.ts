@@ -1,12 +1,22 @@
 import { Module } from '@nestjs/common';
+import { LoggerModule } from '@file/nest-common';
 import { AppController } from './app.controller';
 import { ImageModule } from './modules/image/image.module';
-import { CacheModule } from './modules/node-cache/cache.module';
 import { ConfigModule } from './config';
+import { AppHealthService } from './app-health.service';
+import { PrismaModule } from '@file/database';
 
 @Module({
-	imports: [ConfigModule, ImageModule, CacheModule],
+	imports: [
+		LoggerModule.forRoot({
+			appName: 'cache',
+			exclude: ['/health-check', '/health/live', '/health/ready'],
+		}),
+		ConfigModule,
+		PrismaModule,
+		ImageModule,
+	],
 	controllers: [AppController],
-	providers: [],
+	providers: [AppHealthService],
 })
 export class AppModule {}

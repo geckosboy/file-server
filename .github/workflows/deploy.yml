@@ -1,0 +1,125 @@
+name: file-server-deploy
+
+on:
+  workflow_run:
+    workflows: [file-server-ci]
+    types: [completed]
+
+concurrency:
+  group: file-server-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+  SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+  SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+
+jobs:
+  release:
+    name: Verify the smoke-tested immutable release manifest
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      deploy: ${{ steps.intent.outputs.deploy }}
+      groups: ${{ steps.intent.outputs.groups }}
+      storage_image: ${{ steps.images.outputs.storage_image }}
+      resize_image: ${{ steps.images.outputs.resize_image }}
+      cache_image: ${{ steps.images.outputs.cache_image }}
+      telemetry_api_image: ${{ steps.images.outputs.telemetry_api_image }}
+      admin_web_image: ${{ steps.images.outputs.admin_web_image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Reject an obsolete CI commit before using credentials or touching production
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_SHA" = "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ci-release-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/ci-release
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check explicit release intent and exact run provenance
+        id: intent
+        run: node scripts/ci-images.mjs check-intent "$RUNNER_TEMP/ci-release/ci-release.json"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.intent.outputs.deploy == 'true'
+        with:
+          name: published-images-${{ github.event.workflow_run.id }}
+          path: ${{ runner.temp }}/published-images
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify exact candidate identities and record immutable registry digests
+        if: steps.intent.outputs.deploy == 'true'
+        id: images
+        env:
+          IMAGE_GROUPS: ${{ steps.intent.outputs.groups }}
+        run: node scripts/ci-images.mjs verify-release "$RUNNER_TEMP/published-images/images.json" "$IMAGE_GROUPS"
+
+  deploy:
+    name: Deploy selected services with rollback
+    needs: release
+    if: needs.release.outputs.deploy == 'true'
+    runs-on: [self-hosted, production, puddingii]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Reject an obsolete CI commit before using credentials or touching production
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$GITHUB_SHA" = "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Preflight schema and candidates, then replace in dependency order
+        shell: bash
+        env:
+          DEPLOY_GROUPS: ${{ needs.release.outputs.groups }}
+          TELEMETRY_API_IMAGE: ${{ needs.release.outputs.telemetry_api_image }}
+          ADMIN_WEB_IMAGE: ${{ needs.release.outputs.admin_web_image }}
+          TELEMETRY_API_ENV_PATH: ${{ secrets.TELEMETRY_API_ENV_PATH }}
+          ADMIN_WEB_ENV_PATH: ${{ secrets.ADMIN_WEB_ENV_PATH }}
+          TELEMETRY_API_PORT: ${{ secrets.TELEMETRY_API_PORT }}
+          ADMIN_WEB_PORT: ${{ secrets.ADMIN_WEB_PORT }}
+          STORAGE_IMAGE: ${{ needs.release.outputs.storage_image }}
+          RESIZE_IMAGE: ${{ needs.release.outputs.resize_image }}
+          CACHE_IMAGE: ${{ needs.release.outputs.cache_image }}
+          STORAGE_ENV_PATH: ${{ secrets.STORAGE_ENV_PATH }}
+          RESIZE_ENV_PATH: ${{ secrets.RESIZE_ENV_PATH }}
+          CACHE_ENV_PATH: ${{ secrets.CACHE_ENV_PATH }}
+          STORAGE_PORT: ${{ secrets.STORAGE_PORT }}
+          RESIZE_PORT: ${{ secrets.RESIZE_PORT }}
+          CACHE_PORT: ${{ secrets.CACHE_PORT }}
+          FILE_SERVER_NET: ${{ secrets.FILE_SERVER_NET }}
+          KAFKA_NET: ${{ secrets.KAFKA_NET }}
+          FILE_DUMP_VOLUME: file_dump_volume
+          DEPLOY_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: bash scripts/deploy-image-services.sh

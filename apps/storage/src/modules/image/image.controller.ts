@@ -1,72 +1,161 @@
 import {
+	BadRequestException,
 	Body,
 	Controller,
 	Delete,
-	FileTypeValidator,
 	Get,
+	Headers,
 	HttpStatus,
-	MaxFileSizeValidator,
 	Param,
 	ParseFilePipe,
 	Post,
 	Query,
 	Res,
 	UploadedFile,
+	UseGuards,
 	UseInterceptors,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { File } from '@file/global';
+import {
+	ClientServiceAction,
+	ClientServiceApiKeyGuard,
+	ClientServiceAuthContext,
+	ClientServiceAuthorizationService,
+	ClientServiceContext,
+	InternalServiceAccess,
+	InternalServiceGuard,
+} from '@file/database';
 import { Response } from 'express';
+import { lookup } from 'mime-types';
 import { ImageService } from './image.service';
-import diskStorage from './storages/diskStorage';
-import { DeleteImageDto, GetImageDto, UploadImageDto } from 'src/dto/image.dto';
+import {
+	DeleteImageDto,
+	GetImageDto,
+	ImageQueryDto,
+	UploadImageDto,
+	normalizeImageStoragePath,
+	normalizeSafeFileName,
+	normalizeSafeRelativePath,
+	splitAndNormalizeImageKey,
+	toImageStoragePath,
+} from '@file/image-contracts';
+import { PolicyAwareImageUploadInterceptor } from './policy-aware-image-upload.interceptor';
+import {
+	IMAGE_UPLOAD_IDEMPOTENCY_HEADER,
+	resolveImageUploadIdempotencyKey,
+} from './image-upload-idempotency';
 
 @Controller('image')
 export class ImageController {
-	constructor(private readonly imageService: ImageService) {}
+	constructor(
+		private readonly imageService: ImageService,
+		private readonly authorization: ClientServiceAuthorizationService,
+	) {}
 
 	@Get(':path/:name')
-	async getFile(@Param() imageDto: GetImageDto, @Res() res: Response) {
-		const { image, type } = await this.imageService.getImage(imageDto);
-		res.set({ 'Content-Type': `image/${type}` });
+	@UseGuards(InternalServiceGuard)
+	@InternalServiceAccess('storage', 'image.read')
+	async getFile(
+		@Param() imageDto: GetImageDto,
+		@Query() imageQuery: ImageQueryDto,
+		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
+		@Res() res: Response,
+	) {
+		const path = normalizeSafeRelativePath(imageDto.path, 'image path');
+		const normalizedName = normalizeSafeFileName(imageDto.name);
+		await this.authorization.authorize({
+			context: clientServiceContext,
+			action: ClientServiceAction.Read,
+			normalizedPath: toImageStoragePath(path),
+			consumeRateLimit: false,
+		});
+		const { image, name, preGeneratedVariant } =
+			await this.imageService.getImage(
+				{
+					path,
+					name: normalizedName,
+					...imageQuery,
+				},
+				clientServiceContext,
+			);
+		res.set({
+			'Content-Type': lookup(name) || 'application/octet-stream',
+		});
+		if (preGeneratedVariant) {
+			res.set({
+				'x-file-server-pregenerated-variant': 'true',
+				'x-file-server-variant-format': preGeneratedVariant.format,
+				'x-file-server-variant-name': name,
+			});
+		}
 
 		res.send(image);
 	}
 
 	@Post()
-	@UseInterceptors(FileInterceptor('file', { storage: diskStorage }))
+	@UseGuards(ClientServiceApiKeyGuard)
+	@UseInterceptors(PolicyAwareImageUploadInterceptor)
 	async uploadFile(
 		@Res()
 		res: Response,
+		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Body() imageDto: UploadImageDto,
-		@UploadedFile(
-			new ParseFilePipe({
-				validators: [
-					new MaxFileSizeValidator({ maxSize: File.FileMaximumSize.Image }),
-					new FileTypeValidator({
-						fileType: `${File.ImageFileMimeList.join('|')}`,
-					}),
-				],
-			}),
-		)
-		file: Express.Multer.File,
+		@UploadedFile(new ParseFilePipe()) file: Express.Multer.File,
+		@Headers(IMAGE_UPLOAD_IDEMPOTENCY_HEADER)
+		idempotencyKeyHeader?: string,
 	) {
-		await this.imageService.uploadFile({ file, apiInfo: { ...imageDto } });
+		const idempotencyKey = resolveImageUploadIdempotencyKey({
+			headerValue: idempotencyKeyHeader,
+			clientServiceContext,
+			path: imageDto.path,
+			originalName: file.originalname,
+			externalImageId: imageDto.externalImageId,
+		});
+		const result = await this.imageService.uploadFile({
+			file,
+			apiInfo: { ...imageDto },
+			clientServiceContext,
+			idempotencyKey,
+		});
 
-		res.sendStatus(HttpStatus.CREATED);
+		res.status(HttpStatus.CREATED).json(result);
 	}
 
 	@Delete()
+	@UseGuards(ClientServiceApiKeyGuard)
 	async deleteFile(
 		@Res()
 		res: Response,
+		@ClientServiceContext() clientServiceContext: ClientServiceAuthContext,
 		@Query() imageDto: DeleteImageDto,
 	) {
+		const target = resolveDeleteImageTarget(imageDto);
+		await this.authorization.authorize({
+			context: clientServiceContext,
+			action: ClientServiceAction.Delete,
+			normalizedPath: target.path,
+			consumeRateLimit: true,
+		});
 		await this.imageService.deleteImage({
-			name: imageDto.beforeName,
-			path: imageDto.path,
+			name: target.name,
+			path: target.path,
+			clientServiceContext,
 		});
 
 		res.sendStatus(HttpStatus.OK);
 	}
+}
+
+function resolveDeleteImageTarget(imageDto: DeleteImageDto) {
+	if (imageDto.imageKey) {
+		return splitAndNormalizeImageKey(imageDto.imageKey);
+	}
+
+	if (!imageDto.path || !imageDto.name) {
+		throw new BadRequestException('path/name 또는 imageKey가 필요합니다.');
+	}
+
+	return {
+		path: normalizeImageStoragePath(imageDto.path),
+		name: normalizeSafeFileName(imageDto.name),
+	};
 }
