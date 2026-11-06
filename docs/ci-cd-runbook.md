@@ -164,6 +164,12 @@ Nginx는 이번 앱 CD가 교체하지 않는 별도 운영 ingress다. Docker N
 
 standalone app에는 로그인 페이지가 없다. 익명 접근의 401은 정상이며 인증을 생략해 해결하지 않는다. `/health/live`와 `/health/ready`는 app 내부 probe용이며 공개 관리자 도메인에서는 차단한다. 실제 준비 확인은 readiness 외에도 인증된 UI가 실제 admin API 데이터를 읽는지 확인해야 한다.
 
+### API는 정상인데 서비스 목록에 연결 오류가 표시될 때
+
+`/services`는 `dynamic = 'force-dynamic'`으로 요청마다 렌더링한다. API URL/token은 build가 아니라 runtime에만 주입한다. 이 선언이 없으면 build 중 누락된 환경변수 예외를 페이지가 정상 fallback으로 처리하여, 연결 오류 HTML이 영구 정적 생성될 수 있다. `fetch`의 `cache: 'no-store'`만으로는 **fetch 전에 발생한 예외**를 방지하지 못한다.
+
+API `/api/admin/client-services`가 인증된 요청에 200인데 `/services`만 오류라면, 운영 image의 `.next/prerender-manifest.json`에서 `/services`가 정적 route로 포함됐는지 확인한다. 비밀값을 출력하거나 build에 token을 넣어 해결하지 말고 수정된 admin-web image를 배포한다. admin Docker smoke는 기존 PostgreSQL/Kafka 실행 안에서 API 정상 시 `/services`의 실제 조회와 API 중단 시 오류/fixture 비활성 상태를 함께 확인한다. 추가 인프라나 별도 CI job은 필요 없다.
+
 ### 배포와 rollback 계약
 
 - `DEPLOY_GROUPS=runtime`, `admin`, `runtime,admin`만 유효하다. Bash 직접 호출에서 미설정이면 기존 runtime 동작을 유지한다. CD는 검증한 intent의 값을 항상 명시한다.

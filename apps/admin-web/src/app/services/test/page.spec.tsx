@@ -39,6 +39,32 @@ const renderServices = () =>
 	);
 
 describe('서비스 레지스트리 페이지', () => {
+	it('빌드 시 API 환경변수가 없어도 오류 화면을 정적으로 저장하지 않는다', () => {
+		const filename = join(process.cwd(), 'src', 'app', 'services', 'page.tsx');
+		const source = ts.createSourceFile(
+			filename,
+			readFileSync(filename, 'utf8'),
+			ts.ScriptTarget.Latest,
+			true,
+			ts.ScriptKind.TSX,
+		);
+		const dynamicExport = source.statements
+			.filter(ts.isVariableStatement)
+			.filter((statement) =>
+				statement.modifiers?.some(
+					(modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+				),
+			)
+			.flatMap((statement) => statement.declarationList.declarations)
+			.find(
+				(declaration) =>
+					ts.isIdentifier(declaration.name) &&
+					declaration.name.text === 'dynamic',
+			);
+
+		expect(dynamicExport?.initializer?.getText(source)).toBe("'force-dynamic'");
+	});
+
 	it.each(adminPageRoutes)(
 		'%s route는 Next page가 허용한 export만 공개한다',
 		(route) => {

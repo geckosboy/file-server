@@ -5,6 +5,9 @@ import {
 } from '@/lib/telemetry-api';
 import { ServicesPageContent } from './page-content';
 
+// The API URL/token exist only at runtime. Never prerender a build-time fallback.
+export const dynamic = 'force-dynamic';
+
 async function fetchServicesPageData() {
 	try {
 		return { services: await fetchClientServiceDetailsList() };

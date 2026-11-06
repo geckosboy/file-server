@@ -294,6 +294,15 @@ export async function runAdminDockerSmoke({
 		for (const secret of Object.values(secrets))
 			assert.ok(!html.includes(secret));
 
+		const servicesPage = await fetch(
+			`http://127.0.0.1:${ports.adminWeb}/services`,
+			{ headers: authenticatedHeaders },
+		);
+		assert.equal(servicesPage.status, 200);
+		const servicesHtml = await servicesPage.text();
+		assert.match(servicesHtml, /서비스 레지스트리/);
+		assert.doesNotMatch(servicesHtml, /연결할 수 없습니다|fixture 데이터/);
+
 		const staticPath = html.match(
 			/(?:src|href)="([^"?]*\/_next\/static\/[^"?]+)"/,
 		)?.[1];
@@ -326,6 +335,17 @@ export async function runAdminDockerSmoke({
 		);
 		assert.equal(stillLive.status, 200);
 		await stillLive.body?.cancel();
+		const unavailableServicesPage = await fetch(
+			`http://127.0.0.1:${ports.adminWeb}/services`,
+			{ headers: authenticatedHeaders },
+		);
+		assert.equal(unavailableServicesPage.status, 200);
+		const unavailableServicesHtml = await unavailableServicesPage.text();
+		assert.match(
+			unavailableServicesHtml,
+			/텔레메트리 API에 연결할 수 없습니다\. fixture 없이 빈 상태를 표시합니다\./,
+		);
+		assert.doesNotMatch(unavailableServicesHtml, /fixture 데이터로 표시합니다/);
 
 		console.log(
 			`Admin Docker smoke 통과: telemetry-api=${ports.telemetryApi}, admin-web=${ports.adminWeb}`,
